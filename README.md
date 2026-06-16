@@ -1,6 +1,6 @@
-# Archive Engine (for Discord & Fluxer)
+# Archive-Sync Engine (for Discord & Fluxer)
 
-Archive Engine can archive, export, and migrate servers from Discord Chat to [Fluxer](https://github.com/fluxerapp/fluxer) chat. Or from Fluxer Server to Fluxer.
+Archive-Sync Engine can _archive_, _export_, and _migrate_ (synchronizing) servers from Discord Chat to [Fluxer](https://github.com/fluxerapp/fluxer) chat. Or from Fluxer Server to Fluxer.
 
 ## No Regrets Walking Away from Discord
 
