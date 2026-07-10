@@ -29,21 +29,125 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 
 > The canonical model should not fabricate identifiers that do not exist conceptually.
 
-> SyncState is just another kind of archived data.
-
-> Synchronization: "What is the minimum information required to reproduce content?"
-
 > Each orchestration layer coordinates only the layer immediately beneath it. Sibling components never orchestrate each other.
 
-> When syncing: Every feature becomes an Operation.
+> Orchestration and work should be separate responsibilities.
 
 > CanonicalMessage: A message must contain at least one form of content.
 
 > Changes to the canonical model should require a demonstrated use case from implementation, not speculation.
 
+> An ImportOperation should describe one atomic unit of acquisition work.
+
+### Syncing
+
+> A SyncOperation represents an atomic synchronization action, not an adapter call. The Planner produces synchronization operations from canonical state. The OperationExecutor interprets those operations and coordinates the required interactions with engine components. Operations describe what must be accomplished; they do not prescribe how it is accomplished.
+
+> SyncState is just another kind of archived data.
+
+> A SyncOperation is an atomic synchronization action produced by the Planner.
+
+> Synchronization: "What is the minimum information required to reproduce content?"
+
+> Each type of SyncOperations should answer the question: "What canonical entity does this operation concern?"
+
+> When syncing: Every feature becomes an Operation.
+
+### Operation
+
+> The OperationExecutor interprets the SyncOperation and performs whatever work is necessary to satisfy it.
+
 ## Single Responsibility
 
 Every component has one job.
+
+## Code Design
+
+### Synchronization Pipeline and Importer Pipeline
+
+In both cases, one component produces immutable operations, and another coordinates their execution.
+
+#### Importer Pipeline
+
+Acquisition Pipeline
+
+SourceAdapter
+      │
+      ▼
+Importer
+      │
+      ▼
+ImportOperations
+      │
+      ▼
+ImportCoordinator
+      │
+      ▼
+Archive
+
+#### Synchronization Pipeline
+
+Synchronization Pipeline
+
+Archive
+      │
+      ▼
+Planner
+      │
+      ▼
+SyncOperations
+      │
+      ▼
+OperationExecutor
+      │
+      ▼
+DestinationAdapter
+
+
+### Inheritance and Non-Inheritance Design Usage
+
+The synchronization pipeline uses an inheritance hierarchy:
+
+    SyncOperation
+    ├── ConversationOperation
+    ├── MessageOperation
+    ├── AttachmentOperation
+    ├── IdentityOperation
+    └── ReactionOperation
+
+But ImportOperations do not. ImportOperations represent work, not entities.
+
+    ImportOperation
+    ├── EnumerateConversationsOperation
+    ├── ImportConversationOperation
+    ├── EnumerateMessagesOperation
+    └── ImportMessageOperation
+
+Notice the difference.
+
+Synchronization is entity-centric:
+
+    Create Message
+    Delete Message
+    Edit Message
+
+Import is workflow-centric:
+
+    Enumerate Messages
+    Download Attachment
+    Store Attachment
+    
+### Code Imports
+
+> Import Rule: All internal imports shall be absolute package imports.
+>   Preferred:
+>
+>     from archive_sync_engine.models import CanonicalMessage
+>   Avoid:
+>     from ..models import CanonicalMessage
+>   Avoid:
+>     from models import CanonicalMessage
+
 
 # Relationships
 
@@ -273,11 +377,25 @@ Platform-specific objects must never cross the adapter boundary.
 
 Archive Sync Engine
 ├── SyncSession
+│
+├── ImportCoordinator
+│   ├── Importer
+│   └── Import Operations
+│
 ├── Models
+│   ├── Canonical Models
+│   └── Sync Operations
+│
 ├── Planner
-├── Executor
+├── OperationExecutor
+│
+├── Archive
+├── AssetStore
 ├── Adapter Interfaces
-└── Repository
+│   ├── SourceAdapter
+│   └── DestinationAdapter
+│
+└── StateRepository
 
 External Packages
 ├── Discord Adapter
@@ -324,6 +442,10 @@ ArchiveEngine
 
 Coordinates synchronization.
 
+### Importer
+
+The Importer translate the data exposed by a SourceAdapter into a stream of ImportOperations, and the ImportCoordinator should be responsible for executing those operations, checkpointing progress, and handling pause/resume.
+
 ### SyncSession
 
 Owns all state for a single synchronization run.
@@ -338,16 +460,22 @@ Executes SyncOperations.
 
 ### Archive
 
-Stores canonical conversations, messages, identities, reactions and
-attachments.
+Archive = canonical content (source of truth)
+StateRepository = engine metadata and operational state
+
+Stores canonical conversations, identities, messages, attachments, and reactions. This is the source of truth for imported content.
+
+The Archive owns the _what_ (canonical content), while the StateRepository owns the _how_ and _where_ (operational state).
 
 ### AssetStore
 
 Stores binary attachment data addressed by SHA-256.
 
-### Repository
+### StateRepository
 
 Persists synchronization state and destination mappings.
+
+Stores synchronization metadata and engine state, such as destination mappings, import sessions, sync sessions, checkpoints, and future operational metadata. It never owns canonical content.
 
 ### SourceAdapter
 
@@ -381,7 +509,7 @@ Higher-level components never depend on platform implementations.
 
 Canonical models never depend on adapters.
 
-Adapters never depend on Planner, Executor, Repository or Archive.
+Adapters never depend on Planner, Executor, StateRepository or Archive.
 
 This rule preserves testability, portability and separation of concerns.
 
