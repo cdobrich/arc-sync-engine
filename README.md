@@ -16,7 +16,7 @@ Migration resuming is supported, meaning the program will resume from the last s
 
 ## Pre-requisites
 
-Python 3.10 or later installed on your system.
+Python 3.11 or later installed on your system.
 
 ## Discord Bot Setup
 
@@ -295,7 +295,7 @@ During the migration process, dedicated suffixed `-thread` channels could be cre
 
 # Version Support
 
-Tested with Python 3.12, but in theory should work for older versions of Python.
+Tested with Python 3.11, but in theory should work for older versions of Python.
 
 
 # Future Roadmap / Pending Tasks

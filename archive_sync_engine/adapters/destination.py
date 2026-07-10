@@ -57,8 +57,10 @@ class DestinationAdapter(ABC):
         conversation: CanonicalConversation,
     ) -> DestinationConversationRef:
         """
-        Create a destination conversation corresponding to the supplied
-        canonical conversation.
+        Create a conversation.
+
+        Returns the destination reference created by the destination
+        platform.
         """
         raise NotImplementedError
 

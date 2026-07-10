@@ -43,6 +43,8 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 
 > A SyncOperation represents an atomic synchronization action, not an adapter call. The Planner produces synchronization operations from canonical state. The OperationExecutor interprets those operations and coordinates the required interactions with engine components. Operations describe what must be accomplished; they do not prescribe how it is accomplished.
 
+> Synchronization must be restartable from first principles. The planner should always compute the remaining work from the current Archive and synchronization state, rather than resuming from a persisted list of operations.
+
 > SyncState is just another kind of archived data.
 
 > A SyncOperation is an atomic synchronization action produced by the Planner.
@@ -63,13 +65,17 @@ Every component has one job.
 
 ## Code Design
 
-### Synchronization Pipeline and Importer Pipeline
+### Pipeline Diagrams
+
+Pipeline diagrams describe the flow of data between components. Coordinators are orchestration components and are intentionally omitted from pipeline diagrams because they manage execution rather than transform data.
+
+#### Synchronization Pipeline and Importer Pipeline
 
 In both cases, one component produces immutable operations, and another coordinates their execution.
 
-#### Importer Pipeline
+##### Importer Pipeline
 
-Acquisition Pipeline
+Acquisition Pipeline:
 
 SourceAdapter
       │
@@ -85,9 +91,9 @@ ImportCoordinator
       ▼
 Archive
 
-#### Synchronization Pipeline
+##### Synchronization Pipeline
 
-Synchronization Pipeline
+Synchronization Pipeline:
 
 Archive
       │
@@ -103,6 +109,23 @@ OperationExecutor
       ▼
 DestinationAdapter
 
+
+### Synchronization Runtime
+
+                    Archive
+                       │
+                       │
+Planner ◀──────────────┤
+                       │
+                       ▼
+               SyncCoordinator
+                  │       │
+                  │       │
+                  ▼       ▼
+        OperationExecutor  StateRepository
+                  │
+                  ▼
+        DestinationAdapter
 
 ### Inheritance and Non-Inheritance Design Usage
 
@@ -453,6 +476,8 @@ Owns all state for a single synchronization run.
 ### Planner
 
 Produces SyncOperations.
+
+Planner responsibility: Produce a deterministic, dependency-safe sequence of SyncOperations. The OperationExecutor must execute operations in the order received and must not reorder them.
 
 ### OperationExecutor
 

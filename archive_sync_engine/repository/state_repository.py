@@ -13,6 +13,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from archive_sync_engine.importer import ImportSession
+from archive_sync_engine.sync import SynchronizationState
 
 
 class StateRepository(ABC):
@@ -44,3 +45,23 @@ class StateRepository(ABC):
         Returns None if no previous session exists.
         """
         raise NotImplementedError
+    
+    @abstractmethod
+    def load_synchronization_state(
+        self,
+    ) -> SynchronizationState:
+        """
+        Load the current synchronization metadata snapshot.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def record_execution(
+        self,
+        operation: SyncOperation,
+        result: ExecutionResult,
+    ) -> None:
+        """
+        Persist synchronization metadata resulting from a
+        successfully executed operation.
+        """
