@@ -21,11 +21,48 @@ from archive_sync_engine.models import (
     CanonicalMessage,
 )
 
+from .paths import ArchivePaths
+from .store import ArchiveStore
 
 class Archive(ABC):
     """
     Canonical archive interface.
     """
+
+    def __init__(
+        self,
+        paths: ArchivePaths,
+    ) -> None:
+
+        self._paths = paths
+
+        self._store = ArchiveStore(
+            paths,
+        )
+
+    def close(
+        self,
+    ) -> None:
+        """
+        Close the Archive.
+        """
+
+        self._store.close()
+
+    def __enter__(
+        self,
+    ) -> "Archive":
+
+        return self
+
+    def __exit__(
+        self,
+        exc_type,
+        exc,
+        traceback,
+    ) -> None:
+
+        self.close()
 
     #
     # Conversations
