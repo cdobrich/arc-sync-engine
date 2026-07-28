@@ -1,5 +1,5 @@
 """
-Archive interface.
+Read-only interface to an Archive Package.
 
 The Archive is the source of truth for the Archive Sync Engine.
 
@@ -12,21 +12,18 @@ platform-specific behaviour.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from collections.abc import Iterator
 
-from archive_sync_engine.models import (
-    CanonicalAttachment,
-    CanonicalConversation,
-    CanonicalIdentity,
-    CanonicalMessage,
-)
+from archive_sync_engine.models import CanonicalConversation
+from archive_sync_engine.models.ids import ConversationId
 
 from .paths import ArchivePaths
 from .store import ArchiveStore
 
-class Archive(ABC):
+
+class Archive:
     """
-    Canonical archive interface.
+    Read-only view of an Archive Package.
     """
 
     def __init__(
@@ -34,25 +31,41 @@ class Archive(ABC):
         paths: ArchivePaths,
     ) -> None:
 
-        self._paths = paths
+        self._store = ArchiveStore.open(paths)
 
-        self._store = ArchiveStore(
-            paths,
+    #
+    # Conversations
+    #
+
+    def conversation(
+        self,
+        conversation_id: ConversationId,
+    ) -> CanonicalConversation | None:
+        """
+        Retrieve a conversation by its canonical identifier.
+        """
+
+        return self._store.get_conversation(
+            conversation_id,
         )
 
-    def close(
+    def iter_conversations(
         self,
-    ) -> None:
+    ) -> Iterator[CanonicalConversation]:
         """
-        Close the Archive.
+        Iterate over every conversation in the archive.
         """
 
+        return self._store.iter_conversations()
+
+    #
+    # Lifecycle
+    #
+
+    def close(self) -> None:
         self._store.close()
 
-    def __enter__(
-        self,
-    ) -> "Archive":
-
+    def __enter__(self) -> "Archive":
         return self
 
     def __exit__(
@@ -61,61 +74,4 @@ class Archive(ABC):
         exc,
         traceback,
     ) -> None:
-
         self.close()
-
-    #
-    # Conversations
-    #
-
-    @abstractmethod
-    def add_conversation(
-        self,
-        conversation: CanonicalConversation,
-    ) -> None:
-        """
-        Store a canonical conversation.
-        """
-        raise NotImplementedError
-
-    #
-    # Identities
-    #
-
-    @abstractmethod
-    def add_identity(
-        self,
-        identity: CanonicalIdentity,
-    ) -> None:
-        """
-        Store a canonical identity.
-        """
-        raise NotImplementedError
-
-    #
-    # Messages
-    #
-
-    @abstractmethod
-    def add_message(
-        self,
-        message: CanonicalMessage,
-    ) -> None:
-        """
-        Store a canonical message.
-        """
-        raise NotImplementedError
-
-    #
-    # Attachments
-    #
-
-    @abstractmethod
-    def add_attachment(
-        self,
-        attachment: CanonicalAttachment,
-    ) -> None:
-        """
-        Store a canonical attachment.
-        """
-        raise NotImplementedError

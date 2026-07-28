@@ -39,6 +39,84 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 
 > An ImportOperation should describe one atomic unit of acquisition work.
 
+
+### Archive & ArchiveWriter
+
+Archive: read-only API
+
+ArchiveWriter: write-only API
+> ArchiveWriter becomes the single place where aggregate invariants are validated.
+
+ArchiveStore: ???
+
+
+> All timestamps stored in `archive.sqlite` are UTC, timezone-aware ISO-8601 strings produced by `datetime.isoformat()`.
+
+> Make the relational model align even more closely with the canonical model by distinguishing `entity tables` from `relationship tables`.
+
+Entity tables store standalone canonical entities:
+
+        conversations
+        messages
+        attachments
+        identities
+
+Relationship tables store associations between those entities:
+
+        message_attachments
+        message_reactions
+
+
+The persistence pattern is also established and every Store method follows the same naming convention.
+
+        insert_xxx()
+        get_xxx()
+        iter_xxx()
+
+#### Messages
+
+> A Message should not directly reference a database row in an identities table. Instead it should store the canonical identity key.
+
+Conceptually this is `author_identity_key`. That makes identity resolution adapter-independent.
+
+It also matches how masquerading works.
+
+#### Identity
+
+The Identity table should be treated as a cache of identity metadata rather than a structural dependency of the archive.
+
+#### Attachments
+
+A CanonicalAttachment is content-addressed.
+
+The same attachment may appear in multiple messages.
+
+The archive shouldn't duplicate it.
+
+That was one of the original motivations for SHA-256 storage.
+
+> A CanonicalAttachment exists independently as content-addressed data, while the relationship between a message and its attachments is preserved explicitly.
+
+> The structure which preserves the relationship between a CanonicalAttachment and a CanonicalMessage is the `message_attachments` SQL table.
+
+From `CanonicalAttachment` model schema (SQL):
+
+        message_attachments
+        -------------------
+        message_id
+        attachment_id
+        ordinal
+
+Then separately:
+
+        attachments
+        -----------
+        id
+        sha256
+        filename
+        media_type
+        size
+
 ### Syncing
 
 > A SyncOperation represents an atomic synchronization action, not an adapter call. The Planner produces synchronization operations from canonical state. The OperationExecutor interprets those operations and coordinates the required interactions with engine components. Operations describe what must be accomplished; they do not prescribe how it is accomplished.
