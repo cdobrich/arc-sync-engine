@@ -64,13 +64,11 @@ class ArchiveWriter:
         self,
         identity: CanonicalIdentity,
     ) -> None:
+        """
+        Persist a canonical identity.
+        """
 
-        if identity.key in self._identities:
-            raise ValueError(
-                f"Duplicate identity: {identity.key}"
-            )
-
-        self._identities[identity.key] = identity
+        self._store.insert_identity(identity)
         
     
     def add_message(

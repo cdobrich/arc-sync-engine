@@ -111,5 +111,12 @@ class ArchiveSchema:
 
                 created_at TEXT NOT NULL
             );
+            
+            CREATE TABLE identities
+            (
+                identity_key TEXT PRIMARY KEY,
+
+                display_name TEXT NOT NULL
+            );
             """
         )

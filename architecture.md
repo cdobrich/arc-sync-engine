@@ -40,14 +40,81 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 > An ImportOperation should describe one atomic unit of acquisition work.
 
 
-### Archive & ArchiveWriter
+## Archive & ArchiveWriter
 
-Archive: read-only API
+### Archive:
 
-ArchiveWriter: write-only API
-> ArchiveWriter becomes the single place where aggregate invariants are validated.
+The read-only API.
 
-ArchiveStore: ???
+> Archive → read-only, domain-oriented navigation.
+
+### ArchiveWriter
+
+The write-only API.
+
+> ArchiveWriter should answer one question: "What canonical entities should be written into the Archive?"
+> ArchiveWriter never commits implicitly except when used as a context manager.
+> ArchiveWriter prepares content for the storing step.
+> ArchiveWriter owns transaction policy.
+
+- It speaks in terms of domain objects.
+
+Its responsibilities are:
+- Accept validated canonical entities.
+- Persist them in a transaction.
+- Expose transaction boundaries (commit(), rollback()).
+- Coordinate writing of multi-table aggregates (for example, a message plus its message_attachments rows in the future).
+
+Its responsibilities are not:
+- SQL
+- Schema knowledge
+- Database queries
+- Integrity checking
+- Reading
+
+
+###  ArchiveStore:
+
+The private persistence implementation shared by both (ArchiveWriter and Archive).
+
+- It is purely the persistence layer.
+
+> ArchiveStore should answer a different question: "How are canonical entities stored and retrieved?"
+> ArchiveStore should be stateless with respect to the archive contents.
+> ArchiveStore should never automatically begin, commit, or roll back transactions. Instead, it should behave like a thin persistence engine.
+> ArchiveStore commits or retrieves prepared-content into storage.
+> ArchiveStore.insert_message() should persist the messages row only. It should not automatically insert attachments or relationship rows.
+
+Instead, ArchiveWriter.add_message() should orchestrate the aggregate:
+
+        add_message()
+        ├── insert_message()
+        ├── insert_attachment()      (if needed)
+        └── insert_message_attachment()
+
+Responsibilities:
+- Open/create SQLite databases.
+- Execute SQL.
+- Convert rows ⇄ canonical models.
+- Insert/update/delete/query entities.
+- Manage the SQLite connection and transactions.
+
+It should not know:
+- Discord
+- Fluxer
+- Synchronization
+- Archive package policies
+- Cross-entity semantic validation
+
+
+ArchiveValidator: Responsible for checking and fixing archive-wide semantic invariants
+
+These are rare.
+
+Examples:
+- orphan attachment blobs on disk
+- manifest checksum mismatches
+- archive version incompatibility
 
 
 > All timestamps stored in `archive.sqlite` are UTC, timezone-aware ISO-8601 strings produced by `datetime.isoformat()`.
@@ -73,7 +140,21 @@ The persistence pattern is also established and every Store method follows the s
         get_xxx()
         iter_xxx()
 
-#### Messages
+
+ArchiveStore should become a Unit of Work. Conceptually:
+
+        ArchiveWriter
+        │
+        ▼
+        ArchiveStore
+        ├── SQLite connection
+        ├── Current transaction
+        ├── Entity persistence
+        └── Row ↔ Model mapping
+        
+
+
+### Messages
 
 > A Message should not directly reference a database row in an identities table. Instead it should store the canonical identity key.
 
@@ -81,11 +162,11 @@ Conceptually this is `author_identity_key`. That makes identity resolution adapt
 
 It also matches how masquerading works.
 
-#### Identity
+### Identity
 
 The Identity table should be treated as a cache of identity metadata rather than a structural dependency of the archive.
 
-#### Attachments
+### Attachments
 
 A CanonicalAttachment is content-addressed.
 
@@ -117,6 +198,167 @@ Then separately:
         media_type
         size
 
+### Archive Package Persistence Mapping
+
+#### CanonicalConversation
+
+```
+Entity Table
+
+conversations
+
+Columns
+-------
+id
+conversation_type
+display_name
+created_at
+
+Relationships
+-------------
+Messages
+    messages.conversation_id → conversations.id
+```
+
+##### Notes
+
+A Conversation is the top-level container for archived messages.
+
+A Conversation does not directly own a collection of messages in memory. Instead, messages are related through the Archive API:
+
+        archive.iter_messages(conversation_id)
+
+#### CanonicalIdentity
+
+```
+Entity Table
+
+identities
+
+Columns
+-------
+identity_key
+display_name
+
+Relationships
+-------------
+Referenced by Messages
+Referenced by Reactions
+```
+
+##### Notes
+
+Identities are canonical entities describing authors.
+
+Messages reference an Identity by its canonical `identity_key`.
+
+An archived Message remains valid even if the Identity metadata has not yet been imported.
+
+#### CanonicalMessage
+
+```
+Entity Table
+
+messages
+
+Columns
+-------
+id
+conversation_id
+identity_key
+created_at
+edited_at
+reply_to
+content
+
+Relationships
+-------------
+Conversation
+Attachments
+Reactions
+```
+
+##### Notes
+
+Messages are the central entity of the Archive.
+
+Attachments and Reactions are stored independently and associated through relationship tables.
+
+A Message satisfies the canonical invariant:
+
+- text only
+- attachment only
+- text + attachment
+
+An empty message is invalid.
+
+#### CanonicalAttachment
+
+```
+Entity Table
+
+attachments
+
+Columns
+-------
+id
+sha256
+filename
+media_type
+size
+
+Relationships
+-------------
+Messages
+```
+
+Relationship table:
+```
+message_attachments
+-------------------
+message_id
+attachment_id
+ordinal
+```
+
+##### Notes
+
+Attachments are content-addressed.
+
+Their binary contents are stored separately inside:
+
+        attachments/
+
+using SHA-256 filenames.
+
+The SQLite archive stores only metadata.
+
+#### CanonicalReaction
+
+```
+Entity Table
+
+reactions
+
+Columns
+-------
+message_id
+identity_key
+emoji
+
+Relationships
+-------------
+Message
+Identity
+```
+
+##### Notes
+
+Reactions belong to Messages.
+
+Multiple users reacting with the same emoji produce distinct rows.
+
+        
 ### Syncing
 
 > A SyncOperation represents an atomic synchronization action, not an adapter call. The Planner produces synchronization operations from canonical state. The OperationExecutor interprets those operations and coordinates the required interactions with engine components. Operations describe what must be accomplished; they do not prescribe how it is accomplished.
@@ -132,6 +374,8 @@ Then separately:
 > Each type of SyncOperations should answer the question: "What canonical entity does this operation concern?"
 
 > When syncing: Every feature becomes an Operation.
+
+
 
 ### Operation
 

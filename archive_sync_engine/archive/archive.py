@@ -75,3 +75,30 @@ class Archive:
         traceback,
     ) -> None:
         self.close()
+
+    #
+    # Identities
+    #
+
+    def identity(
+        self,
+        identity_key: IdentityKey,
+    ) -> CanonicalIdentity | None:
+        """
+        Retrieve a canonical identity.
+        """
+
+        return self._store.get_identity(identity_key)
+            
+
+    def iter_identities(
+        self,
+    ) -> Iterator[CanonicalIdentity]:
+        """
+        Iterate over all identities.
+        """
+
+        return self._store.iter_identities()
+
+
+
