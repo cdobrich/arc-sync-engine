@@ -1,65 +1,75 @@
 """
 Archive Writer.
 
-The ArchiveWriter incrementally assembles an immutable Archive.
+The ArchiveWriter incrementally persists canonical entities into an
+Archive Package.
 
-Importers populate the writer while reading source systems.
+Unlike the previous ArchiveBuilder implementation, entities are written
+immediately to persistent storage rather than accumulated in memory.
 
-The writer validates aggregate-wide invariants immediately before
-producing the final Archive.
+ArchiveWriter is responsible for:
+
+    * accepting canonical entities;
+    * coordinating aggregate persistence;
+    * owning transaction boundaries; and
+    * managing the lifetime of an ArchiveStore.
+
+ArchiveWriter does not perform SQL operations directly. Those are
+delegated to ArchiveStore.
 """
 
 from __future__ import annotations
 
-from types import MappingProxyType
-
 from archive_sync_engine.models import (
-    CanonicalAttachment,
     CanonicalConversation,
     CanonicalIdentity,
-    CanonicalMessage,
-    CanonicalReaction,
-)
-from archive_sync_engine.models.ids import (
-    AttachmentId,
-    ConversationId,
-    IdentityKey,
-    MessageId,
 )
 
-from .archive import Archive
 from .paths import ArchivePaths
+from .store import ArchiveStore
 
 
 class ArchiveWriter:
     """
-    Mutable builder used to construct an immutable Archive.
+    Public write façade for an Archive Package.
+
+    Canonical entities are persisted immediately through ArchiveStore.
+
+    Transaction boundaries are explicitly controlled by the caller.
     """
+
     def __init__(
         self,
         paths: ArchivePaths,
     ) -> None:
 
         self._paths = paths
-
         self._paths.ensure_exists()
 
         self._store = ArchiveStore.create(
             paths,
         )
 
+    #
+    # Conversations
+    #
+
     def add_conversation(
         self,
         conversation: CanonicalConversation,
     ) -> None:
+        """
+        Persist a canonical conversation.
+        """
 
-        if conversation.id in self._conversations:
-            raise ValueError(
-                f"Duplicate conversation id: {conversation.id}"
-            )
+        self._store.insert_conversation(
+            conversation,
+        )
 
-        self._conversations[conversation.id] = conversation
-        
+    #
+    # Identities
+    #
+
     def add_identity(
         self,
         identity: CanonicalIdentity,
@@ -68,130 +78,63 @@ class ArchiveWriter:
         Persist a canonical identity.
         """
 
-        self._store.insert_identity(identity)
-        
-    
-    def add_message(
-        self,
-        message: CanonicalMessage,
-    ) -> None:
-
-        if message.id in self._messages:
-            raise ValueError(
-                f"Duplicate message id: {message.id}"
-            )
-
-        self._messages[message.id] = message
-
-
-    def add_attachment(
-        self,
-        attachment: CanonicalAttachment,
-    ) -> None:
-
-        if attachment.id in self._attachments:
-            raise ValueError(
-                f"Duplicate attachment id: {attachment.id}"
-            )
-
-        self._attachments[attachment.id] = attachment
-        
-        
-    def add_reaction(
-        self,
-        reaction: CanonicalReaction,
-    ) -> None:
-
-        self._reactions.append(
-            reaction,
+        self._store.insert_identity(
+            identity,
         )
 
-    def finalize(self) -> Archive:
-        """
-        Produce an immutable Archive.
-        """
+    #
+    # Transactions
+    #
 
-        self._validate()
-
-        return Archive(
-            _conversations=MappingProxyType(
-                dict(self._conversations)
-            ),
-            _identities=MappingProxyType(
-                dict(self._identities)
-            ),
-            _messages=MappingProxyType(
-                dict(self._messages)
-            ),
-            _attachments=MappingProxyType(
-                dict(self._attachments)
-            ),
-            _reactions=tuple(
-                self._reactions
-            ),
-        )
-  
-    def _validate(self) -> None:
+    def commit(
+        self,
+    ) -> None:
         """
-        Validate aggregate-wide invariants.
+        Commit the current transaction.
         """
 
-        #
-        # Every message references an existing conversation.
-        #
+        self._store.commit()
 
-        for message in self._messages.values():
+    def rollback(
+        self,
+    ) -> None:
+        """
+        Roll back the current transaction.
+        """
 
-            if message.conversation_id not in self._conversations:
+        self._store.rollback()
 
-                raise ValueError(
-                    f"Message {message.id} references "
-                    f"unknown conversation "
-                    f"{message.conversation_id}"
-                )
+    #
+    # Lifecycle
+    #
 
-        #
-        # Every message references an existing identity.
-        #
+    def close(
+        self,
+    ) -> None:
+        """
+        Close the underlying ArchiveStore.
+        """
 
-        for message in self._messages.values():
+        self._store.close()
 
-            if message.identity_key not in self._identities:
+    def __enter__(
+        self,
+    ) -> "ArchiveWriter":
 
-                raise ValueError(
-                    f"Message {message.id} references "
-                    f"unknown identity "
-                    f"{message.identity_key}"
-                )
+        return self
 
-        #
-        # Every indexed attachment is referenced by at least one message.
-        #
+    def __exit__(
+        self,
+        exc_type,
+        exc,
+        traceback,
+    ) -> None:
 
-        referenced = {
-            attachment.id
-            for message in self._messages.values()
-            for attachment in message.attachments
-        }
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
 
-        for attachment_id in self._attachments:
+        self.close()
+        
 
-            if attachment_id not in referenced:
-
-                raise ValueError(
-                    f"Attachment {attachment_id} is "
-                    f"not referenced by any message."
-                )
-
-        #
-        # Every reaction references an existing message.
-        #
-
-        for reaction in self._reactions:
-
-            if reaction.message_id not in self._messages:
-
-                raise ValueError(
-                    f"Reaction references unknown "
-                    f"message {reaction.message_id}"
-                )

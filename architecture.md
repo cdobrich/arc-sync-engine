@@ -83,7 +83,7 @@ The private persistence implementation shared by both (ArchiveWriter and Archive
 > ArchiveStore should be stateless with respect to the archive contents.
 > ArchiveStore should never automatically begin, commit, or roll back transactions. Instead, it should behave like a thin persistence engine.
 > ArchiveStore commits or retrieves prepared-content into storage.
-> ArchiveStore.insert_message() should persist the messages row only. It should not automatically insert attachments or relationship rows.
+> ArchiveStore every public Store method should correspond to exactly one SQL table.
 
 Instead, ArchiveWriter.add_message() should orchestrate the aggregate:
 
