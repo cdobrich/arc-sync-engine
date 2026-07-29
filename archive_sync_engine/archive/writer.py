@@ -107,12 +107,41 @@ class ArchiveWriter:
             message: CanonicalMessage,
     ) -> None:
         """
-        Persist a canonical message.
+        Persist a canonical message and its attachment relationships.
         """
+
+        #
+        # Persist the message itself.
+        #
 
         self._store.insert_message(
             message,
         )
+
+        #
+        # Persist every attachment.
+        #
+
+        for attachment_index, attachment in enumerate(
+                message.attachments,
+        ):
+            #
+            # Attachment metadata.
+            #
+
+            self._store.insert_attachment(
+                attachment,
+            )
+
+            #
+            # Relationship.
+            #
+
+            self._store.insert_message_attachment(
+                message.id,
+                attachment.id,
+                attachment_index,
+            )
 
     #
     # Transactions

@@ -178,5 +178,33 @@ class ArchiveSchema:
             
                 sha256 TEXT NOT NULL
             );
+            
+            CREATE TABLE message_attachments
+            (
+                message_id TEXT NOT NULL,
+            
+                attachment_id TEXT NOT NULL,
+            
+                attachment_index INTEGER NOT NULL,
+            
+                PRIMARY KEY (
+                    message_id,
+                    attachment_index
+                ),
+            
+                FOREIGN KEY (
+                    message_id
+                )
+                REFERENCES messages (
+                    message_id
+                ),
+            
+                FOREIGN KEY (
+                    attachment_id
+                )
+                REFERENCES attachments (
+                    attachment_id
+                )
+            );
             """
         )

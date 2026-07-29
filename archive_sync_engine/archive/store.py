@@ -210,6 +210,96 @@ class ArchiveStore:
             )
 
     #
+    # Message Attachments and Attachments Relationships
+    #
+
+    def attachments_for_message(
+            self,
+            message_id: MessageId,
+    ) -> Iterator[CanonicalAttachment]:
+        """
+        Iterate over every attachment belonging to a message.
+        """
+
+        cursor = self._connection.execute(
+            """
+            SELECT
+                a.attachment_id,
+                a.filename,
+                a.content_type,
+                a.size,
+                a.sha256
+            FROM attachments AS a
+            INNER JOIN message_attachments AS ma
+                ON a.attachment_id = ma.attachment_id
+            WHERE ma.message_id = ?
+            ORDER BY
+                ma.attachment_index
+            """,
+            (
+                str(message_id),
+            ),
+        )
+
+        for row in cursor:
+            yield self._row_to_attachment(
+                row,
+            )
+
+    def insert_message_attachment(
+            self,
+            message_id: MessageId,
+            attachment_id: AttachmentId,
+            attachment_index: int,
+    ) -> None:
+        """
+        Persist a message/attachment relationship.
+        """
+
+        self._connection.execute(
+            """
+            INSERT INTO message_attachments (
+                message_id,
+                attachment_id,
+                attachment_index
+            )
+            VALUES (?, ?, ?)
+            """,
+            (
+                str(message_id),
+                str(attachment_id),
+                attachment_index,
+            ),
+        )
+
+    def messages_for_attachment(
+            self,
+            attachment_id: AttachmentId,
+    ) -> Iterator[MessageId]:
+        """
+        Iterate over every message referencing an attachment.
+        """
+
+        cursor = self._connection.execute(
+            """
+            SELECT
+                message_id
+            FROM message_attachments
+            WHERE attachment_id = ?
+            ORDER BY
+                message_id
+            """,
+            (
+                str(attachment_id),
+            ),
+        )
+
+        for row in cursor:
+            yield MessageId(
+                row["message_id"],
+            )
+
+    #
     # Conversations
     #
 
@@ -404,7 +494,7 @@ class ArchiveStore:
         """
 
         return (
-            identity.key,
+            identity.identity_key,
             identity.display_name,
         )
 
@@ -418,7 +508,7 @@ class ArchiveStore:
         """
 
         return CanonicalIdentity(
-            key=row["identity_key"],
+            identity_key=row["identity_key"],
             display_name=row["display_name"],
         )
     

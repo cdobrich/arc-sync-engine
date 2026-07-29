@@ -43,22 +43,50 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 
 > An ImportOperation should describe one atomic unit of acquisition work.
 
+> Design principle: callers interact with canonical aggregates, while ArchiveWriter decomposes those aggregates into normalized tables managed by ArchiveStore.
 
 ## Archive & ArchiveWriter
 
+Writing Design:
+
+    Archive receives CanonicalMessage (which is conceptually a Canonical Aggregate) input
+    ↓
+    ArchiveWriter
+    ↓
+    ArchiveStore
+    ↓
+    Normalized Tables (messages, attachments, message_attachments)
+
+Reading Design:
+
+    Normalized Tables (messages, attachments, message_attachments)
+    ↓
+    ArchiveStore
+    ↓
+    Archive reconstruct_message()
+    ↓
+    CanonicalMessage (which is conceptually a Canonical Aggregate)
+
 ### Archive:
 
+Public API
 The read-only API.
+Aggregate reconstruction.
 
 > Archive → read-only, domain-oriented navigation.
+> Archive reconstructs canonical aggregates from normalized persistence operations.
+    - If we later add reactions, pins, mentions, embeds, or other aggregate components, only this high level of the Archive reconstruct_message() changes.
 
 ### ArchiveWriter
 
+Public API
 The write-only API.
+Aggregate decomposition.
 
 > ArchiveWriter should answer one question: "What canonical entities should be written into the Archive?"
 > ArchiveWriter never commits implicitly except when used as a context manager.
 > ArchiveWriter prepares content for the storing step.
+> ArchiveWriter decomposes canonical aggregates into normalized persistence operations.
 > ArchiveWriter owns transaction policy.
 
 - It speaks in terms of domain objects.
@@ -79,6 +107,9 @@ Its responsibilities are not:
 
 ###  ArchiveStore:
 
+SQL
+Normalized persistence.
+
 The private persistence implementation shared by both (ArchiveWriter and Archive).
 
 - It is purely the persistence layer.
@@ -88,6 +119,7 @@ The private persistence implementation shared by both (ArchiveWriter and Archive
 > ArchiveStore should never automatically begin, commit, or roll back transactions. Instead, it should behave like a thin persistence engine.
 > ArchiveStore commits or retrieves prepared-content into storage.
 > ArchiveStore every public Store method should correspond to exactly one SQL table.
+> ArchiveStore never owns canonical aggregate composition—it owns normalized persistence only.
 
 Instead, ArchiveWriter.add_message() should orchestrate the aggregate:
 

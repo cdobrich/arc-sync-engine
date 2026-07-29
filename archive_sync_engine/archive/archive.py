@@ -137,15 +137,76 @@ class Archive:
         Retrieve a canonical message.
         """
 
-        return self._store.get_message(
+        return self._reconstruct_message(
             message_id,
+        )
+
+    def _reconstruct_message(
+        self,
+        message_id: MessageId,
+    ) -> CanonicalMessage | None:
+        """
+        Reconstruct a complete CanonicalMessage aggregate from
+        normalized persistence.
+        """
+
+        #
+        # Load the message row.
+        #
+
+        message = self._store.get_message(
+            message_id,
+        )
+
+        if message is None:
+            return None
+
+        #
+        # Reconstruct attachments.
+        #
+
+        attachments = tuple(
+            self._store.attachments_for_message(
+                message.id,
+            )
+        )
+
+        #
+        # Reconstruct reactions. TODO.
+        #
+
+        reactions = ()
+
+        #
+        # Return the reconstructed aggregate.
+        #
+
+        return CanonicalMessage(
+            id=message.id,
+            conversation_id=message.conversation_id,
+            identity_key=message.identity_key,
+            created_at=message.created_at,
+            edited_at=message.edited_at,
+            reply_to=message.reply_to,
+            content=message.content,
+            attachments=attachments,
+            reactions=reactions,
         )
 
     def iter_messages(
             self,
-    ) -> Iterator[CanonicalMessage]:
+    ) -> Iterator[
+        CanonicalMessage
+    ]:
         """
         Iterate over every canonical message.
         """
 
-        return self._store.iter_messages()
+        for message in self._store.iter_messages():
+
+            reconstructed = self._reconstruct_message(
+                message.id,
+            )
+
+            if reconstructed is not None:
+                yield reconstructed
