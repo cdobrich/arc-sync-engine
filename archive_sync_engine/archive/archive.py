@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from archive_sync_engine.models import CanonicalConversation, CanonicalIdentity, CanonicalMessage
-from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId
+from archive_sync_engine.models import CanonicalConversation, CanonicalIdentity, CanonicalMessage, CanonicalAttachment
+from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId, AttachmentId
 
 from .paths import ArchivePaths
 from .store import ArchiveStore
@@ -75,6 +75,31 @@ class Archive:
         traceback,
     ) -> None:
         self.close()
+
+    #
+    # Attachments
+    #
+
+    def attachment(
+            self,
+            attachment_id: AttachmentId,
+    ) -> CanonicalAttachment | None:
+        """
+        Retrieve a canonical attachment.
+        """
+
+        return self._store.get_attachment(
+            attachment_id,
+        )
+
+    def iter_attachments(
+            self,
+    ) -> Iterator[CanonicalAttachment]:
+        """
+        Iterate over every canonical attachment.
+        """
+
+        return self._store.iter_attachments()
 
     #
     # Identities

@@ -31,6 +31,8 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 
 > The canonical models drive the schema and not the other way around.
 
+> Each SQL table (schema table) represents exactly one concept.
+
 > Each orchestration layer coordinates only the layer immediately beneath it. Sibling components never orchestrate each other.
 
 > Orchestration and work should be separate responsibilities.
@@ -65,7 +67,7 @@ Its responsibilities are:
 - Accept validated canonical entities.
 - Persist them in a transaction.
 - Expose transaction boundaries (commit(), rollback()).
-- Coordinate writing of multi-table aggregates (for example, a message plus its message_attachments rows in the future).
+- Coordinate writing of multi-table aggregates (for example, a message plus its` message_attachments` rows in the future).
 
 Its responsibilities are not:
 - SQL

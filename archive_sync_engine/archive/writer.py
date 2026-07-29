@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from archive_sync_engine.models import (
     CanonicalConversation,
-    CanonicalIdentity, CanonicalMessage,
+    CanonicalIdentity, CanonicalMessage, CanonicalAttachment,
 )
 
 from .paths import ArchivePaths
@@ -48,6 +48,22 @@ class ArchiveWriter:
 
         self._store = ArchiveStore.create(
             paths,
+        )
+
+    #
+    # Attachments
+    #
+
+    def add_attachment(
+            self,
+            attachment: CanonicalAttachment,
+    ) -> None:
+        """
+        Persist a canonical attachment.
+        """
+
+        self._store.insert_attachment(
+            attachment,
         )
 
     #

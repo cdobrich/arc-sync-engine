@@ -10,10 +10,10 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime
 
-from archive_sync_engine.models import CanonicalConversation, CanonicalMessage
+from archive_sync_engine.models import CanonicalConversation, CanonicalMessage, CanonicalAttachment
 from archive_sync_engine.models.identity import CanonicalIdentity
 from archive_sync_engine.models.enums import ConversationType
-from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId
+from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId, AttachmentId
 
 import sqlite3
 
@@ -79,6 +79,135 @@ class ArchiveStore:
             paths=paths,
             connection=connection,
         )
+
+    #
+    # Attachments
+    #
+
+    @staticmethod
+    def _attachment_parameters(
+            attachment: CanonicalAttachment,
+    ) -> tuple[
+        str,
+        str,
+        str | None,
+        int,
+        str,
+    ]:
+        """
+        Convert a CanonicalAttachment into SQL parameters.
+        """
+
+        return (
+            str(attachment.id),
+            attachment.filename,
+            attachment.content_type,
+            attachment.size,
+            attachment.sha256,
+        )
+
+    @staticmethod
+    def _row_to_attachment(
+            row: sqlite3.Row,
+    ) -> CanonicalAttachment:
+        """
+        Convert a SQLite row into a CanonicalAttachment.
+        """
+
+        return CanonicalAttachment(
+            id=AttachmentId(
+                row["attachment_id"],
+            ),
+            filename=row["filename"],
+            content_type=row["content_type"],
+            size=row["size"],
+            sha256=row["sha256"],
+        )
+
+    def insert_attachment(
+            self,
+            attachment: CanonicalAttachment,
+    ) -> None:
+        """
+        Persist a canonical attachment.
+        """
+
+        self._connection.execute(
+            """
+            INSERT INTO attachments (
+                attachment_id,
+                filename,
+                content_type,
+                size,
+                sha256
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            self._attachment_parameters(
+                attachment,
+            ),
+        )
+
+    def get_attachment(
+            self,
+            attachment_id: AttachmentId,
+    ) -> CanonicalAttachment | None:
+        """
+        Retrieve a canonical attachment.
+        """
+
+        cursor = self._connection.execute(
+            """
+            SELECT
+                attachment_id,
+                filename,
+                content_type,
+                size,
+                sha256
+            FROM attachments
+            WHERE attachment_id = ?
+            """,
+            (
+                str(attachment_id),
+            ),
+        )
+
+        row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return self._row_to_attachment(
+            row,
+        )
+
+    def iter_attachments(
+            self,
+    ) -> Iterator[
+        CanonicalAttachment
+    ]:
+        """
+        Iterate over every canonical attachment.
+        """
+
+        cursor = self._connection.execute(
+            """
+            SELECT
+                attachment_id,
+                filename,
+                content_type,
+                size,
+                sha256
+            FROM attachments
+            ORDER BY
+                attachment_id
+            """
+        )
+
+        for row in cursor:
+            yield self._row_to_attachment(
+                row,
+            )
 
     #
     # Conversations

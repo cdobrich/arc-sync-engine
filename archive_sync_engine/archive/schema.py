@@ -165,5 +165,18 @@ class ArchiveSchema:
                     message_id
                 )
             );
+            
+            CREATE TABLE attachments
+            (
+                attachment_id TEXT PRIMARY KEY,
+            
+                filename TEXT NOT NULL,
+            
+                content_type TEXT,
+            
+                size INTEGER NOT NULL,
+            
+                sha256 TEXT NOT NULL
+            );
             """
         )
