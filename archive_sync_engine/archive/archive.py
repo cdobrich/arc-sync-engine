@@ -7,15 +7,15 @@ It stores canonical entities independently of any source or destination
 platform.
 
 The Archive intentionally exposes entity-oriented operations rather than
-platform-specific behaviour.
+platform-specific behavior.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 
-from archive_sync_engine.models import CanonicalConversation
-from archive_sync_engine.models.ids import ConversationId
+from archive_sync_engine.models import CanonicalConversation, CanonicalIdentity, CanonicalMessage
+from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId
 
 from .paths import ArchivePaths
 from .store import ArchiveStore
@@ -100,5 +100,27 @@ class Archive:
 
         return self._store.iter_identities()
 
+    #
+    # Messages
+    #
 
+    def message(
+            self,
+            message_id: MessageId,
+    ) -> CanonicalMessage | None:
+        """
+        Retrieve a canonical message.
+        """
 
+        return self._store.get_message(
+            message_id,
+        )
+
+    def iter_messages(
+            self,
+    ) -> Iterator[CanonicalMessage]:
+        """
+        Iterate over every canonical message.
+        """
+
+        return self._store.iter_messages()

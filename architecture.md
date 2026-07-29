@@ -29,6 +29,8 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 
 > The canonical model should not fabricate identifiers that do not exist conceptually.
 
+> The canonical models drive the schema and not the other way around.
+
 > Each orchestration layer coordinates only the layer immediately beneath it. Sibling components never orchestrate each other.
 
 > Orchestration and work should be separate responsibilities.

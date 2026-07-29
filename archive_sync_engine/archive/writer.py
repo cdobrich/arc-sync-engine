@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from archive_sync_engine.models import (
     CanonicalConversation,
-    CanonicalIdentity,
+    CanonicalIdentity, CanonicalMessage,
 )
 
 from .paths import ArchivePaths
@@ -80,6 +80,22 @@ class ArchiveWriter:
 
         self._store.insert_identity(
             identity,
+        )
+
+    #
+    # Messages
+    #
+
+    def add_message(
+            self,
+            message: CanonicalMessage,
+    ) -> None:
+        """
+        Persist a canonical message.
+        """
+
+        self._store.insert_message(
+            message,
         )
 
     #

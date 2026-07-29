@@ -103,13 +103,22 @@ class ArchiveSchema:
 
             CREATE TABLE conversations
             (
-                id TEXT PRIMARY KEY,
-
+                conversation_id   TEXT PRIMARY KEY,
+            
                 conversation_type TEXT NOT NULL,
-
-                title TEXT,
-
-                created_at TEXT NOT NULL
+            
+                title             TEXT,
+            
+                parent_id         TEXT,
+            
+                created_at        TEXT,
+            
+                FOREIGN KEY (
+                    parent_id
+                )
+                REFERENCES conversations (
+                    conversation_id
+                )
             );
             
             CREATE TABLE identities
@@ -117,6 +126,44 @@ class ArchiveSchema:
                 identity_key TEXT PRIMARY KEY,
 
                 display_name TEXT NOT NULL
+            );
+            
+            CREATE TABLE messages
+            (
+                message_id TEXT PRIMARY KEY,
+            
+                conversation_id TEXT NOT NULL,
+            
+                identity_key TEXT NOT NULL,
+            
+                created_at TEXT NOT NULL,
+            
+                edited_at TEXT,
+            
+                reply_to_message_id TEXT,
+            
+                content TEXT,
+            
+                FOREIGN KEY (
+                    conversation_id
+                )
+                REFERENCES conversations (
+                    conversation_id
+                ),
+            
+                FOREIGN KEY (
+                    identity_key
+                )
+                REFERENCES identities (
+                    identity_key
+                ),
+            
+                FOREIGN KEY (
+                    reply_to_message_id
+                )
+                REFERENCES messages (
+                    message_id
+                )
             );
             """
         )
