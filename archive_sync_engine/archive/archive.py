@@ -16,6 +16,8 @@ from collections.abc import Iterator
 
 from archive_sync_engine.models import CanonicalConversation, CanonicalIdentity, CanonicalMessage, CanonicalAttachment
 from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId, AttachmentId
+from . import ArchiveManifest
+from .package import ArchivePackage
 
 from .paths import ArchivePaths
 from .store import ArchiveStore
@@ -32,6 +34,13 @@ class Archive:
     ) -> None:
 
         self._store = ArchiveStore.open(paths)
+        self._package = ArchivePackage(
+            paths,
+        )
+
+        self._manifest = (
+            self._package.load_manifest()
+        )
 
     #
     # Conversations
@@ -124,6 +133,20 @@ class Archive:
         """
 
         return self._store.iter_identities()
+
+    #
+    # Manifest
+    #
+
+    @property
+    def manifest(
+            self,
+    ) -> ArchiveManifest:
+        """
+        Return the Archive Package manifest.
+        """
+
+        return self._manifest
 
     #
     # Messages

@@ -13,6 +13,24 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 
 `The Archive-Sync Engine should be a platform-agnostic synchronization engine that operates solely on canonical models, with every platform-specific concern isolated behind thin adapter interfaces and every business decision centralized within the engine.`
 
+## Archive Engine High Level Concept
+
+├── Canonical Model
+│   (Conversation, Message, Attachment, ...)
+│
+├── Persistence
+│   (ArchiveStore, SQLite, AssetStore)
+│
+├── Archive Package
+│   (manifest.json, archive.sqlite,
+│    attachments/)
+│
+└── Execution State
+    (session.json,
+     import sessions,
+     export sessions,
+     resume information)
+
 ## Additional Guiding Principles
 
 > Most components should collaborate rather than inherit.
@@ -105,7 +123,7 @@ Its responsibilities are not:
 - Reading
 
 
-###  ArchiveStore:
+### ArchiveStore:
 
 SQL
 Normalized persistence.
@@ -188,7 +206,9 @@ ArchiveStore should become a Unit of Work. Conceptually:
         ├── Entity persistence
         └── Row ↔ Model mapping
         
+### ArchiveManifest
 
+> ArchiveManifest.py: Describe the Archive Package itself, not the archived content.
 
 ### Messages
 

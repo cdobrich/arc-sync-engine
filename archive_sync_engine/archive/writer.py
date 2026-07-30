@@ -24,9 +24,12 @@ from archive_sync_engine.models import (
     CanonicalConversation,
     CanonicalIdentity, CanonicalMessage, CanonicalAttachment,
 )
+from . import ArchiveManifest
+from .package import ArchivePackage
 
 from .paths import ArchivePaths
 from .store import ArchiveStore
+from ..models.ids import AttachmentId
 
 
 class ArchiveWriter:
@@ -47,6 +50,10 @@ class ArchiveWriter:
         self._paths.ensure_exists()
 
         self._store = ArchiveStore.create(
+            paths,
+        )
+
+        self._package = ArchivePackage(
             paths,
         )
 
@@ -99,6 +106,25 @@ class ArchiveWriter:
         )
 
     #
+    # Manifest
+    #
+
+    def _save_manifest(
+            self,
+    ) -> None:
+        """
+        Save the Archive Package manifest.
+        """
+
+        manifest = (
+            self._package.create_manifest()
+        )
+
+        self._package.save_manifest(
+            manifest,
+        )
+
+    #
     # Messages
     #
 
@@ -107,11 +133,11 @@ class ArchiveWriter:
             message: CanonicalMessage,
     ) -> None:
         """
-        Persist a canonical message and its attachment relationships.
+        Persist a canonical message aggregate.
         """
 
         #
-        # Persist the message itself.
+        # Persist the message.
         #
 
         self._store.insert_message(
@@ -119,14 +145,34 @@ class ArchiveWriter:
         )
 
         #
-        # Persist every attachment.
+        # Persist every attachment and its relationship.
         #
+
+        seen_attachment_ids: set[
+            AttachmentId
+        ] = set()
 
         for attachment_index, attachment in enumerate(
                 message.attachments,
         ):
+
             #
-            # Attachment metadata.
+            # Prevent duplicate attachment IDs within a single canonical message.
+            #
+
+            if attachment.id in seen_attachment_ids:
+                raise ValueError(
+                    "Duplicate attachment "
+                    f"{attachment.id} in "
+                    f"message {message.id}."
+                )
+
+            seen_attachment_ids.add(
+                attachment.id,
+            )
+
+            #
+            # Persist metadata.
             #
 
             self._store.insert_attachment(
@@ -134,7 +180,7 @@ class ArchiveWriter:
             )
 
             #
-            # Relationship.
+            # Persist relationship.
             #
 
             self._store.insert_message_attachment(

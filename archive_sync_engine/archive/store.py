@@ -256,6 +256,11 @@ class ArchiveStore:
         Persist a message/attachment relationship.
         """
 
+        if attachment_index < 0:
+            raise ValueError(
+                "attachment_index must be non-negative."
+            )
+
         self._connection.execute(
             """
             INSERT INTO message_attachments (
