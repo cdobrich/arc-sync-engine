@@ -617,7 +617,7 @@ class ArchiveStore:
             message_id: MessageId,
     ) -> CanonicalMessage | None:
         """
-        Retrieve a canonical message.
+        Retrieve a canonical message (the message core).
         """
 
         cursor = self._connection.execute(
@@ -820,7 +820,7 @@ class ArchiveStore:
             ),
         )
 
-    def iter_message_reactions(
+    def reactions_for_message(
             self,
             message_id: MessageId,
     ) -> Iterator[CanonicalReaction]:

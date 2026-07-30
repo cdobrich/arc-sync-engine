@@ -21,6 +21,7 @@ from . import ArchiveManifest
 from .package import ArchivePackage
 
 from .paths import ArchivePaths
+from .recomposer import ArchiveRecomposer
 from .store import ArchiveStore
 
 
@@ -41,6 +42,10 @@ class Archive:
 
         self._manifest = (
             self._package.load_manifest()
+        )
+
+        self._recomposer = ArchiveRecomposer(
+            self._store,
         )
 
     #
@@ -161,60 +166,8 @@ class Archive:
         Retrieve a canonical message.
         """
 
-        return self._reconstruct_message(
+        return self._recomposer.recompose_message(
             message_id,
-        )
-
-    def _reconstruct_message(
-        self,
-        message_id: MessageId,
-    ) -> CanonicalMessage | None:
-        """
-        Reconstruct a complete CanonicalMessage aggregate from
-        normalized persistence.
-        """
-
-        #
-        # Load the message row.
-        #
-
-        message = self._store.get_message(
-            message_id,
-        )
-
-        if message is None:
-            return None
-
-        #
-        # Reconstruct attachments.
-        #
-
-        attachments = tuple(
-            self._store.attachments_for_message(
-                message.id,
-            )
-        )
-
-        #
-        # Reconstruct reactions. TODO.
-        #
-
-        reactions = ()
-
-        #
-        # Return the reconstructed aggregate.
-        #
-
-        return CanonicalMessage(
-            id=message.id,
-            conversation_id=message.conversation_id,
-            identity_key=message.identity_key,
-            created_at=message.created_at,
-            edited_at=message.edited_at,
-            reply_to=message.reply_to,
-            content=message.content,
-            attachments=attachments,
-            reactions=reactions,
         )
 
     def iter_messages(
@@ -228,7 +181,7 @@ class Archive:
 
         for message in self._store.iter_messages():
 
-            reconstructed = self._reconstruct_message(
+            reconstructed = self._recomposer.recompose_message(
                 message.id,
             )
 
@@ -243,7 +196,7 @@ class Archive:
         Iterate over the reactions belonging to a message.
         """
 
-        return self._store.iter_message_reactions(
+        return self._store.reactions_for_message(
             message_id,
         )
 
