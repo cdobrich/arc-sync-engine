@@ -206,5 +206,35 @@ class ArchiveSchema:
                     attachment_id
                 )
             );
+
+            CREATE TABLE message_reactions (
+            
+                message_id TEXT NOT NULL,
+            
+                identity_key TEXT NOT NULL,
+            
+                emoji TEXT NOT NULL,
+            
+                emoji_id TEXT,
+            
+                is_custom INTEGER NOT NULL,
+            
+                PRIMARY KEY (
+                    message_id,
+                    identity_key,
+                    emoji,
+                    emoji_id
+                ),
+            
+                FOREIGN KEY (
+                    message_id
+                )
+                    REFERENCES messages(id),
+            
+                FOREIGN KEY (
+                    identity_key
+                )
+                    REFERENCES identities(identity_key)
+            );
             """
         )

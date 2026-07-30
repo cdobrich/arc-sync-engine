@@ -10,10 +10,10 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime
 
-from archive_sync_engine.models import CanonicalConversation, CanonicalMessage, CanonicalAttachment
+from archive_sync_engine.models import CanonicalConversation, CanonicalMessage, CanonicalAttachment, CanonicalReaction
 from archive_sync_engine.models.identity import CanonicalIdentity
 from archive_sync_engine.models.enums import ConversationType
-from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId, AttachmentId
+from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId, AttachmentId, EmojiId
 
 import sqlite3
 
@@ -747,3 +747,125 @@ class ArchiveStore:
         attachments=(),
         reactions=(),
     )
+
+    def _message_reaction_parameters(
+            self,
+            message_id: MessageId,
+            reaction: CanonicalReaction,
+    ) -> tuple[object, ...]:
+        """
+        Convert a CanonicalReaction into database parameters.
+        """
+
+        return (
+            str(message_id),
+            str(reaction.identity_key),
+            reaction.emoji,
+            (
+                None
+                if reaction.emoji_id is None
+                else str(reaction.emoji_id)
+            ),
+            int(reaction.is_custom),
+        )
+
+    def _row_to_message_reaction(
+            self,
+            row: sqlite3.Row,
+    ) -> CanonicalReaction:
+        """
+        Convert a database row into a CanonicalReaction.
+        """
+
+        return CanonicalReaction(
+            identity_key=IdentityKey(
+                row["identity_key"],
+            ),
+            emoji=row["emoji"],
+            emoji_id=(
+                None
+                if row["emoji_id"] is None
+                else EmojiId(
+                    row["emoji_id"],
+                )
+            ),
+            is_custom=bool(
+                row["is_custom"],
+            ),
+        )
+
+    def insert_message_reaction(
+            self,
+            message_id: MessageId,
+            reaction: CanonicalReaction,
+    ) -> None:
+        """
+        Persist a reaction belonging to a message.
+        """
+
+        self._connection.execute(
+            """
+            INSERT INTO message_reactions (
+                message_id,
+                identity_key,
+                emoji,
+                emoji_id,
+                is_custom
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            self._message_reaction_parameters(
+                message_id,
+                reaction,
+            ),
+        )
+
+    def iter_message_reactions(
+            self,
+            message_id: MessageId,
+    ) -> Iterator[CanonicalReaction]:
+        """
+        Iterate over reactions belonging to a message.
+        """
+
+        cursor = self._connection.execute(
+            """
+            SELECT
+                identity_key,
+                emoji,
+                emoji_id,
+                is_custom
+            FROM message_reactions
+            WHERE message_id = ?
+            ORDER BY
+                identity_key,
+                emoji,
+                emoji_id
+            """,
+            (
+                str(message_id),
+            ),
+        )
+
+        for row in cursor:
+            yield self._row_to_message_reaction(
+                row,
+            )
+
+    def delete_message_reactions(
+            self,
+            message_id: MessageId,
+    ) -> None:
+        """
+        Remove all reactions belonging to a message.
+        """
+
+        self._connection.execute(
+            """
+            DELETE FROM message_reactions
+            WHERE message_id = ?
+            """,
+            (
+                str(message_id),
+            ),
+        )

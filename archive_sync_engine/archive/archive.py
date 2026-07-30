@@ -14,7 +14,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from archive_sync_engine.models import CanonicalConversation, CanonicalIdentity, CanonicalMessage, CanonicalAttachment
+from archive_sync_engine.models import CanonicalConversation, CanonicalIdentity, CanonicalMessage, CanonicalAttachment, \
+    CanonicalReaction
 from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId, AttachmentId
 from . import ArchiveManifest
 from .package import ArchivePackage
@@ -233,3 +234,17 @@ class Archive:
 
             if reconstructed is not None:
                 yield reconstructed
+
+    def message_reactions(
+        self,
+        message_id: MessageId,
+    ) -> Iterator[CanonicalReaction]:
+        """
+        Iterate over the reactions belonging to a message.
+        """
+
+        return self._store.iter_message_reactions(
+            message_id,
+        )
+
+

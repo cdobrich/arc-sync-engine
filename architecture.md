@@ -408,6 +408,12 @@ Message
 Identity
 ```
 
+The mapping is almost direct:
+
+    CanonicalReaction
+        ↓
+    message_reactions row
+
 ##### Notes
 
 Reactions belong to Messages.

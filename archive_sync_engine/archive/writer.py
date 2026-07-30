@@ -29,7 +29,7 @@ from .package import ArchivePackage
 
 from .paths import ArchivePaths
 from .store import ArchiveStore
-from ..models.ids import AttachmentId
+from ..models.ids import AttachmentId, IdentityKey, EmojiId
 
 
 class ArchiveWriter:
@@ -187,6 +187,58 @@ class ArchiveWriter:
                 message.id,
                 attachment.id,
                 attachment_index,
+            )
+
+    #
+    # Reactions
+    #
+
+    def _persist_message_reactions(
+            self,
+            message: CanonicalMessage,
+    ) -> None:
+        """
+        Persist every reaction belonging to a message.
+        """
+
+        for reaction in message.reactions:
+            self._store.insert_message_reaction(
+                message.id,
+                reaction,
+            )
+
+    def _validate_message_reactions(
+            self,
+            message: CanonicalMessage,
+    ) -> None:
+        """
+        Validate reaction invariants for a message.
+        """
+
+        seen: set[
+            tuple[
+                IdentityKey,
+                str,
+                EmojiId | None,
+            ]
+        ] = set()
+
+        for reaction in message.reactions:
+
+            key = (
+                reaction.identity_key,
+                reaction.emoji,
+                reaction.emoji_id,
+            )
+
+            if key in seen:
+                raise ValueError(
+                    f"Duplicate reaction on "
+                    f"message {message.id}."
+                )
+
+            seen.add(
+                key,
             )
 
     #
