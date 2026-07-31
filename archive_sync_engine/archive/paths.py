@@ -86,3 +86,10 @@ class ArchivePaths:
             parents=True,
             exist_ok=True,
         )
+
+    @property
+    def session(self) -> Path:
+        """
+        Path to the synchronization session.
+        """
+        return self.root / "session.json"

@@ -9,6 +9,7 @@ from .manifest import ArchiveManifest
 from .paths import ArchivePaths
 from .version import ARCHIVE_ENGINE_VERSION
 
+from archive_sync_engine.sync.session import SyncSession
 
 class ArchivePackage:
     """
@@ -94,4 +95,55 @@ class ArchivePackage:
             created_at=datetime.now(
                 timezone.utc,
             ),
+        )
+    
+    #
+    # Session
+    #
+
+    def save_session(
+        self,
+        session: SyncSession,
+    ) -> None:
+        """
+        Persist the current synchronization session.
+
+        Session state is operational metadata and is stored separately
+        from the canonical archive database.
+        """
+
+        with self._paths.session.open(
+            "w",
+            encoding="utf-8",
+        ) as handle:
+            json.dump(
+                session.to_json_dict(),
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
+            handle.write("\n")
+
+
+    def load_session(
+        self,
+    ) -> SyncSession:
+        """
+        Load the persisted synchronization session.
+
+        Raises FileNotFoundError if the Archive Package does not contain
+        a session file.
+        """
+
+        with self._paths.session.open(
+            "r",
+            encoding="utf-8",
+        ) as handle:
+            data = json.load(handle)
+
+        if not isinstance(data, dict):
+            raise ValueError("Archive session must contain a JSON object.")
+
+        return SyncSession.from_json_dict(
+            data,
         )
