@@ -13,6 +13,20 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 
 `The Archive-Sync Engine should be a platform-agnostic synchronization engine that operates solely on canonical models, with every platform-specific concern isolated behind thin adapter interfaces and every business decision centralized within the engine.`
 
+## Archive Engine Files Explanation
+
+### manifest.json
+    Package identity / structural metadata
+    "What is this package?"
+
+### archive.sqlite
+    Canonical archived content + durable provenance
+    "What does this archive contain, and where did it come from?"
+
+### session.json
+    Execution/resume state
+    "What operation is currently/most recently being performed?"
+
 ## Archive Engine High Level Concept
 
 ├── Canonical Model

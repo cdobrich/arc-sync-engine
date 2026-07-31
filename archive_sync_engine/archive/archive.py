@@ -14,12 +14,23 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from archive_sync_engine.models import CanonicalConversation, CanonicalIdentity, CanonicalMessage, CanonicalAttachment, \
-    CanonicalReaction
-from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId, AttachmentId
-from . import ArchiveManifest
-from .package import ArchivePackage
+from archive_sync_engine.models import (
+    CanonicalAttachment,
+    CanonicalConversation,
+    CanonicalIdentity,
+    CanonicalMessage,
+    CanonicalReaction,
+)
+from archive_sync_engine.models.ids import (
+    AttachmentId,
+    ConversationId,
+    IdentityKey,
+    MessageId,
+)
+from archive_sync_engine.models.provenance import CanonicalProvenance
 
+from .manifest import ArchiveManifest
+from .package import ArchivePackage
 from .paths import ArchivePaths
 from .recomposer import ArchiveRecomposer
 from .store import ArchiveStore
@@ -35,7 +46,10 @@ class Archive:
         paths: ArchivePaths,
     ) -> None:
 
-        self._store = ArchiveStore.open(paths)
+        self._store = ArchiveStore.open(
+            paths,
+        )
+
         self._package = ArchivePackage(
             paths,
         )
@@ -66,7 +80,9 @@ class Archive:
 
     def iter_conversations(
         self,
-    ) -> Iterator[CanonicalConversation]:
+    ) -> Iterator[
+        CanonicalConversation
+    ]:
         """
         Iterate over every conversation in the archive.
         """
@@ -77,10 +93,14 @@ class Archive:
     # Lifecycle
     #
 
-    def close(self) -> None:
+    def close(
+        self,
+    ) -> None:
         self._store.close()
 
-    def __enter__(self) -> "Archive":
+    def __enter__(
+        self,
+    ) -> "Archive":
         return self
 
     def __exit__(
@@ -96,8 +116,8 @@ class Archive:
     #
 
     def attachment(
-            self,
-            attachment_id: AttachmentId,
+        self,
+        attachment_id: AttachmentId,
     ) -> CanonicalAttachment | None:
         """
         Retrieve a canonical attachment.
@@ -108,8 +128,10 @@ class Archive:
         )
 
     def iter_attachments(
-            self,
-    ) -> Iterator[CanonicalAttachment]:
+        self,
+    ) -> Iterator[
+        CanonicalAttachment
+    ]:
         """
         Iterate over every canonical attachment.
         """
@@ -128,12 +150,15 @@ class Archive:
         Retrieve a canonical identity.
         """
 
-        return self._store.get_identity(identity_key)
-            
+        return self._store.get_identity(
+            identity_key,
+        )
 
     def iter_identities(
         self,
-    ) -> Iterator[CanonicalIdentity]:
+    ) -> Iterator[
+        CanonicalIdentity
+    ]:
         """
         Iterate over all identities.
         """
@@ -146,7 +171,7 @@ class Archive:
 
     @property
     def manifest(
-            self,
+        self,
     ) -> ArchiveManifest:
         """
         Return the Archive Package manifest.
@@ -155,12 +180,30 @@ class Archive:
         return self._manifest
 
     #
+    # Provenance
+    #
+
+    @property
+    def provenance(
+        self,
+    ) -> CanonicalProvenance:
+        """
+        Return the historical provenance of the Archive Package.
+
+        Provenance records how the archive was imported from source
+        systems and subsequently exported or otherwise used with
+        destination systems.
+        """
+
+        return self._recomposer.recompose_provenance()
+
+    #
     # Messages
     #
 
     def message(
-            self,
-            message_id: MessageId,
+        self,
+        message_id: MessageId,
     ) -> CanonicalMessage | None:
         """
         Retrieve a canonical message.
@@ -171,7 +214,7 @@ class Archive:
         )
 
     def iter_messages(
-            self,
+        self,
     ) -> Iterator[
         CanonicalMessage
     ]:
@@ -180,13 +223,9 @@ class Archive:
         """
 
         for message in self._store.iter_messages():
-
-            reconstructed = self._recomposer.recompose_message(
+            yield self._recomposer.recompose_message(
                 message.id,
             )
-
-            if reconstructed is not None:
-                yield reconstructed
 
     def message_reactions(
         self,
@@ -199,5 +238,3 @@ class Archive:
         return self._store.reactions_for_message(
             message_id,
         )
-
-

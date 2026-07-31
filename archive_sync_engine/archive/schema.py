@@ -104,13 +104,9 @@ class ArchiveSchema:
             CREATE TABLE conversations
             (
                 conversation_id   TEXT PRIMARY KEY,
-            
                 conversation_type TEXT NOT NULL,
-            
                 title             TEXT,
-            
                 parent_id         TEXT,
-            
                 created_at        TEXT,
             
                 FOREIGN KEY (
@@ -124,24 +120,17 @@ class ArchiveSchema:
             CREATE TABLE identities
             (
                 identity_key TEXT PRIMARY KEY,
-
                 display_name TEXT NOT NULL
             );
             
             CREATE TABLE messages
             (
                 message_id TEXT PRIMARY KEY,
-            
                 conversation_id TEXT NOT NULL,
-            
                 identity_key TEXT NOT NULL,
-            
                 created_at TEXT NOT NULL,
-            
                 edited_at TEXT,
-            
                 reply_to_message_id TEXT,
-            
                 content TEXT,
             
                 FOREIGN KEY (
@@ -169,22 +158,16 @@ class ArchiveSchema:
             CREATE TABLE attachments
             (
                 attachment_id TEXT PRIMARY KEY,
-            
                 filename TEXT NOT NULL,
-            
                 content_type TEXT,
-            
                 size INTEGER NOT NULL,
-            
                 sha256 TEXT NOT NULL
             );
             
             CREATE TABLE message_attachments
             (
                 message_id TEXT NOT NULL,
-            
                 attachment_id TEXT NOT NULL,
-            
                 attachment_index INTEGER NOT NULL,
             
                 PRIMARY KEY (
@@ -208,15 +191,10 @@ class ArchiveSchema:
             );
 
             CREATE TABLE message_reactions (
-            
                 message_id TEXT NOT NULL,
-            
                 identity_key TEXT NOT NULL,
-            
                 emoji TEXT NOT NULL,
-            
                 emoji_id TEXT,
-            
                 is_custom INTEGER NOT NULL,
             
                 PRIMARY KEY (
@@ -229,12 +207,36 @@ class ArchiveSchema:
                 FOREIGN KEY (
                     message_id
                 )
-                    REFERENCES messages(id),
+                    REFERENCES messages(message_id),
             
                 FOREIGN KEY (
                     identity_key
                 )
                     REFERENCES identities(identity_key)
+            );
+            
+            CREATE TABLE provenance_endpoints (
+                endpoint_id INTEGER PRIMARY KEY,
+                adapter TEXT NOT NULL,
+                identifier TEXT NOT NULL,
+                name TEXT,
+                UNIQUE (adapter, identifier)
+            );
+            
+            CREATE TABLE provenance_transfers (
+                transfer_id INTEGER PRIMARY KEY,
+                source_endpoint_id INTEGER NOT NULL,
+                destination_endpoint_id INTEGER,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                imported_messages INTEGER NOT NULL,
+                exported_messages INTEGER NOT NULL,
+            
+                FOREIGN KEY (source_endpoint_id)
+                    REFERENCES provenance_endpoints (endpoint_id),
+            
+                FOREIGN KEY (destination_endpoint_id)
+                    REFERENCES provenance_endpoints (endpoint_id)
             );
             """
         )

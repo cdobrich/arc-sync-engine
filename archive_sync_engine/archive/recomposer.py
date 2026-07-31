@@ -6,6 +6,7 @@ from archive_sync_engine.models.message import CanonicalMessage
 from archive_sync_engine.models.reaction import CanonicalReaction
 
 from .store import ArchiveStore
+from archive_sync_engine.models.provenance import CanonicalProvenance
 
 
 class ArchiveRecomposer:
@@ -49,6 +50,20 @@ class ArchiveRecomposer:
             ),
             reactions=self._reactions(
                 message.id,
+            ),
+        )
+
+    def recompose_provenance(
+            self,
+    ) -> CanonicalProvenance:
+        """
+        Recompose the complete canonical provenance history
+        from persistent archive storage.
+        """
+
+        return CanonicalProvenance(
+            history=tuple(
+                self._store.iter_provenance_transfers()
             ),
         )
 

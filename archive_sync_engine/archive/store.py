@@ -10,12 +10,27 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime
 
-from archive_sync_engine.models import CanonicalConversation, CanonicalMessage, CanonicalAttachment, CanonicalReaction
-from archive_sync_engine.models.identity import CanonicalIdentity
-from archive_sync_engine.models.enums import ConversationType
-from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId, AttachmentId, EmojiId
-
 import sqlite3
+
+from archive_sync_engine.models import (
+    CanonicalAttachment,
+    CanonicalConversation,
+    CanonicalMessage,
+    CanonicalReaction,
+)
+from archive_sync_engine.models.enums import ConversationType
+from archive_sync_engine.models.identity import CanonicalIdentity
+from archive_sync_engine.models.ids import (
+    AttachmentId,
+    ConversationId,
+    EmojiId,
+    IdentityKey,
+    MessageId,
+)
+from archive_sync_engine.models.provenance import (
+    CanonicalEndpoint,
+    CanonicalTransfer,
+)
 
 from .paths import ArchivePaths
 from .schema import ArchiveSchema
@@ -86,7 +101,7 @@ class ArchiveStore:
 
     @staticmethod
     def _attachment_parameters(
-            attachment: CanonicalAttachment,
+        attachment: CanonicalAttachment,
     ) -> tuple[
         str,
         str,
@@ -108,7 +123,7 @@ class ArchiveStore:
 
     @staticmethod
     def _row_to_attachment(
-            row: sqlite3.Row,
+        row: sqlite3.Row,
     ) -> CanonicalAttachment:
         """
         Convert a SQLite row into a CanonicalAttachment.
@@ -125,8 +140,8 @@ class ArchiveStore:
         )
 
     def insert_attachment(
-            self,
-            attachment: CanonicalAttachment,
+        self,
+        attachment: CanonicalAttachment,
     ) -> None:
         """
         Persist a canonical attachment.
@@ -149,8 +164,8 @@ class ArchiveStore:
         )
 
     def get_attachment(
-            self,
-            attachment_id: AttachmentId,
+        self,
+        attachment_id: AttachmentId,
     ) -> CanonicalAttachment | None:
         """
         Retrieve a canonical attachment.
@@ -182,10 +197,8 @@ class ArchiveStore:
         )
 
     def iter_attachments(
-            self,
-    ) -> Iterator[
-        CanonicalAttachment
-    ]:
+        self,
+    ) -> Iterator[CanonicalAttachment]:
         """
         Iterate over every canonical attachment.
         """
@@ -210,12 +223,12 @@ class ArchiveStore:
             )
 
     #
-    # Message Attachments and Attachments Relationships
+    # Message Attachments and Attachment Relationships
     #
 
     def attachments_for_message(
-            self,
-            message_id: MessageId,
+        self,
+        message_id: MessageId,
     ) -> Iterator[CanonicalAttachment]:
         """
         Iterate over every attachment belonging to a message.
@@ -247,10 +260,10 @@ class ArchiveStore:
             )
 
     def insert_message_attachment(
-            self,
-            message_id: MessageId,
-            attachment_id: AttachmentId,
-            attachment_index: int,
+        self,
+        message_id: MessageId,
+        attachment_id: AttachmentId,
+        attachment_index: int,
     ) -> None:
         """
         Persist a message/attachment relationship.
@@ -278,8 +291,8 @@ class ArchiveStore:
         )
 
     def messages_for_attachment(
-            self,
-            attachment_id: AttachmentId,
+        self,
+        attachment_id: AttachmentId,
     ) -> Iterator[MessageId]:
         """
         Iterate over every message referencing an attachment.
@@ -310,7 +323,7 @@ class ArchiveStore:
 
     @staticmethod
     def _conversation_parameters(
-            conversation: CanonicalConversation,
+        conversation: CanonicalConversation,
     ) -> tuple[
         str,
         str,
@@ -340,7 +353,7 @@ class ArchiveStore:
 
     @staticmethod
     def _row_to_conversation(
-            row: sqlite3.Row,
+        row: sqlite3.Row,
     ) -> CanonicalConversation:
         """
         Convert a SQLite row into a CanonicalConversation.
@@ -371,8 +384,8 @@ class ArchiveStore:
         )
 
     def insert_conversation(
-            self,
-            conversation: CanonicalConversation,
+        self,
+        conversation: CanonicalConversation,
     ) -> None:
         """
         Persist a CanonicalConversation.
@@ -395,8 +408,8 @@ class ArchiveStore:
         )
 
     def get_conversation(
-            self,
-            conversation_id: ConversationId,
+        self,
+        conversation_id: ConversationId,
     ) -> CanonicalConversation | None:
         """
         Retrieve a canonical conversation.
@@ -428,10 +441,8 @@ class ArchiveStore:
         )
 
     def iter_conversations(
-            self,
-    ) -> Iterator[
-        CanonicalConversation
-    ]:
+        self,
+    ) -> Iterator[CanonicalConversation]:
         """
         Iterate over every canonical conversation.
         """
@@ -457,37 +468,7 @@ class ArchiveStore:
             )
 
     #
-    # Transactions
-    #
-
-    def commit(
-        self,
-    ) -> None:
-        """
-        Commit the current SQLite transaction.
-        """
-
-        self._connection.commit()
-
-
-    def rollback(
-        self,
-    ) -> None:
-        """
-        Roll back the current SQLite transaction.
-        """
-
-        self._connection.rollback()
-
-    #
-    # Lifecycle
-    #
-
-    def close(self) -> None:
-        self._connection.close()
-
-    #
-    # Identity mapping
+    # Identity Mapping
     #
 
     @staticmethod
@@ -503,7 +484,6 @@ class ArchiveStore:
             identity.display_name,
         )
 
-
     @staticmethod
     def _row_to_identity(
         row: sqlite3.Row,
@@ -516,7 +496,7 @@ class ArchiveStore:
             identity_key=row["identity_key"],
             display_name=row["display_name"],
         )
-    
+
     def insert_identity(
         self,
         identity: CanonicalIdentity,
@@ -533,9 +513,11 @@ class ArchiveStore:
             )
             VALUES (?, ?)
             """,
-            self._identity_parameters(identity),
+            self._identity_parameters(
+                identity,
+            ),
         )
-    
+
     def get_identity(
         self,
         identity_key: IdentityKey,
@@ -552,7 +534,9 @@ class ArchiveStore:
             FROM identities
             WHERE identity_key = ?
             """,
-            (identity_key,),
+            (
+                identity_key,
+            ),
         )
 
         row = cursor.fetchone()
@@ -560,7 +544,9 @@ class ArchiveStore:
         if row is None:
             return None
 
-        return self._row_to_identity(row)
+        return self._row_to_identity(
+            row,
+        )
 
     def iter_identities(
         self,
@@ -575,20 +561,23 @@ class ArchiveStore:
                 identity_key,
                 display_name
             FROM identities
-            ORDER BY identity_key
+            ORDER BY
+                identity_key
             """
         )
 
         for row in cursor:
-            yield self._row_to_identity(row)
+            yield self._row_to_identity(
+                row,
+            )
 
     #
     # Messages
     #
 
     def insert_message(
-            self,
-            message: CanonicalMessage,
+        self,
+        message: CanonicalMessage,
     ) -> None:
         """
         Persist a canonical message.
@@ -613,8 +602,8 @@ class ArchiveStore:
         )
 
     def get_message(
-            self,
-            message_id: MessageId,
+        self,
+        message_id: MessageId,
     ) -> CanonicalMessage | None:
         """
         Retrieve a canonical message (the message core).
@@ -648,10 +637,8 @@ class ArchiveStore:
         )
 
     def iter_messages(
-            self,
-    ) -> Iterator[
-        CanonicalMessage
-    ]:
+        self,
+    ) -> Iterator[CanonicalMessage]:
         """
         Iterate over every canonical message.
         """
@@ -679,7 +666,7 @@ class ArchiveStore:
             )
 
     #
-    # Message mapping
+    # Message Mapping
     #
 
     @staticmethod
@@ -694,6 +681,9 @@ class ArchiveStore:
         str | None,
         str | None,
     ]:
+        """
+        Convert a CanonicalMessage into SQL parameters.
+        """
 
         return (
             str(message.id),
@@ -717,9 +707,14 @@ class ArchiveStore:
     def _row_to_message(
         row: sqlite3.Row,
     ) -> CanonicalMessage:
+        """
+        Convert a SQLite row into a CanonicalMessage core.
+        """
 
         return CanonicalMessage(
-            id=MessageId(row["message_id"]),
+            id=MessageId(
+                row["message_id"],
+            ),
             conversation_id=ConversationId(
                 row["conversation_id"],
             ),
@@ -731,27 +726,31 @@ class ArchiveStore:
             ),
             edited_at=(
                 datetime.fromisoformat(
-                row["edited_at"],
-            )
-            if row["edited_at"] is not None
-            else None
-        ),
-        reply_to=(
-            MessageId(
-                row["reply_to_message_id"],
-            )
-            if row["reply_to_message_id"] is not None
-            else None
-        ),
-        content=row["content"],
-        attachments=(),
-        reactions=(),
-    )
+                    row["edited_at"],
+                )
+                if row["edited_at"] is not None
+                else None
+            ),
+            reply_to=(
+                MessageId(
+                    row["reply_to_message_id"],
+                )
+                if row["reply_to_message_id"] is not None
+                else None
+            ),
+            content=row["content"],
+            attachments=(),
+            reactions=(),
+        )
+
+    #
+    # Message Reactions
+    #
 
     def _message_reaction_parameters(
-            self,
-            message_id: MessageId,
-            reaction: CanonicalReaction,
+        self,
+        message_id: MessageId,
+        reaction: CanonicalReaction,
     ) -> tuple[object, ...]:
         """
         Convert a CanonicalReaction into database parameters.
@@ -770,8 +769,8 @@ class ArchiveStore:
         )
 
     def _row_to_message_reaction(
-            self,
-            row: sqlite3.Row,
+        self,
+        row: sqlite3.Row,
     ) -> CanonicalReaction:
         """
         Convert a database row into a CanonicalReaction.
@@ -795,9 +794,9 @@ class ArchiveStore:
         )
 
     def insert_message_reaction(
-            self,
-            message_id: MessageId,
-            reaction: CanonicalReaction,
+        self,
+        message_id: MessageId,
+        reaction: CanonicalReaction,
     ) -> None:
         """
         Persist a reaction belonging to a message.
@@ -821,8 +820,8 @@ class ArchiveStore:
         )
 
     def reactions_for_message(
-            self,
-            message_id: MessageId,
+        self,
+        message_id: MessageId,
     ) -> Iterator[CanonicalReaction]:
         """
         Iterate over reactions belonging to a message.
@@ -853,8 +852,8 @@ class ArchiveStore:
             )
 
     def delete_message_reactions(
-            self,
-            message_id: MessageId,
+        self,
+        message_id: MessageId,
     ) -> None:
         """
         Remove all reactions belonging to a message.
@@ -869,3 +868,357 @@ class ArchiveStore:
                 str(message_id),
             ),
         )
+
+    #
+    # Provenance
+    #
+
+    @staticmethod
+    def _provenance_endpoint_parameters(
+        endpoint: CanonicalEndpoint,
+    ) -> tuple[
+        str,
+        str,
+        str | None,
+    ]:
+        """
+        Convert a CanonicalEndpoint into SQL parameters.
+        """
+
+        return (
+            endpoint.adapter,
+            endpoint.identifier,
+            endpoint.name,
+        )
+
+    @staticmethod
+    def _row_to_provenance_endpoint(
+        row: sqlite3.Row,
+    ) -> CanonicalEndpoint:
+        """
+        Convert a SQLite row into a CanonicalEndpoint.
+        """
+
+        return CanonicalEndpoint(
+            adapter=row["adapter"],
+            identifier=row["identifier"],
+            name=row["name"],
+        )
+
+    def insert_provenance_endpoint(
+        self,
+        endpoint: CanonicalEndpoint,
+    ) -> None:
+        """
+        Persist a canonical provenance endpoint.
+
+        Endpoint identity is defined by its adapter and identifier.
+        """
+
+        self._connection.execute(
+            """
+            INSERT INTO provenance_endpoints (
+                adapter,
+                identifier,
+                name
+            )
+            VALUES (?, ?, ?)
+            ON CONFLICT (
+                adapter,
+                identifier
+            )
+            DO UPDATE SET
+                name = excluded.name
+            """,
+            self._provenance_endpoint_parameters(
+                endpoint,
+            ),
+        )
+
+    def get_provenance_endpoint(
+        self,
+        adapter: str,
+        identifier: str,
+    ) -> CanonicalEndpoint | None:
+        """
+        Retrieve a provenance endpoint by adapter and identifier.
+        """
+
+        cursor = self._connection.execute(
+            """
+            SELECT
+                adapter,
+                identifier,
+                name
+            FROM provenance_endpoints
+            WHERE adapter = ?
+              AND identifier = ?
+            """,
+            (
+                adapter,
+                identifier,
+            ),
+        )
+
+        row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        return self._row_to_provenance_endpoint(
+            row,
+        )
+
+    def iter_provenance_endpoints(
+        self,
+    ) -> Iterator[CanonicalEndpoint]:
+        """
+        Iterate over every canonical provenance endpoint.
+        """
+
+        cursor = self._connection.execute(
+            """
+            SELECT
+                adapter,
+                identifier,
+                name
+            FROM provenance_endpoints
+            ORDER BY
+                adapter,
+                identifier
+            """
+        )
+
+        for row in cursor:
+            yield self._row_to_provenance_endpoint(
+                row,
+            )
+
+    def _provenance_endpoint_id(
+        self,
+        endpoint: CanonicalEndpoint,
+    ) -> int:
+        """
+        Retrieve the SQLite identifier for a provenance endpoint.
+
+        The SQLite identifier is an internal persistence detail and is
+        never exposed through the canonical model.
+        """
+
+        row = self._connection.execute(
+            """
+            SELECT endpoint_id
+            FROM provenance_endpoints
+            WHERE adapter = ?
+              AND identifier = ?
+            """,
+            (
+                endpoint.adapter,
+                endpoint.identifier,
+            ),
+        ).fetchone()
+
+        if row is None:
+            raise RuntimeError(
+                "Provenance endpoint was not found after insertion."
+            )
+
+        return int(
+            row["endpoint_id"],
+        )
+
+    @staticmethod
+    def _provenance_transfer_parameters(
+        transfer: CanonicalTransfer,
+        source_endpoint_id: int,
+        destination_endpoint_id: int | None,
+    ) -> tuple[
+        int,
+        int | None,
+        str,
+        str | None,
+        int,
+        int,
+    ]:
+        """
+        Convert a CanonicalTransfer into SQL parameters.
+        """
+
+        return (
+            source_endpoint_id,
+            destination_endpoint_id,
+            transfer.started_at.isoformat(),
+            (
+                transfer.finished_at.isoformat()
+                if transfer.finished_at is not None
+                else None
+            ),
+            transfer.imported_messages,
+            transfer.exported_messages,
+        )
+
+    @staticmethod
+    def _row_to_provenance_transfer(
+        row: sqlite3.Row,
+    ) -> CanonicalTransfer:
+        """
+        Convert a SQLite row into a CanonicalTransfer.
+        """
+
+        source = CanonicalEndpoint(
+            adapter=row["source_adapter"],
+            identifier=row["source_identifier"],
+            name=row["source_name"],
+        )
+
+        destination = None
+
+        if row["destination_endpoint_id"] is not None:
+            destination = CanonicalEndpoint(
+                adapter=row["destination_adapter"],
+                identifier=row["destination_identifier"],
+                name=row["destination_name"],
+            )
+
+        return CanonicalTransfer(
+            source=source,
+            destination=destination,
+            started_at=datetime.fromisoformat(
+                row["started_at"],
+            ),
+            finished_at=(
+                datetime.fromisoformat(
+                    row["finished_at"],
+                )
+                if row["finished_at"] is not None
+                else None
+            ),
+            imported_messages=row["imported_messages"],
+            exported_messages=row["exported_messages"],
+        )
+
+    def insert_provenance_transfer(
+        self,
+        transfer: CanonicalTransfer,
+    ) -> None:
+        """
+        Persist a canonical provenance transfer.
+        """
+
+        self.insert_provenance_endpoint(
+            transfer.source,
+        )
+
+        source_endpoint_id = self._provenance_endpoint_id(
+            transfer.source,
+        )
+
+        destination_endpoint_id = None
+
+        if transfer.destination is not None:
+
+            self.insert_provenance_endpoint(
+                transfer.destination,
+            )
+
+            destination_endpoint_id = (
+                self._provenance_endpoint_id(
+                    transfer.destination,
+                )
+            )
+
+        self._connection.execute(
+            """
+            INSERT INTO provenance_transfers (
+                source_endpoint_id,
+                destination_endpoint_id,
+                started_at,
+                finished_at,
+                imported_messages,
+                exported_messages
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            self._provenance_transfer_parameters(
+                transfer,
+                source_endpoint_id,
+                destination_endpoint_id,
+            ),
+        )
+
+    def iter_provenance_transfers(
+        self,
+    ) -> Iterator[CanonicalTransfer]:
+        """
+        Iterate over every canonical provenance transfer in historical order.
+        """
+
+        cursor = self._connection.execute(
+            """
+            SELECT
+                pt.source_endpoint_id,
+                pt.destination_endpoint_id,
+                pt.started_at,
+                pt.finished_at,
+                pt.imported_messages,
+                pt.exported_messages,
+
+                source.adapter AS source_adapter,
+                source.identifier AS source_identifier,
+                source.name AS source_name,
+
+                destination.adapter AS destination_adapter,
+                destination.identifier AS destination_identifier,
+                destination.name AS destination_name
+
+            FROM provenance_transfers AS pt
+
+            INNER JOIN provenance_endpoints AS source
+                ON source.endpoint_id = pt.source_endpoint_id
+
+            LEFT JOIN provenance_endpoints AS destination
+                ON destination.endpoint_id =
+                    pt.destination_endpoint_id
+
+            ORDER BY
+                pt.started_at,
+                pt.transfer_id
+            """
+        )
+
+        for row in cursor:
+            yield self._row_to_provenance_transfer(
+                row,
+            )
+
+    #
+    # Transactions
+    #
+
+    def commit(
+        self,
+    ) -> None:
+        """
+        Commit the current SQLite transaction.
+        """
+
+        self._connection.commit()
+
+    def rollback(
+        self,
+    ) -> None:
+        """
+        Roll back the current SQLite transaction.
+        """
+
+        self._connection.rollback()
+
+    #
+    # Lifecycle
+    #
+
+    def close(
+        self,
+    ) -> None:
+        self._connection.close()
+

@@ -24,12 +24,12 @@ from archive_sync_engine.models import (
     CanonicalConversation,
     CanonicalIdentity, CanonicalMessage, CanonicalAttachment,
 )
-from . import ArchiveManifest
 from .package import ArchivePackage
 
 from .paths import ArchivePaths
 from .store import ArchiveStore
-from ..models.ids import AttachmentId, IdentityKey, EmojiId
+from archive_sync_engine.models.ids import AttachmentId, IdentityKey, EmojiId
+from archive_sync_engine.models.provenance import CanonicalProvenance, CanonicalTransfer
 
 
 class ArchiveWriter:
@@ -187,6 +187,43 @@ class ArchiveWriter:
                 message.id,
                 attachment.id,
                 attachment_index,
+            )
+
+    #
+    # Provenance
+    #
+
+    def record_transfer(
+            self,
+            transfer: CanonicalTransfer,
+    ) -> None:
+        """
+        Persist one provenance transfer record.
+
+        Existing provenance history is preserved. This method is intended
+        for incremental recording of archive activity, including
+        semi-continuous export or duplication operations.
+        """
+
+        self._store.insert_provenance_transfer(
+            transfer,
+        )
+
+    def write_provenance(
+            self,
+            provenance: CanonicalProvenance,
+    ) -> None:
+        """
+        Persist canonical archive provenance.
+
+        Each transfer in the provenance history is stored as an
+        individual historical record. The caller controls transaction
+        boundaries through commit() and rollback().
+        """
+
+        for transfer in provenance.history:
+            self._store.insert_provenance_transfer(
+                transfer,
             )
 
     #
