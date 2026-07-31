@@ -24,19 +24,11 @@ class DestinationCapabilities:
     """
 
     supports_threads: bool = False
-
     supports_message_editing: bool = True
-
     supports_message_deletion: bool = True
-
     supports_message_pinning: bool = True
-
     supports_reactions: bool = True
-
     supports_custom_emoji: bool = True
-
     supports_attachments: bool = True
-
     supports_replying: bool = True
-
     supports_identity_updates: bool = False

@@ -18,17 +18,17 @@ from archive_sync_engine.models import (
     CanonicalConversation,
     CanonicalIdentity,
     CanonicalMessage,
+    CanonicalReaction,
 )
+from archive_sync_engine.models.ids import ConversationId, MessageId
 
+from .capabilities import DestinationCapabilities
 from .references import (
     DestinationAttachmentRef,
     DestinationConversationRef,
     DestinationIdentityRef,
     DestinationMessageRef,
 )
-
-from .capabilities import DestinationCapabilities
-
 
 class DestinationAdapter(ABC):
     """
@@ -58,9 +58,26 @@ class DestinationAdapter(ABC):
     ) -> DestinationConversationRef:
         """
         Create a conversation.
+        """
+        raise NotImplementedError
 
-        Returns the destination reference created by the destination
-        platform.
+    @abstractmethod
+    def update_conversation(
+        self,
+        conversation: CanonicalConversation,
+    ) -> None:
+        """
+        Update an existing conversation.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_conversation(
+        self,
+        conversation_id: ConversationId,
+    ) -> None:
+        """
+        Delete an existing conversation.
         """
         raise NotImplementedError
 
@@ -72,9 +89,16 @@ class DestinationAdapter(ABC):
         """
         Create or reconcile a logical identity on the destination
         platform.
+        """
+        raise NotImplementedError
 
-        Adapters for platforms that do not expose identity management
-        may treat this operation as a no-op.
+    @abstractmethod
+    def update_identity(
+        self,
+        identity: CanonicalIdentity,
+    ) -> None:
+        """
+        Update an existing destination identity.
         """
         raise NotImplementedError
 
@@ -115,17 +139,17 @@ class DestinationAdapter(ABC):
     @abstractmethod
     def delete_message(
         self,
-        message: CanonicalMessage,
+        message_id: MessageId,
     ) -> None:
         """
-        Delete a destination message.
+        Delete an existing destination message.
         """
         raise NotImplementedError
 
     @abstractmethod
     def pin_message(
         self,
-        message: CanonicalMessage,
+        message_id: MessageId,
     ) -> None:
         """
         Pin a destination message.
@@ -133,11 +157,33 @@ class DestinationAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def add_reactions(
+    def unpin_message(
         self,
-        message: CanonicalMessage,
+        message_id: MessageId,
     ) -> None:
         """
-        Synchronize the reactions associated with a message.
+        Unpin a destination message.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_reaction(
+        self,
+        message_id: MessageId,
+        reaction: CanonicalReaction,
+    ) -> None:
+        """
+        Add a reaction to a destination message.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def remove_reaction(
+        self,
+        message_id: MessageId,
+        reaction: CanonicalReaction,
+    ) -> None:
+        """
+        Remove a reaction from a destination message.
         """
         raise NotImplementedError

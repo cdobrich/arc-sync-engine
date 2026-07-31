@@ -77,6 +77,8 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 
 > Design principle: callers interact with canonical aggregates, while ArchiveWriter decomposes those aggregates into normalized tables managed by ArchiveStore.
 
+> Tests protect meaningful architectural or behavioral contracts; they are not the project deliverable.
+
 ## Archive & ArchiveWriter
 
 Writing Design:

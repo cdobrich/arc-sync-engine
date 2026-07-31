@@ -12,7 +12,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from archive_sync_engine.executor import ExecutionResult
 from archive_sync_engine.importer import ImportSession
+from archive_sync_engine.operations import SyncOperation
 from archive_sync_engine.sync import SynchronizationState
 
 
@@ -57,11 +59,17 @@ class StateRepository(ABC):
 
     @abstractmethod
     def record_execution(
-        self,
-        operation: SyncOperation,
-        result: ExecutionResult,
+            self,
+            operation: SyncOperation,
+            result: ExecutionResult,
+            synchronization_state: SynchronizationState,
     ) -> None:
         """
         Persist synchronization metadata resulting from a
         successfully executed operation.
+
+        The supplied synchronization state represents the complete
+        post-execution snapshot and must be persisted atomically with
+        the execution metadata.
         """
+        raise NotImplementedError

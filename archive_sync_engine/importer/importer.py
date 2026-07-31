@@ -2,7 +2,7 @@
 Importer interface.
 
 An Importer performs the mechanics of importing canonical data from a
-SourceAdapter into the Archive.
+SourceAdapter into an Archive Package.
 
 Importers do not own import sessions, checkpointing, retry behaviour,
 or pause/resume functionality. Those responsibilities belong to the
@@ -14,7 +14,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from archive_sync_engine.adapters import SourceAdapter
-from archive_sync_engine.archive import Archive
+from archive_sync_engine.archive.writer import ArchiveWriter
 from archive_sync_engine.asset_store import AssetStore
 
 
@@ -27,18 +27,18 @@ class Importer(ABC):
     def import_source(
         self,
         source: SourceAdapter,
-        archive: Archive,
+        writer: ArchiveWriter,
         asset_store: AssetStore,
     ) -> None:
         """
-        Import all available canonical information from the source.
+        Import canonical information from the source.
 
-        Implementations should translate platform-specific data into
-        canonical models and populate the Archive and AssetStore.
+        Implementations translate platform-specific source data into
+        canonical models and persist those models through ArchiveWriter.
 
-        This method performs import work only.
+        Asset bytes are persisted through AssetStore.
 
         Session lifecycle, checkpointing, retries, and progress reporting
-        are managed by the ImportCoordinator.
+        remain the responsibility of ImportCoordinator.
         """
         raise NotImplementedError

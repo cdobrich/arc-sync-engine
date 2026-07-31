@@ -13,9 +13,10 @@ Instead they store engine metadata such as:
 - importer state
 - future planner metadata
 """
-
+from .in_memory_state_repository import InMemoryStateRepository
 from .state_repository import StateRepository
 
 __all__ = [
+    "InMemoryStateRepository",
     "StateRepository",
 ]
