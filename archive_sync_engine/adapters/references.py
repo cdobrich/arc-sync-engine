@@ -1,65 +1,49 @@
 """
-Platform adapter interfaces.
+Opaque references returned by destination adapters.
 
-Adapters are the only components that understand platform-specific
-concepts such as Discord, Fluxer, or future messaging services.
+Destination references identify objects created or resolved on a
+destination platform.
 
-The Archive Engine communicates exclusively through the interfaces
-defined in this package. Adapters are responsible for translating
-between platform-specific representations and the canonical models.
-
-Two primary adapter roles exist:
-
-    • SourceAdapter
-        Reads conversations, messages, identities,
-        reactions, and assets from a source platform.
-
-    • DestinationAdapter
-        Creates and updates conversations, messages,
-        reactions, and assets on a destination platform.
-
-Adapters contain no synchronization logic.
-Planning, reconciliation, and execution remain the responsibility
-of the Archive Engine.
+They are intentionally separate from canonical model identifiers.
+A destination reference must never be treated as a canonical ID.
 """
 
-from .capabilities import DestinationCapabilities
-from .destination import DestinationAdapter
-from .exceptions import (
-    AdapterError,
-    AuthenticationError,
-    AuthorizationError,
-    CapabilityError,
-    ConflictError,
-    NotFoundError,
-    RateLimitError,
-)
-from .references import (
-    DestinationAttachmentRef,
-    DestinationConversationRef,
-    DestinationIdentityRef,
-    DestinationMessageRef,
-)
-from .source import SourceAdapter
+from __future__ import annotations
 
-__all__ = [
-    "AdapterError",
-    "AuthenticationError",
-    "AuthorizationError",
-    "CapabilityError",
-    "ConflictError",
-    "DestinationAdapter",
-    "DestinationAttachmentRef",
-    "DestinationCapabilities",
-    "DestinationConversationRef",
-    "DestinationIdentityRef",
-    "DestinationMessageRef",
-    "NotFoundError",
-    "RateLimitError",
-    "SourceAdapter",
-]
+from dataclasses import dataclass
 
-class PlatformMessageRef:
+
+@dataclass(frozen=True, slots=True)
+class DestinationConversationRef:
     """
-    Opaque identifier assigned by a destination platform.
+    Opaque reference to a destination conversation.
     """
+
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DestinationIdentityRef:
+    """
+    Opaque reference to a destination identity.
+    """
+
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DestinationMessageRef:
+    """
+    Opaque reference to a destination message.
+    """
+
+    id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DestinationAttachmentRef:
+    """
+    Opaque reference to a destination attachment.
+    """
+
+    id: str

@@ -34,12 +34,7 @@ from .exceptions import (
     NotFoundError,
     RateLimitError,
 )
-from .references import (
-    DestinationAttachmentRef,
-    DestinationConversationRef,
-    DestinationIdentityRef,
-    DestinationMessageRef,
-)
+
 from .source import SourceAdapter
 
 __all__ = [
