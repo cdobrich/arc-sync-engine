@@ -1,31 +1,23 @@
 """
-Tests for the initial destination execution vertical slice.
+Tests for the default synchronization operation executor.
 """
 
 from __future__ import annotations
+from unittest.mock import Mock
 
-from datetime import datetime
-from datetime import timezone
-from pathlib import Path
+import pytest
 
-from archive_sync_engine.adapters.capabilities import (
-    DestinationCapabilities,
-)
-from archive_sync_engine.adapters.destination import (
-    DestinationAdapter,
-)
+from archive_sync_engine.adapters import DestinationAdapter
 from archive_sync_engine.adapters.references import (
-    DestinationAttachmentRef,
     DestinationConversationRef,
     DestinationIdentityRef,
     DestinationMessageRef,
 )
-from archive_sync_engine.archive.archive import Archive
-from archive_sync_engine.archive.paths import ArchivePaths
-from archive_sync_engine.archive.writer import ArchiveWriter
-from archive_sync_engine.executor.executor import OperationExecutor
+from archive_sync_engine.executor import ExecutionResult
+from archive_sync_engine.executor.executor import (
+    OperationExecutor,
+)
 from archive_sync_engine.models import (
-    CanonicalAttachment,
     CanonicalConversation,
     CanonicalIdentity,
     CanonicalMessage,
@@ -37,314 +29,408 @@ from archive_sync_engine.models.ids import (
     IdentityKey,
     MessageId,
 )
-
-
-EXPECTED_IDENTITY = CanonicalIdentity(
-    identity_key=IdentityKey(
-        "user-001",
-    ),
-    display_name="Test User",
+from archive_sync_engine.operations import (
+    AddReactionOperation,
+    CreateConversationOperation,
+    CreateIdentityOperation,
+    CreateMessageOperation,
+    DeleteConversationOperation,
+    DeleteMessageOperation,
+    EditMessageOperation,
+    PinMessageOperation,
+    RemoveReactionOperation,
+    SyncOperation,
+    UnpinMessageOperation,
+    UpdateConversationOperation,
+    UpdateIdentityOperation,
 )
 
-
-EXPECTED_CONVERSATION = CanonicalConversation(
-    id=ConversationId(
-        "conversation-001",
-    ),
-    conversation_type=ConversationType.CHANNEL,
-    title="Test Conversation",
-    created_at=datetime(
-        2026,
-        7,
-        30,
-        17,
-        0,
-        tzinfo=timezone.utc,
-    ),
-)
-
-
-EXPECTED_MESSAGE = CanonicalMessage(
-    id=MessageId(
-        "message-001",
-    ),
-    conversation_id=EXPECTED_CONVERSATION.id,
-    identity_key=EXPECTED_IDENTITY.identity_key,
-    content="Hello from the archive.",
-    created_at=datetime(
-        2026,
-        7,
-        30,
-        18,
-        0,
-        tzinfo=timezone.utc,
-    ),
-)
-
-
-class FakeDestinationAdapter(
-    DestinationAdapter,
-):
+class UnsupportedOperation(SyncOperation):
     """
-    Deterministic destination used by Executor tests.
+    Operation used to verify unsupported-operation handling.
     """
 
-    def __init__(
-        self,
-    ) -> None:
-        self.created_conversations = []
-        self.created_messages = []
-
-    @property
-    def name(
-        self,
-    ) -> str:
-        return "Fake Destination"
-
-    @property
-    def capabilities(
-        self,
-    ) -> DestinationCapabilities:
-        return DestinationCapabilities()
-
-    def create_conversation(
-        self,
-        conversation: CanonicalConversation,
-    ) -> DestinationConversationRef:
-
-        self.created_conversations.append(
-            conversation,
-        )
-
-        return DestinationConversationRef(
-            id=f"destination-{conversation.id}",
-        )
-
-    def update_conversation(
-        self,
-        conversation: CanonicalConversation,
-    ) -> None:
-        raise NotImplementedError
-
-    def delete_conversation(
-        self,
-        conversation_id: ConversationId,
-    ) -> None:
-        raise NotImplementedError
-
-    def create_identity(
-        self,
-        identity: CanonicalIdentity,
-    ) -> DestinationIdentityRef:
-        raise NotImplementedError
-
-    def update_identity(
-        self,
-        identity: CanonicalIdentity,
-    ) -> None:
-        raise NotImplementedError
-
-    def upload_attachment(
-        self,
-        attachment: CanonicalAttachment,
-        data: bytes,
-    ) -> DestinationAttachmentRef:
-        raise NotImplementedError
-
-    def create_message(
-        self,
-        message: CanonicalMessage,
-    ) -> DestinationMessageRef:
-
-        self.created_messages.append(
-            message,
-        )
-
-        return DestinationMessageRef(
-            id=f"destination-{message.id}",
-        )
-
-    def edit_message(
-        self,
-        message: CanonicalMessage,
-    ) -> None:
-        raise NotImplementedError
-
-    def delete_message(
-        self,
-        message_id: MessageId,
-    ) -> None:
-        raise NotImplementedError
-
-    def pin_message(
-        self,
-        message_id: MessageId,
-    ) -> None:
-        raise NotImplementedError
-
-    def unpin_message(
-        self,
-        message_id: MessageId,
-    ) -> None:
-        raise NotImplementedError
-
-    def add_reaction(
-        self,
-        message_id: MessageId,
-        reaction: CanonicalReaction,
-    ) -> None:
-        raise NotImplementedError
-
-    def remove_reaction(
-        self,
-        message_id: MessageId,
-        reaction: CanonicalReaction,
-    ) -> None:
-        raise NotImplementedError
-
-
-def _create_archive(
-    paths: ArchivePaths,
-) -> None:
+def _destination() -> Mock:
     """
-    Create a deterministic archive containing the expected test data.
+    Create a mock DestinationAdapter.
     """
-
-    with ArchiveWriter(
-        paths,
-    ) as writer:
-
-        writer.add_identity(
-            EXPECTED_IDENTITY,
-        )
-
-        writer.add_conversation(
-            EXPECTED_CONVERSATION,
-        )
-
-        writer.add_message(
-            EXPECTED_MESSAGE,
-        )
-
-
-def test_executor_creates_archive_conversation_and_message(
-    tmp_path: Path,
-) -> None:
-    """
-    Executor creates the canonical conversation and message on the
-    destination.
-    """
-
-    paths = ArchivePaths(
-        root=tmp_path,
-    )
-
-    _create_archive(
-        paths,
-    )
-
-    destination = FakeDestinationAdapter()
-
-    with Archive(
-        paths,
-    ) as archive:
-
-        result = OperationExecutor().execute(
-            archive,
-            destination,
-        )
-
-    assert destination.created_conversations == [
-        EXPECTED_CONVERSATION,
-    ]
-
-    assert destination.created_messages == [
-        EXPECTED_MESSAGE,
-    ]
-
-    assert result.conversations[
-        EXPECTED_CONVERSATION.id
-    ] == DestinationConversationRef(
-        id=f"destination-{EXPECTED_CONVERSATION.id}",
-    )
-
-    assert result.messages[
-        EXPECTED_MESSAGE.id
-    ] == DestinationMessageRef(
-        id=f"destination-{EXPECTED_MESSAGE.id}",
+    return Mock(
+        spec=DestinationAdapter,
     )
 
 
-def test_executor_creates_conversation_before_messages(
-    tmp_path: Path,
-) -> None:
+def _conversation() -> CanonicalConversation:
     """
-    Executor creates a conversation before creating messages belonging
-    to that conversation.
+    Create a minimal canonical conversation.
     """
 
-    paths = ArchivePaths(
-        root=tmp_path,
+
+    return CanonicalConversation(
+        id=ConversationId("conversation-001"),
+        conversation_type=ConversationType.CHANNEL,
+        title="General",
     )
 
-    _create_archive(
-        paths,
+
+def _identity() -> CanonicalIdentity:
+    """
+    Create a minimal canonical identity.
+    """
+
+
+    return CanonicalIdentity(
+        identity_key=IdentityKey("identity-001"),
+        display_name="Example User",
     )
 
-    events = []
 
-    class OrderedDestination(
-        FakeDestinationAdapter,
+def _message() -> CanonicalMessage:
+    """
+    Create a minimal canonical message.
+    """
+
+
+    from datetime import datetime, timezone
+
+    return CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="Hello world.",
+        created_at=datetime(
+            2026,
+            7,
+            31,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        ),
+    )
+
+
+def _reaction() -> CanonicalReaction:
+    """
+    Create a minimal canonical reaction.
+    """
+
+    return CanonicalReaction(
+        identity_key=IdentityKey("identity-001"),
+        emoji="👍",
+    )
+
+
+def test_create_conversation_dispatches_and_returns_reference() -> None:
+    destination = _destination()
+
+
+    destination_ref = DestinationConversationRef(
+        "destination-conversation-001",
+    )
+
+    destination.create_conversation.return_value = destination_ref
+
+    operation = CreateConversationOperation(
+        conversation=_conversation(),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.create_conversation.assert_called_once_with(
+        operation.conversation,
+    )
+
+    assert result.conversation == destination_ref
+    assert result.identity is None
+    assert result.message is None
+    assert result.canonical_id == "conversation-001"
+
+
+def test_update_conversation_dispatches() -> None:
+    destination = _destination()
+
+
+    operation = UpdateConversationOperation(
+        conversation=_conversation(),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.update_conversation.assert_called_once_with(
+        operation.conversation,
+    )
+
+    assert result.conversation is None
+    assert result.identity is None
+    assert result.message is None
+    assert result.canonical_id == "conversation-001"
+
+
+def test_delete_conversation_dispatches() -> None:
+    destination = _destination()
+
+
+    operation = DeleteConversationOperation(
+        conversation_id=ConversationId(
+            "conversation-001",
+        ),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.delete_conversation.assert_called_once_with(
+        operation.conversation_id,
+    )
+
+    assert result.conversation is None
+    assert result.identity is None
+    assert result.message is None
+    assert result.canonical_id == "conversation-001"
+
+
+def test_create_identity_dispatches_and_returns_reference() -> None:
+    destination = _destination()
+
+
+    destination_ref = DestinationIdentityRef(
+        "destination-identity-001",
+    )
+
+    destination.create_identity.return_value = destination_ref
+
+    operation = CreateIdentityOperation(
+        identity=_identity(),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.create_identity.assert_called_once_with(
+        operation.identity,
+    )
+
+    assert result.identity == destination_ref
+    assert result.conversation is None
+    assert result.message is None
+    assert result.canonical_id == "identity-001"
+
+
+def test_update_identity_dispatches() -> None:
+    destination = _destination()
+
+
+    operation = UpdateIdentityOperation(
+        identity=_identity(),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.update_identity.assert_called_once_with(
+        operation.identity,
+    )
+
+    assert result.conversation is None
+    assert result.identity is None
+    assert result.message is None
+    assert result.canonical_id == "identity-001"
+
+
+def test_create_message_dispatches_and_returns_reference() -> None:
+    destination = _destination()
+
+
+    destination_ref = DestinationMessageRef(
+        "destination-message-001",
+    )
+
+    destination.create_message.return_value = destination_ref
+
+    operation = CreateMessageOperation(
+        message=_message(),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.create_message.assert_called_once_with(
+        operation.message,
+    )
+
+    assert result.message == destination_ref
+    assert result.conversation is None
+    assert result.identity is None
+    assert result.canonical_id == "message-001"
+
+
+def test_edit_message_dispatches() -> None:
+    destination = _destination()
+
+
+    operation = EditMessageOperation(
+        message=_message(),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.edit_message.assert_called_once_with(
+        operation.message,
+    )
+
+    assert result.conversation is None
+    assert result.identity is None
+    assert result.message is None
+    assert result.canonical_id == "message-001"
+
+
+def test_delete_message_dispatches() -> None:
+    destination = _destination()
+
+
+    operation = DeleteMessageOperation(
+        message_id=MessageId("message-001"),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.delete_message.assert_called_once_with(
+        operation.message_id,
+    )
+
+    assert result.conversation is None
+    assert result.identity is None
+    assert result.message is None
+    assert result.canonical_id == "message-001"
+
+
+def test_pin_message_dispatches() -> None:
+    destination = _destination()
+
+
+    operation = PinMessageOperation(
+        message_id=MessageId("message-001"),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.pin_message.assert_called_once_with(
+        operation.message_id,
+    )
+
+    assert result.conversation is None
+    assert result.identity is None
+    assert result.message is None
+
+
+def test_unpin_message_dispatches() -> None:
+    destination = _destination()
+
+
+    operation = UnpinMessageOperation(
+        message_id=MessageId("message-001"),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.unpin_message.assert_called_once_with(
+        operation.message_id,
+    )
+
+    assert result.conversation is None
+    assert result.identity is None
+    assert result.message is None
+
+
+def test_add_reaction_dispatches() -> None:
+    destination = _destination()
+
+
+    operation = AddReactionOperation(
+        message_id=MessageId("message-001"),
+        reaction=_reaction(),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.add_reaction.assert_called_once_with(
+        operation.message_id,
+        operation.reaction,
+    )
+
+    assert result.conversation is None
+    assert result.identity is None
+    assert result.message is None
+    assert result.canonical_id == "message-001"
+
+def test_remove_reaction_dispatches() -> None:
+    destination = _destination()
+
+
+    operation = RemoveReactionOperation(
+        message_id=MessageId("message-001"),
+        reaction=_reaction(),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.remove_reaction.assert_called_once_with(
+        operation.message_id,
+        operation.reaction,
+    )
+
+    assert result.conversation is None
+    assert result.identity is None
+    assert result.message is None
+    assert result.canonical_id == "message-001"
+
+def test_unsupported_operation_raises() -> None:
+    destination = _destination()
+
+    with pytest.raises(
+        NotImplementedError,
+        match="Unsupported operation: UnsupportedOperation",
     ):
-        def create_conversation(
-            self,
-            conversation: CanonicalConversation,
-        ) -> DestinationConversationRef:
-
-            events.append(
-                (
-                    "conversation",
-                    conversation.id,
-                ),
-            )
-
-            return super().create_conversation(
-                conversation,
-            )
-
-        def create_message(
-            self,
-            message: CanonicalMessage,
-        ) -> DestinationMessageRef:
-
-            events.append(
-                (
-                    "message",
-                    message.id,
-                ),
-            )
-
-            return super().create_message(
-                message,
-            )
-
-    destination = OrderedDestination()
-
-    with Archive(
-        paths,
-    ) as archive:
         OperationExecutor().execute(
-            archive,
+            UnsupportedOperation(),
             destination,
         )
 
-    assert events == [
-        (
-            "conversation",
-            EXPECTED_CONVERSATION.id,
-        ),
-        (
-            "message",
-            EXPECTED_MESSAGE.id,
-        ),
-    ]
+def test_execution_result_defaults_to_no_references() -> None:
+    result = ExecutionResult()
+
+    assert result.canonical_id is None
+    assert result.conversation is None
+    assert result.identity is None
+    assert result.message is None
