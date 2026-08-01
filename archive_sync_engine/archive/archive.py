@@ -89,6 +89,21 @@ class Archive:
 
         return self._store.iter_conversations()
 
+    def iter_messages_for_conversation(
+        self,
+        conversation_id: ConversationId,
+    ) -> Iterator[CanonicalMessage]:
+        """
+        Iterate over canonical messages belonging to a conversation.
+        """
+
+        for message in self._store.iter_messages_for_conversation(
+            conversation_id,
+        ):
+            yield self._recomposer.recompose_message(
+                message.id,
+            )
+
     #
     # Lifecycle
     #

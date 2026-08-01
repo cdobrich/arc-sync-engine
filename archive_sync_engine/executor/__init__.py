@@ -8,10 +8,14 @@ The executor is responsible for performing synchronization work.
 It must execute operations exactly in the order received.
 """
 
-from .executor import OperationExecutor
+from .executor import (
+    ArchiveExecutionResult,
+    OperationExecutor,
+)
 from .result import ExecutionResult
 
 __all__ = [
+    "ArchiveExecutionResult",
     "ExecutionResult",
     "OperationExecutor",
 ]

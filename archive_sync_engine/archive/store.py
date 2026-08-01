@@ -467,6 +467,41 @@ class ArchiveStore:
                 row,
             )
 
+    def iter_messages_for_conversation(
+        self,
+        conversation_id: ConversationId,
+    ) -> Iterator[CanonicalMessage]:
+        """
+        Iterate over messages belonging to a conversation in
+        deterministic chronological order.
+        """
+
+        rows = self._connection.execute(
+            """
+            SELECT
+                message_id,
+                conversation_id,
+                identity_key,
+                created_at,
+                edited_at,
+                reply_to_message_id,
+                content
+            FROM messages
+            WHERE conversation_id = ?
+            ORDER BY
+                created_at,
+                message_id
+            """,
+            (
+                str(conversation_id),
+            ),
+        )
+
+        for row in rows:
+            yield self._row_to_message(
+                row,
+            )
+
     #
     # Identity Mapping
     #
