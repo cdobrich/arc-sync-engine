@@ -93,3 +93,8 @@ class ArchivePaths:
         Path to the synchronization session.
         """
         return self.root / "session.json"
+
+
+    @property
+    def import_state(self) -> Path:
+        return self.root / "import-state.json"

@@ -9,15 +9,14 @@ The contents of the state are intentionally opaque to the engine.
 Only the Importer implementation that created the state is expected to
 interpret its contents.
 
-The ImportCoordinator is responsible for persisting and restoring
-the state but never examines the payload itself.
+The ImportCoordinator is responsible for persisting and restoring the
+state but never examines the payload itself.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
-from typing import Mapping
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True, slots=True)

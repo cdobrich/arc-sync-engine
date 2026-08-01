@@ -4,12 +4,15 @@ import json
 
 from datetime import datetime
 from datetime import timezone
+from pathlib import Path
 
 from .manifest import ArchiveManifest
 from .paths import ArchivePaths
 from .version import ARCHIVE_ENGINE_VERSION
 
 from archive_sync_engine.sync.session import SyncSession
+from archive_sync_engine.asset_store import AssetStore
+from archive_sync_engine.importer.state import ImportState
 
 class ArchivePackage:
     """
@@ -26,8 +29,20 @@ class ArchivePackage:
         self,
         paths: ArchivePaths,
     ) -> None:
-
+        self._asset_store = AssetStore(
+            paths.root,
+        )
         self._paths = paths
+
+    @property
+    def asset_store(
+            self,
+    ) -> AssetStore:
+        """
+        Return the AssetStore owned by this Archive Package.
+        """
+
+        return self._asset_store
 
     @property
     def paths(
@@ -96,7 +111,7 @@ class ArchivePackage:
                 timezone.utc,
             ),
         )
-    
+
     #
     # Session
     #
@@ -146,4 +161,62 @@ class ArchivePackage:
 
         return SyncSession.from_json_dict(
             data,
+        )
+
+    #
+    # State
+    #
+
+    def save_import_state(
+        self,
+        state: ImportState,
+    ) -> None:
+        """
+        Persist opaque importer-owned state.
+        """
+
+        with self._paths.import_state.open(
+            "w",
+            encoding="utf-8",
+        ) as handle:
+
+            json.dump(
+                dict(state.payload),
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
+
+            handle.write(
+                "\n",
+            )
+
+    def load_import_state(
+        self,
+    ) -> ImportState:
+        """
+        Load persisted importer-owned state.
+
+        Raises FileNotFoundError when no import state has been persisted.
+        """
+
+        with self._paths.import_state.open(
+            "r",
+            encoding="utf-8",
+        ) as handle:
+
+            data = json.load(
+                handle,
+            )
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            raise ValueError(
+                "Import state must contain a JSON object."
+            )
+
+        return ImportState(
+            payload=data,
         )

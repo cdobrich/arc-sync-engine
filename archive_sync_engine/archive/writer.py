@@ -283,13 +283,14 @@ class ArchiveWriter:
     #
 
     def commit(
-        self,
+            self,
     ) -> None:
         """
-        Commit the current transaction.
+        Commit the current transaction and persist the Archive Package manifest.
         """
 
         self._store.commit()
+        self._save_manifest()
 
     def rollback(
         self,
@@ -320,11 +321,15 @@ class ArchiveWriter:
         return self
 
     def __exit__(
-        self,
-        exc_type,
-        exc,
-        traceback,
+            self,
+            exc_type,
+            exc,
+            traceback,
     ) -> None:
+        """
+        Commit a successful writer context or roll back on failure,
+        then close the writer.
+        """
 
         if exc_type is None:
             self.commit()
