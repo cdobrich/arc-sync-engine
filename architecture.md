@@ -3,7 +3,7 @@
 **Name:** Archive-Sync Engine
 
 # Goal
-A Linux-native Python application that archives and synchronizes messaging platforms using a platform-independent canonical model.
+A Linux-native Python application that archives and synchronizes messaging platforms using a platform-independent canonical model. The archive is stored on disk in a package, allowing for preservation of content, as well as resuming of importing and exporting between target platforms.
 
 Primary intended workflow is **1-to-1 synchronization** (Discord → Fluxer or Fluxer → Fluxer). Multi-destination synchronization is intentionally out of scope.
 
@@ -49,8 +49,6 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 
 > Most components should collaborate rather than inherit.
 
-> The ArchiveEngine is an orchestrator, not an implementation.
-
 > The Archive is the authoritative local system of record. The ArchiveEngine orchestrates synchronization by comparing external systems against the Archive and applying the necessary operations to keep them consistent.
 
 > The canonical model should preserve semantically meaningful information from the source platform whenever that information is platform-independent and may influence future synchronization, export, or archival behavior.
@@ -65,7 +63,7 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 
 > Each SQL table (schema table) represents exactly one concept.
 
-> Each orchestration layer coordinates only the layer immediately beneath it. Sibling components never orchestrate each other.
+> The ArchiveEngine design is an orchestrator, not an implementation. Each orchestration layer coordinates only the layer immediately beneath it. Sibling components never orchestrate each other.
 
 > Orchestration and work should be separate responsibilities.
 
@@ -78,6 +76,8 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 > Design principle: callers interact with canonical aggregates, while ArchiveWriter decomposes those aggregates into normalized tables managed by ArchiveStore.
 
 > Tests protect meaningful architectural or behavioral contracts; they are not the project deliverable.
+
+> One operation affects one canonical entity and therefore produces at most one destination reference.
 
 ## Archive & ArchiveWriter
 
@@ -157,10 +157,10 @@ The private persistence implementation shared by both (ArchiveWriter and Archive
 
 Instead, ArchiveWriter.add_message() should orchestrate the aggregate:
 
-        add_message()
-        ├── insert_message()
-        ├── insert_attachment()      (if needed)
-        └── insert_message_attachment()
+    add_message()
+    ├── insert_message()
+    ├── insert_attachment()      (if needed)
+    └── insert_message_attachment()
 
 Responsibilities:
 - Open/create SQLite databases.
@@ -193,34 +193,34 @@ Examples:
 
 Entity tables store standalone canonical entities:
 
-        conversations
-        messages
-        attachments
-        identities
+    conversations
+    messages
+    attachments
+    identities
 
 Relationship tables store associations between those entities:
 
-        message_attachments
-        message_reactions
+    message_attachments
+    message_reactions
 
 
 The persistence pattern is also established and every Store method follows the same naming convention.
 
-        insert_xxx()
-        get_xxx()
-        iter_xxx()
+    insert_xxx()
+    get_xxx()
+    iter_xxx()
 
 
 ArchiveStore should become a Unit of Work. Conceptually:
 
-        ArchiveWriter
-        │
-        ▼
-        ArchiveStore
-        ├── SQLite connection
-        ├── Current transaction
-        ├── Entity persistence
-        └── Row ↔ Model mapping
+    ArchiveWriter
+    │
+    ▼
+    ArchiveStore
+    ├── SQLite connection
+    ├── Current transaction
+    ├── Entity persistence
+    └── Row ↔ Model mapping
         
 ### ArchiveManifest
 
@@ -228,7 +228,7 @@ ArchiveStore should become a Unit of Work. Conceptually:
 
 ### Messages
 
-> A Message should not directly reference a database row in an identities table. Instead it should store the canonical identity key.
+> A Message should not directly reference a database row in an identities table. Instead, it should store the canonical identity key.
 
 Conceptually this is `author_identity_key`. That makes identity resolution adapter-independent.
 
@@ -254,21 +254,21 @@ That was one of the original motivations for SHA-256 storage.
 
 From `CanonicalAttachment` model schema (SQL):
 
-        message_attachments
-        -------------------
-        message_id
-        attachment_id
-        ordinal
+    message_attachments
+    -------------------
+    message_id
+    attachment_id
+    ordinal
 
 Then separately:
 
-        attachments
-        -----------
-        id
-        sha256
-        filename
-        media_type
-        size
+    attachments
+    -----------
+    id
+    sha256
+    filename
+    media_type
+    size
 
 ### Archive Package Persistence Mapping
 
@@ -399,7 +399,7 @@ Attachments are content-addressed.
 
 Their binary contents are stored separately inside:
 
-        attachments/
+    attachments/
 
 using SHA-256 filenames.
 

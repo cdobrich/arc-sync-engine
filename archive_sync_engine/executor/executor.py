@@ -20,7 +20,10 @@ Operations are executed exactly in the order received.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from archive_sync_engine.adapters import DestinationAdapter
+from archive_sync_engine.executor.context import ExecutionContext
 from archive_sync_engine.executor.result import ExecutionResult
 from archive_sync_engine.operations import (
     AddReactionOperation,
@@ -37,11 +40,17 @@ from archive_sync_engine.operations import (
     UpdateConversationOperation,
     UpdateIdentityOperation,
 )
+from archive_sync_engine.sync.fingerprint import canonical_fingerprint
 
 
 class OperationExecutor:
     """
     Execute synchronization operations against a destination.
+
+    OperationExecutor is deliberately small. It translates canonical
+    synchronization operations into calls on a DestinationAdapter.
+
+    It performs no planning or reconciliation.
     """
 
     def execute(
@@ -52,8 +61,8 @@ class OperationExecutor:
         """
         Execute one synchronization operation.
 
-        The operation is executed exactly as supplied. The executor
-        performs no planning or reordering.
+        The operation is executed exactly as supplied. No additional
+        operations are created and no operations are reordered.
         """
 
         match operation:
@@ -71,6 +80,9 @@ class OperationExecutor:
                     canonical_id=str(
                         conversation.id,
                     ),
+                    canonical_fingerprint=canonical_fingerprint(
+                        conversation,
+                    ),
                     conversation=destination_ref,
                 )
 
@@ -85,6 +97,9 @@ class OperationExecutor:
                     canonical_id=str(
                         conversation.id,
                     ),
+                    canonical_fingerprint=canonical_fingerprint(
+                        conversation,
+                    ),
                 )
 
             case DeleteConversationOperation(
@@ -98,6 +113,7 @@ class OperationExecutor:
                     canonical_id=str(
                         conversation_id,
                     ),
+                    deleted=True,
                 )
 
             case CreateIdentityOperation(
@@ -113,6 +129,9 @@ class OperationExecutor:
                     canonical_id=str(
                         identity.identity_key,
                     ),
+                    canonical_fingerprint=canonical_fingerprint(
+                        identity,
+                    ),
                     identity=destination_ref,
                 )
 
@@ -126,6 +145,9 @@ class OperationExecutor:
                 return ExecutionResult(
                     canonical_id=str(
                         identity.identity_key,
+                    ),
+                    canonical_fingerprint=canonical_fingerprint(
+                        identity,
                     ),
                 )
 
@@ -142,6 +164,9 @@ class OperationExecutor:
                     canonical_id=str(
                         message.id,
                     ),
+                    canonical_fingerprint=canonical_fingerprint(
+                        message,
+                    ),
                     message=destination_ref,
                 )
 
@@ -156,6 +181,9 @@ class OperationExecutor:
                     canonical_id=str(
                         message.id,
                     ),
+                    canonical_fingerprint=canonical_fingerprint(
+                        message,
+                    ),
                 )
 
             case DeleteMessageOperation(
@@ -169,6 +197,7 @@ class OperationExecutor:
                     canonical_id=str(
                         message_id,
                     ),
+                    deleted=True,
                 )
 
             case PinMessageOperation(
@@ -232,3 +261,112 @@ class OperationExecutor:
                     "Unsupported operation: "
                     f"{type(operation).__name__}"
                 )
+
+    def execute_all(
+        self,
+        operations: Iterable[SyncOperation],
+        destination: DestinationAdapter,
+    ) -> tuple[
+        ExecutionContext,
+        tuple[ExecutionResult, ...],
+    ]:
+        """
+        Execute an ordered sequence of synchronization operations.
+
+        Operations are consumed and executed in exactly the order
+        supplied by the caller.
+
+        Destination references created during execution are retained in
+        one execution-local context.
+
+        The context is intentionally not persisted and is discarded when
+        execution completes.
+        """
+
+        context = ExecutionContext()
+
+        results: list[ExecutionResult] = []
+
+        for operation in operations:
+
+            result = self.execute(
+                operation,
+                destination,
+            )
+
+            self._record_result(
+                operation,
+                result,
+                context,
+            )
+
+            results.append(
+                result,
+            )
+
+        return (
+            context,
+            tuple(
+                results,
+            ),
+        )
+
+    @staticmethod
+    def _record_result(
+        operation: SyncOperation,
+        result: ExecutionResult,
+        context: ExecutionContext,
+    ) -> None:
+        """
+        Record destination references produced by an operation.
+
+        Only creation operations produce destination references at this
+        stage. Other operation results are intentionally not recorded.
+        """
+
+        match operation:
+
+            case CreateConversationOperation(
+                conversation=conversation,
+            ):
+                if result.conversation is None:
+                    raise RuntimeError(
+                        "CreateConversationOperation did not produce "
+                        "a destination conversation reference."
+                    )
+
+                context.record_conversation(
+                    conversation.id,
+                    result.conversation,
+                )
+
+            case CreateIdentityOperation(
+                identity=identity,
+            ):
+                if result.identity is None:
+                    raise RuntimeError(
+                        "CreateIdentityOperation did not produce "
+                        "a destination identity reference."
+                    )
+
+                context.record_identity(
+                    identity.identity_key,
+                    result.identity,
+                )
+
+            case CreateMessageOperation(
+                message=message,
+            ):
+                if result.message is None:
+                    raise RuntimeError(
+                        "CreateMessageOperation did not produce "
+                        "a destination message reference."
+                    )
+
+                context.record_message(
+                    message.id,
+                    result.message,
+                )
+
+            case _:
+                return

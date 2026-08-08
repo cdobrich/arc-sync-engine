@@ -18,12 +18,24 @@ class ExecutionResult:
     """
     Result of executing a single SyncOperation.
 
-    canonical_id identifies the canonical entity affected by the operation.
+    canonical_id identifies the canonical entity affected by the
+    operation.
 
-    The destination references are populated when execution creates or establishes a corresponding destination object.
+    Destination references are populated when execution creates or
+    establishes a corresponding destination object.
+
+    canonical_fingerprint records the canonical state successfully
+    represented by the destination after the operation.
+
+    deleted indicates that the operation successfully removed the
+    corresponding destination object.
     """
 
     canonical_id: str | None = None
+
+    canonical_fingerprint: str | None = None
+
+    deleted: bool = False
 
     conversation: DestinationConversationRef | None = None
     identity: DestinationIdentityRef | None = None
