@@ -32,3 +32,17 @@ class RemoveAttachmentOperation(SyncOperation):
     attachment: CanonicalAttachment
     resulting_attachments: tuple[CanonicalAttachment, ...] | None = None
     canonical_fingerprint: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ReorderAttachmentsOperation(SyncOperation):
+    """Reorder the canonical attachments on an existing message.
+
+    ``attachments`` is the complete canonical attachment ordering that must
+    be established by the destination. ``canonical_fingerprint`` is supplied
+    when this operation completes the complete canonical message baseline.
+    """
+
+    message_id: MessageId
+    attachments: tuple[CanonicalAttachment, ...]
+    canonical_fingerprint: str | None = None

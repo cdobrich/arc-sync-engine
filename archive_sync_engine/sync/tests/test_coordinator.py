@@ -113,6 +113,7 @@ def _capabilities() -> DestinationCapabilities:
         supports_reactions=True,
         supports_custom_emoji=True,
         supports_attachments=True,
+        supports_attachment_reordering=True,
         supports_replying=True,
         supports_identity_updates=True,
     )

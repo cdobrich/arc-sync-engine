@@ -37,6 +37,7 @@ from .reaction import (
 from .attachment import (
     AddAttachmentOperation,
     RemoveAttachmentOperation,
+    ReorderAttachmentsOperation,
 )
 
 from .reply import SetMessageReplyOperation
@@ -62,6 +63,7 @@ __all__ = [
 
     "AddAttachmentOperation",
     "RemoveAttachmentOperation",
+    "ReorderAttachmentsOperation",
 
     "SetMessageReplyOperation",
 ]
