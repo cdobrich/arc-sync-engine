@@ -16,6 +16,7 @@ from archive_sync_engine.adapters import (
 )
 from archive_sync_engine.archive import Archive
 from archive_sync_engine.models import (
+    CanonicalAttachment,
     CanonicalConversation,
     CanonicalIdentity,
     CanonicalMessage,
@@ -23,11 +24,13 @@ from archive_sync_engine.models import (
 )
 from archive_sync_engine.models.enums import ConversationType
 from archive_sync_engine.models.ids import (
+    AttachmentId,
     ConversationId,
     IdentityKey,
     MessageId,
 )
 from archive_sync_engine.operations import (
+    AddAttachmentOperation,
     AddReactionOperation,
     CreateConversationOperation,
     CreateIdentityOperation,
@@ -36,6 +39,7 @@ from archive_sync_engine.operations import (
     DeleteMessageOperation,
     EditMessageOperation,
     PinMessageOperation,
+    RemoveAttachmentOperation,
     RemoveReactionOperation,
 )
 from archive_sync_engine.planner import Planner
@@ -142,6 +146,22 @@ def _message(
             0,
             tzinfo=timezone.utc,
         ),
+    )
+
+
+def _attachment(
+    attachment_id: str = "attachment-001",
+    sha256: str = "a" * 64,
+    filename: str = "example.txt",
+) -> CanonicalAttachment:
+    """Create a canonical attachment for planner tests."""
+
+    return CanonicalAttachment(
+        id=AttachmentId(attachment_id),
+        filename=filename,
+        content_type="text/plain",
+        size=5,
+        sha256=sha256,
     )
 
 
@@ -296,6 +316,9 @@ def test_plan_skips_already_synchronized_entities() -> None:
             "message-001": canonical_message_content_fingerprint(message),
         },
         message_reactions={
+            "message-001": (),
+        },
+        message_attachments={
             "message-001": (),
         },
         message_pinned={
@@ -547,6 +570,281 @@ def test_plan_messages_preserves_archive_conversation_order() -> None:
     ]
 
 
+def test_plan_message_unchanged_attachments_produce_no_attachment_operation() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    attachment = _attachment()
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="Message message-001",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        attachments=(attachment,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock()},
+        message_fingerprints={"message-001": canonical_fingerprint(message)},
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": (attachment,)},
+        message_pinned={"message-001": False},
+    )
+
+    operations = _planned_operations(Planner(), archive, state)
+
+    assert operations == []
+
+
+def test_plan_rejects_attachment_order_change_without_reorder_operation() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    first = _attachment("attachment-001", "a" * 64, "first.txt")
+    second = _attachment("attachment-002", "b" * 64, "second.txt")
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="Message message-001",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        attachments=(first, second),
+    )
+    desired_message = CanonicalMessage(
+        id=message.id,
+        conversation_id=message.conversation_id,
+        identity_key=message.identity_key,
+        content=message.content,
+        created_at=message.created_at,
+        attachments=(second, first),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([desired_message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock()},
+        message_fingerprints={"message-001": canonical_fingerprint(message)},
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": (first, second)},
+        message_pinned={"message-001": False},
+    )
+
+    with pytest.raises(RuntimeError, match="attachment reorder operation"):
+        list(Planner().plan(archive=archive, synchronization_state=state, capabilities=_capabilities()))
+
+
+def test_plan_message_attachment_addition_uses_attachment_operation() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    attachment = _attachment()
+    message = _message("message-001", "conversation-001")
+    desired_message = CanonicalMessage(
+        id=message.id,
+        conversation_id=message.conversation_id,
+        identity_key=message.identity_key,
+        content=message.content,
+        created_at=message.created_at,
+        attachments=(attachment,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([desired_message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock()},
+        message_fingerprints={
+            "message-001": canonical_fingerprint(message),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
+        message_pinned={"message-001": False},
+    )
+
+    operations = _planned_operations(Planner(), archive, state)
+
+    assert operations == [
+        AddAttachmentOperation(
+            message_id=desired_message.id,
+            attachment=attachment,
+            resulting_attachments=(attachment,),
+            canonical_fingerprint=canonical_fingerprint(desired_message),
+        ),
+    ]
+
+
+def test_plan_message_attachment_removal_uses_attachment_operation() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    attachment = _attachment()
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="Message message-001",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        attachments=(attachment,),
+    )
+    desired_message = _message("message-001", "conversation-001")
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([desired_message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock()},
+        message_fingerprints={
+            "message-001": canonical_fingerprint(message),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": (attachment,)},
+        message_pinned={"message-001": False},
+    )
+
+    operations = _planned_operations(Planner(), archive, state)
+
+    assert operations == [
+        RemoveAttachmentOperation(
+            message_id=desired_message.id,
+            attachment=attachment,
+            resulting_attachments=(),
+            canonical_fingerprint=canonical_fingerprint(desired_message),
+        ),
+    ]
+
+
+def test_plan_attachment_change_does_not_use_edit_operation() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    attachment = _attachment()
+    message = _message("message-001", "conversation-001")
+    desired_message = CanonicalMessage(
+        id=message.id,
+        conversation_id=message.conversation_id,
+        identity_key=message.identity_key,
+        content=message.content,
+        created_at=message.created_at,
+        attachments=(attachment,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([desired_message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock()},
+        message_fingerprints={
+            "message-001": canonical_fingerprint(message),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
+        message_pinned={"message-001": False},
+    )
+
+    operations = _planned_operations(Planner(), archive, state)
+
+    assert all(
+        not isinstance(operation, EditMessageOperation)
+        for operation in operations
+    )
+
+
+def test_plan_rejects_unsupported_attachment_reconciliation() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    attachment = _attachment()
+    message = _message("message-001", "conversation-001")
+    desired_message = CanonicalMessage(
+        id=message.id,
+        conversation_id=message.conversation_id,
+        identity_key=message.identity_key,
+        content=message.content,
+        created_at=message.created_at,
+        attachments=(attachment,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([desired_message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock()},
+        message_fingerprints={
+            "message-001": canonical_fingerprint(message),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
+        message_pinned={"message-001": False},
+    )
+
+    capabilities = DestinationCapabilities(
+        supports_attachments=False,
+        supports_identity_updates=True,
+    )
+
+    with pytest.raises(CapabilityError, match="supports_attachments"):
+        list(
+            Planner().plan(
+                archive=archive,
+                synchronization_state=state,
+                capabilities=capabilities,
+            ),
+        )
+
+
 def test_plan_message_reaction_change_uses_reaction_operations() -> None:
     archive = _archive()
     conversation = _conversation("conversation-001")
@@ -584,6 +882,7 @@ def test_plan_message_reaction_change_uses_reaction_operations() -> None:
             "message-001": canonical_message_content_fingerprint(message),
         },
         message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
     )
 
@@ -635,6 +934,7 @@ def test_plan_message_pin_change_uses_pin_operation() -> None:
             "message-001": canonical_message_content_fingerprint(message),
         },
         message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
     )
 
@@ -684,6 +984,7 @@ def test_plan_message_content_change_uses_edit_operation() -> None:
             "message-001": canonical_message_content_fingerprint(message),
         },
         message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
     )
 
@@ -740,6 +1041,7 @@ def test_plan_message_changes_decompose_content_reaction_and_pin() -> None:
             "message-001": canonical_message_content_fingerprint(message),
         },
         message_reactions={"message-001": (old_reaction,)},
+        message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
     )
 
@@ -943,6 +1245,7 @@ def test_plan_rejects_unsupported_message_editing() -> None:
             "message-001": canonical_message_content_fingerprint(message),
         },
         message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
     )
 
@@ -996,6 +1299,7 @@ def test_plan_rejects_unsupported_reactions() -> None:
             "message-001": canonical_message_content_fingerprint(message),
         },
         message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
     )
 
@@ -1048,6 +1352,7 @@ def test_plan_rejects_unsupported_message_pinning() -> None:
             "message-001": canonical_message_content_fingerprint(message),
         },
         message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
     )
 
@@ -1291,6 +1596,7 @@ def test_plan_validates_all_capabilities_before_yielding_operations() -> None:
             "message-001": canonical_message_content_fingerprint(message),
         },
         message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
     )
 

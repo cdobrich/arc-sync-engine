@@ -5,6 +5,7 @@ Tests for the synchronization coordinator.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 from unittest.mock import Mock, call
 
 import pytest
@@ -14,6 +15,7 @@ from archive_sync_engine.adapters import (
     DestinationCapabilities,
 )
 from archive_sync_engine.archive import Archive
+from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.operations import (
     SyncOperation,
 )
@@ -36,6 +38,7 @@ from archive_sync_engine.executor import (
     OperationExecutor,
 )
 from archive_sync_engine.models import (
+    CanonicalAttachment,
     CanonicalConversation,
     CanonicalMessage,
     CanonicalReaction,
@@ -44,6 +47,7 @@ from archive_sync_engine.models.enums import (
     ConversationType,
 )
 from archive_sync_engine.models.ids import (
+    AttachmentId,
     ConversationId,
     IdentityKey,
     MessageId,
@@ -379,6 +383,7 @@ def test_synchronize_persists_component_progress_before_later_failure() -> None:
             "message-001": canonical_message_content_fingerprint(old_message),
         },
         message_reactions={"message-001": (old_reaction,)},
+        message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
     )
     state_repository = InMemoryStateRepository(
@@ -407,6 +412,101 @@ def test_synchronize_persists_component_progress_before_later_failure() -> None:
         canonical_message_content_fingerprint(desired_message)
     )
     assert state.message_reactions["message-001"] == (new_reaction,)
+    assert state.message_pinned["message-001"] is False
+    assert state.message_fingerprints["message-001"] == (
+        canonical_fingerprint(old_message)
+    )
+
+    remaining_operations = list(
+        Planner().plan(
+            archive=archive,
+            synchronization_state=state,
+            capabilities=_capabilities(),
+        ),
+    )
+
+    assert remaining_operations == [
+        PinMessageOperation(
+            message_id=desired_message.id,
+            canonical_fingerprint=canonical_fingerprint(desired_message),
+        ),
+    ]
+
+
+def test_synchronize_persists_attachment_progress_before_later_pin_failure(
+    tmp_path,
+) -> None:
+    archive = _archive()
+    destination = _destination()
+    content = b"attachment content"
+    attachment = CanonicalAttachment(
+        id=AttachmentId("attachment-001"),
+        filename="example.txt",
+        content_type="text/plain",
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    old_message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="old content",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        pinned=False,
+    )
+    desired_message = CanonicalMessage(
+        id=old_message.id,
+        conversation_id=old_message.conversation_id,
+        identity_key=old_message.identity_key,
+        content="new content",
+        created_at=old_message.created_at,
+        pinned=True,
+        attachments=(attachment,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.side_effect = lambda: iter([desired_message])
+
+    state_repository = InMemoryStateRepository(
+        synchronization_state=SynchronizationState(
+            messages={"message-001": Mock()},
+            message_fingerprints={
+                "message-001": canonical_fingerprint(old_message),
+            },
+            message_content_fingerprints={
+                "message-001": canonical_message_content_fingerprint(old_message),
+            },
+            message_reactions={"message-001": ()},
+            message_attachments={"message-001": ()},
+            message_pinned={"message-001": False},
+        ),
+    )
+
+    asset_store = AssetStore(tmp_path)
+    asset_store.put_attachment(attachment, content)
+
+    destination.pin_message.side_effect = RuntimeError("pin failed")
+
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=Planner(),
+        executor=OperationExecutor(asset_store=asset_store),
+        destination=destination,
+        capabilities=_capabilities(),
+        state_repository=state_repository,
+    )
+
+    with pytest.raises(RuntimeError, match="pin failed"):
+        coordinator.synchronize()
+
+    state = state_repository.load_synchronization_state()
+
+    assert state.message_content_fingerprints["message-001"] == (
+        canonical_message_content_fingerprint(desired_message)
+    )
+    assert state.message_attachments["message-001"] == (attachment,)
     assert state.message_pinned["message-001"] is False
     assert state.message_fingerprints["message-001"] == (
         canonical_fingerprint(old_message)

@@ -5,10 +5,15 @@ Tests for the default synchronization operation executor.
 from __future__ import annotations
 from unittest.mock import Mock
 
+import hashlib
+
+from archive_sync_engine.asset_store import AssetStore
+
 import pytest
 
 from archive_sync_engine.adapters import DestinationAdapter
 from archive_sync_engine.adapters.references import (
+    DestinationAttachmentRef,
     DestinationConversationRef,
     DestinationIdentityRef,
     DestinationMessageRef,
@@ -22,6 +27,7 @@ from archive_sync_engine.sync.fingerprint import (
     canonical_message_content_fingerprint,
 )
 from archive_sync_engine.models import (
+    CanonicalAttachment,
     CanonicalConversation,
     CanonicalIdentity,
     CanonicalMessage,
@@ -29,11 +35,13 @@ from archive_sync_engine.models import (
 )
 from archive_sync_engine.models.enums import ConversationType
 from archive_sync_engine.models.ids import (
+    AttachmentId,
     ConversationId,
     IdentityKey,
     MessageId,
 )
 from archive_sync_engine.operations import (
+    AddAttachmentOperation,
     AddReactionOperation,
     CreateConversationOperation,
     CreateIdentityOperation,
@@ -42,6 +50,7 @@ from archive_sync_engine.operations import (
     DeleteMessageOperation,
     EditMessageOperation,
     PinMessageOperation,
+    RemoveAttachmentOperation,
     RemoveReactionOperation,
     SyncOperation,
     UnpinMessageOperation,
@@ -109,6 +118,18 @@ def _message() -> CanonicalMessage:
             0,
             tzinfo=timezone.utc,
         ),
+    )
+
+
+def _attachment(content: bytes = b"hello") -> CanonicalAttachment:
+    """Create an attachment whose digest matches ``content``."""
+
+    return CanonicalAttachment(
+        id=AttachmentId("attachment-001"),
+        filename="example.txt",
+        content_type="text/plain",
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
     )
 
 
@@ -281,6 +302,29 @@ def test_create_message_dispatches_and_returns_reference() -> None:
     assert result.canonical_id == "message-001"
 
 
+def test_create_message_returns_attachment_baseline() -> None:
+    destination = _destination()
+    attachment = _attachment()
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="Hello world.",
+        created_at=_message().created_at,
+        attachments=(attachment,),
+    )
+    destination.create_message.return_value = DestinationMessageRef(
+        "destination-message-001",
+    )
+
+    result = OperationExecutor().execute(
+        CreateMessageOperation(message=message),
+        destination,
+    )
+
+    assert result.message_attachments == (attachment,)
+
+
 def test_edit_message_dispatches() -> None:
     destination = _destination()
 
@@ -325,6 +369,75 @@ def test_delete_message_dispatches() -> None:
     assert result.identity is None
     assert result.message is None
     assert result.canonical_id == "message-001"
+
+
+def test_add_attachment_dispatches_using_asset_store(tmp_path) -> None:
+    destination = _destination()
+    content = b"attachment content"
+    attachment = _attachment(content)
+    asset_store = AssetStore(tmp_path)
+    asset_store.put_attachment(attachment, content)
+    destination_ref = DestinationAttachmentRef("destination-attachment-001")
+    destination.add_attachment.return_value = destination_ref
+
+    operation = AddAttachmentOperation(
+        message_id=MessageId("message-001"),
+        attachment=attachment,
+        resulting_attachments=(attachment,),
+        canonical_fingerprint="message-fingerprint",
+    )
+
+    result = OperationExecutor(asset_store=asset_store).execute(
+        operation,
+        destination,
+    )
+
+    destination.add_attachment.assert_called_once_with(
+        operation.message_id,
+        attachment,
+        content,
+    )
+    assert result.canonical_id == "message-001"
+    assert result.canonical_fingerprint == "message-fingerprint"
+    assert result.message_attachments == (attachment,)
+
+
+def test_add_attachment_requires_asset_store() -> None:
+    destination = _destination()
+    attachment = _attachment()
+
+    operation = AddAttachmentOperation(
+        message_id=MessageId("message-001"),
+        attachment=attachment,
+        resulting_attachments=(attachment,),
+    )
+
+    with pytest.raises(RuntimeError, match="requires an AssetStore"):
+        OperationExecutor().execute(operation, destination)
+
+    destination.add_attachment.assert_not_called()
+
+
+def test_remove_attachment_dispatches() -> None:
+    destination = _destination()
+    attachment = _attachment()
+
+    operation = RemoveAttachmentOperation(
+        message_id=MessageId("message-001"),
+        attachment=attachment,
+        resulting_attachments=(),
+        canonical_fingerprint="message-fingerprint",
+    )
+
+    result = OperationExecutor().execute(operation, destination)
+
+    destination.remove_attachment.assert_called_once_with(
+        operation.message_id,
+        attachment,
+    )
+    assert result.canonical_id == "message-001"
+    assert result.canonical_fingerprint == "message-fingerprint"
+    assert result.message_attachments == ()
 
 
 def test_pin_message_dispatches() -> None:

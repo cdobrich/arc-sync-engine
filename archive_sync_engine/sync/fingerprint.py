@@ -66,16 +66,21 @@ def canonical_message_content_fingerprint(
     message: CanonicalMessage,
 ) -> str:
     """
-    Return a fingerprint for message state excluding reactions and pin state.
+    Return a fingerprint for message state excluding attachments,
+    reactions, and pin state.
 
-    Message content is reconciled through EditMessageOperation. Reactions
-    and pin state are reconciled by their dedicated operations.
+    Message content is reconciled through EditMessageOperation. Attachments,
+    reactions, and pin state are reconciled by their dedicated operations.
     """
 
     normalized = _normalize(
         message,
     )
 
+    normalized.pop(
+        "attachments",
+        None,
+    )
     normalized.pop(
         "reactions",
         None,

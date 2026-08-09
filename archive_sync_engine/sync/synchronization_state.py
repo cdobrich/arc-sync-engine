@@ -25,7 +25,7 @@ from archive_sync_engine.executor.result import (
     DeletedEntityType,
     ExecutionResult,
 )
-from archive_sync_engine.models import CanonicalReaction
+from archive_sync_engine.models import CanonicalAttachment, CanonicalReaction
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +97,11 @@ class SynchronizationState:
         tuple[CanonicalReaction, ...],
     ] = field(default_factory=dict)
 
+    message_attachments: dict[
+        str,
+        tuple[CanonicalAttachment, ...],
+    ] = field(default_factory=dict)
+
     message_pinned: dict[
         str,
         bool,
@@ -134,6 +139,7 @@ class SynchronizationState:
                 self.message_content_fingerprints,
             ),
             message_reactions=dict(self.message_reactions),
+            message_attachments=dict(self.message_attachments),
             message_pinned=dict(self.message_pinned),
         )
 
@@ -165,6 +171,7 @@ class SynchronizationState:
                 self.message_content_fingerprints,
             ),
             message_reactions=dict(self.message_reactions),
+            message_attachments=dict(self.message_attachments),
             message_pinned=dict(self.message_pinned),
         )
 
@@ -175,6 +182,7 @@ class SynchronizationState:
         fingerprint: str,
         content_fingerprint: str,
         reactions: tuple[CanonicalReaction, ...],
+        attachments: tuple[CanonicalAttachment, ...],
         pinned: bool,
     ) -> SynchronizationState:
         """
@@ -193,6 +201,9 @@ class SynchronizationState:
         message_reactions = dict(self.message_reactions)
         message_reactions[canonical_id] = tuple(reactions)
 
+        message_attachments = dict(self.message_attachments)
+        message_attachments[canonical_id] = tuple(attachments)
+
         message_pinned = dict(self.message_pinned)
         message_pinned[canonical_id] = pinned
 
@@ -206,6 +217,7 @@ class SynchronizationState:
             message_fingerprints=fingerprints,
             message_content_fingerprints=content_fingerprints,
             message_reactions=message_reactions,
+            message_attachments=message_attachments,
             message_pinned=message_pinned,
         )
 
@@ -238,6 +250,7 @@ class SynchronizationState:
                 self.message_content_fingerprints,
             ),
             message_reactions=dict(self.message_reactions),
+            message_attachments=dict(self.message_attachments),
             message_pinned=dict(self.message_pinned),
         )
 
@@ -261,6 +274,9 @@ class SynchronizationState:
         message_reactions = dict(self.message_reactions)
         message_reactions.pop(canonical_id, None)
 
+        message_attachments = dict(self.message_attachments)
+        message_attachments.pop(canonical_id, None)
+
         message_pinned = dict(self.message_pinned)
         message_pinned.pop(canonical_id, None)
 
@@ -274,6 +290,7 @@ class SynchronizationState:
             message_fingerprints=fingerprints,
             message_content_fingerprints=content_fingerprints,
             message_reactions=message_reactions,
+            message_attachments=message_attachments,
             message_pinned=message_pinned,
         )
 
@@ -303,6 +320,7 @@ class SynchronizationState:
                 self.message_content_fingerprints,
             ),
             message_reactions=dict(self.message_reactions),
+            message_attachments=dict(self.message_attachments),
             message_pinned=dict(self.message_pinned),
         )
 
@@ -388,6 +406,7 @@ class SynchronizationState:
                 result.canonical_fingerprint is None
                 or result.message_content_fingerprint is None
                 or result.message_reactions is None
+                or result.message_attachments is None
                 or result.message_pinned is None
             ):
                 raise ValueError(
@@ -401,6 +420,7 @@ class SynchronizationState:
                 fingerprint=result.canonical_fingerprint,
                 content_fingerprint=result.message_content_fingerprint,
                 reactions=result.message_reactions,
+                attachments=result.message_attachments,
                 pinned=result.message_pinned,
             )
 
@@ -409,6 +429,7 @@ class SynchronizationState:
             for value in (
                 result.message_content_fingerprint,
                 result.message_reactions,
+                result.message_attachments,
                 result.message_pinned,
             )
         )
@@ -437,6 +458,9 @@ class SynchronizationState:
             if canonical_id not in self.message_reactions:
                 missing_baselines.append("reactions")
 
+            if canonical_id not in self.message_attachments:
+                missing_baselines.append("attachments")
+
             if canonical_id not in self.message_pinned:
                 missing_baselines.append("pin")
 
@@ -464,6 +488,14 @@ class SynchronizationState:
         else:
             message_reactions = dict(self.message_reactions)
 
+        if result.message_attachments is not None:
+            message_attachments = dict(self.message_attachments)
+            message_attachments[canonical_id] = tuple(
+                result.message_attachments,
+            )
+        else:
+            message_attachments = dict(self.message_attachments)
+
         if result.message_pinned is not None:
             message_pinned = dict(self.message_pinned)
             message_pinned[canonical_id] = result.message_pinned
@@ -485,5 +517,6 @@ class SynchronizationState:
             message_fingerprints=fingerprints,
             message_content_fingerprints=content_fingerprints,
             message_reactions=message_reactions,
+            message_attachments=message_attachments,
             message_pinned=message_pinned,
         )

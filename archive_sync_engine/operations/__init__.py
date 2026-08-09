@@ -34,6 +34,11 @@ from .reaction import (
     RemoveReactionOperation,
 )
 
+from .attachment import (
+    AddAttachmentOperation,
+    RemoveAttachmentOperation,
+)
+
 __all__ = [
     "SyncOperation",
 
@@ -52,4 +57,7 @@ __all__ = [
 
     "AddReactionOperation",
     "RemoveReactionOperation",
+
+    "AddAttachmentOperation",
+    "RemoveAttachmentOperation",
 ]
