@@ -62,23 +62,25 @@ def _archive() -> Mock:
     )
 
 
-def _capabilities() -> DestinationCapabilities:
+def _capabilities(**overrides: bool) -> DestinationCapabilities:
     """
     Create destination capabilities for planner tests.
     """
 
-    return DestinationCapabilities(
-        supports_threads=True,
-        supports_message_editing=True,
-        supports_message_deletion=True,
-        supports_conversation_deletion=True,
-        supports_message_pinning=True,
-        supports_reactions=True,
-        supports_custom_emoji=True,
-        supports_attachments=True,
-        supports_replying=True,
-        supports_identity_updates=True,
-    )
+    values = {
+        "supports_threads": True,
+        "supports_message_editing": True,
+        "supports_message_deletion": True,
+        "supports_conversation_deletion": True,
+        "supports_message_pinning": True,
+        "supports_reactions": True,
+        "supports_custom_emoji": True,
+        "supports_attachments": True,
+        "supports_replying": True,
+        "supports_identity_updates": True,
+    }
+    values.update(overrides)
+    return DestinationCapabilities(**values)
 
 
 def _identity(
@@ -170,6 +172,8 @@ def _attachment(
 def _reaction(
     identity_key: str = "identity-002",
     emoji: str = "👍",
+    emoji_id: str | None = None,
+    is_custom: bool = False,
 ) -> CanonicalReaction:
     """
     Create a canonical reaction for planner tests.
@@ -178,6 +182,8 @@ def _reaction(
     return CanonicalReaction(
         identity_key=IdentityKey(identity_key),
         emoji=emoji,
+        emoji_id=emoji_id,
+        is_custom=is_custom,
     )
 
 
@@ -1007,6 +1013,119 @@ def test_plan_message_content_change_uses_edit_operation() -> None:
     assert operations == [
         EditMessageOperation(
             message=desired_message,
+            canonical_fingerprint=canonical_fingerprint(desired_message),
+        ),
+    ]
+
+
+def _state_for_message(
+    message: CanonicalMessage,
+    *,
+    reactions: tuple[CanonicalReaction, ...],
+) -> SynchronizationState:
+    conversation = _conversation(str(message.conversation_id))
+    return SynchronizationState(
+        conversations={str(conversation.id): Mock()},
+        conversation_fingerprints={
+            str(conversation.id): canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={str(conversation.id): None},
+        messages={str(message.id): Mock()},
+        message_fingerprints={
+            str(message.id): canonical_fingerprint(
+                replace(message, reactions=reactions),
+            ),
+        },
+        message_content_fingerprints={
+            str(message.id): canonical_message_content_fingerprint(
+                replace(message, reactions=reactions),
+            ),
+        },
+        message_reactions={str(message.id): reactions},
+        message_attachments={str(message.id): ()},
+        message_pinned={str(message.id): message.pinned},
+        message_reply_to={str(message.id): message.reply_to},
+    )
+
+
+def test_plan_custom_emoji_addition_requires_custom_emoji_capability() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    reaction = _reaction(
+        emoji=":blob:",
+        emoji_id="emoji-001",
+        is_custom=True,
+    )
+    old_message = _message("message-001", "conversation-001")
+    desired_message = replace(old_message, reactions=(reaction,))
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([desired_message])
+    state = _state_for_message(old_message, reactions=())
+
+    with pytest.raises(CapabilityError, match="supports_custom_emoji"):
+        list(
+            Planner().plan(
+                archive,
+                state,
+                _capabilities(supports_custom_emoji=False),
+            ),
+        )
+
+
+def test_plan_custom_emoji_removal_requires_custom_emoji_capability() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    reaction = _reaction(
+        emoji=":blob:",
+        emoji_id="emoji-001",
+        is_custom=True,
+    )
+    desired_message = _message("message-001", "conversation-001")
+    old_message = replace(desired_message, reactions=(reaction,))
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([desired_message])
+    state = _state_for_message(old_message, reactions=(reaction,))
+
+    with pytest.raises(CapabilityError, match="supports_custom_emoji"):
+        list(
+            Planner().plan(
+                archive,
+                state,
+                _capabilities(supports_custom_emoji=False),
+            ),
+        )
+
+
+def test_plan_custom_emoji_reconciliation_is_allowed_when_supported() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    reaction = _reaction(
+        emoji=":blob:",
+        emoji_id="emoji-001",
+        is_custom=True,
+    )
+    old_message = _message("message-001", "conversation-001")
+    desired_message = replace(old_message, reactions=(reaction,))
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([desired_message])
+    state = _state_for_message(old_message, reactions=())
+
+    operations = list(
+        Planner().plan(
+            archive,
+            state,
+            _capabilities(supports_custom_emoji=True),
+        ),
+    )
+
+    assert operations == [
+        AddReactionOperation(
+            message_id=desired_message.id,
+            reaction=reaction,
+            resulting_reactions=(reaction,),
             canonical_fingerprint=canonical_fingerprint(desired_message),
         ),
     ]

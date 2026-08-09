@@ -511,6 +511,23 @@ class Planner:
                     "reconcile message reactions",
                 )
 
+                changed_reactions = tuple(
+                    reaction
+                    for reaction in previous_reactions
+                    if reaction not in current_reactions
+                ) + tuple(
+                    reaction
+                    for reaction in current_reactions
+                    if reaction not in previous_reactions
+                )
+
+                if any(reaction.is_custom for reaction in changed_reactions):
+                    self._require_capability(
+                        capabilities.supports_custom_emoji,
+                        "supports_custom_emoji",
+                        "reconcile custom emoji reactions",
+                    )
+
             working_reactions = list(previous_reactions)
             for reaction in previous_reactions:
                 if reaction in current_reactions:
