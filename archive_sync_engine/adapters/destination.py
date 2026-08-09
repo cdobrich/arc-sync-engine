@@ -173,6 +173,20 @@ class DestinationAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def set_message_reply(
+        self,
+        message: DestinationMessageRef,
+        reply_to: DestinationMessageRef | None,
+    ) -> None:
+        """
+        Set or clear the reply relationship of a destination message.
+
+        Destination references are used because canonical message IDs do
+        not identify objects on the destination platform.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def pin_message(
         self,
         message_id: MessageId,

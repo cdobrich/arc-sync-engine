@@ -216,6 +216,8 @@ def test_apply_execution_result_adds_message_reference() -> None:
         message_reactions=(),
         message_attachments=(),
         message_pinned=False,
+        message_reply_to=None,
+        message_reply_to_synchronized=True,
     )
 
     updated = state.apply_execution_result(
@@ -249,6 +251,9 @@ def test_apply_execution_result_updates_message_components_without_completing_fi
         message_pinned={
             "message-001": False,
         },
+        message_reply_to={
+            "message-001": None,
+        },
     )
 
     updated = state.apply_execution_result(
@@ -277,6 +282,7 @@ def test_apply_execution_result_updates_attachment_baseline_without_completing_f
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     attachment = CanonicalAttachment(
@@ -319,6 +325,9 @@ def test_apply_execution_result_completes_message_fingerprint() -> None:
         message_pinned={
             "message-001": False,
         },
+        message_reply_to={
+            "message-001": None,
+        },
     )
 
     updated = state.apply_execution_result(
@@ -327,6 +336,8 @@ def test_apply_execution_result_completes_message_fingerprint() -> None:
             canonical_id="message-001",
             canonical_fingerprint="new-fingerprint",
             message_pinned=True,
+            message_reply_to=None,
+            message_reply_to_synchronized=True,
         ),
     )
 
@@ -460,6 +471,7 @@ def test_message_fingerprint_cannot_advance_without_component_update() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     with pytest.raises(ValueError, match="without a message reference"):

@@ -43,6 +43,7 @@ from archive_sync_engine.operations import (
     PinMessageOperation,
     RemoveAttachmentOperation,
     RemoveReactionOperation,
+    SetMessageReplyOperation,
     SyncOperation,
     UnpinMessageOperation,
     UpdateConversationOperation,
@@ -352,16 +353,27 @@ class Planner:
         """
         Plan message creation and component-level reconciliation.
 
-        A message fingerprint includes content, attachments, reactions,
-        and pin state. Those components are deliberately decomposed into
-        their own operations so that attachment, reaction, or pin changes
-        do not become an EditMessageOperation.
-
-        Existing synchronized messages must have a complete component
-        baseline in SynchronizationState. Missing required state is an
-        invalid current synchronization state and raises rather than
-        silently planning against incomplete synchronization metadata.
+        Content, attachments, reactions, pin state, and reply relationships
+        are independently synchronized. Reply operations are deferred until
+        after all message operations have been planned so execution-local
+        destination references exist for replies to messages created during
+        the same synchronization run.
         """
+
+        message_ids = {str(message.id) for message in messages}
+        stale_message_ids = set(synchronization_state.messages) - message_ids
+
+        for message in messages:
+            if message.reply_to is not None:
+                reply_id = str(message.reply_to)
+                if reply_id not in message_ids or reply_id in stale_message_ids:
+                    raise RuntimeError(
+                        "Message "
+                        f"{message.id} references reply target {message.reply_to} "
+                        "that is not present in the canonical Archive."
+                    )
+
+        reply_operations: list[SyncOperation] = []
 
         for message in messages:
             message_id = str(message.id)
@@ -371,19 +383,26 @@ class Planner:
                 yield CreateMessageOperation(
                     message=message,
                 )
+
+                if message.reply_to is not None:
+                    self._require_capability(
+                        capabilities.supports_replying,
+                        "supports_replying",
+                        "set message replies",
+                    )
+                    reply_operations.append(
+                        SetMessageReplyOperation(
+                            message_id=message.id,
+                            reply_to=message.reply_to,
+                            canonical_fingerprint=fingerprint,
+                        ),
+                    )
+
                 continue
 
-            previous_fingerprint = (
-                synchronization_state.message_fingerprints.get(
-                    message_id,
-                )
+            previous_fingerprint = synchronization_state.message_fingerprints.get(
+                message_id,
             )
-
-            if previous_fingerprint is None:
-                raise RuntimeError(
-                    "Synchronization state is missing the canonical fingerprint "
-                    f"for message {message_id}."
-                )
 
             if message_id not in synchronization_state.message_content_fingerprints:
                 raise RuntimeError(
@@ -412,31 +431,48 @@ class Planner:
             previous_content_fingerprint = (
                 synchronization_state.message_content_fingerprints[message_id]
             )
-            previous_reactions = synchronization_state.message_reactions[
-                message_id
-            ]
+            previous_reactions = synchronization_state.message_reactions[message_id]
             previous_attachments = synchronization_state.message_attachments[
                 message_id
             ]
             previous_pinned = synchronization_state.message_pinned[message_id]
 
-            current_content_fingerprint = (
-                canonical_message_content_fingerprint(message)
+            current_content_fingerprint = canonical_message_content_fingerprint(
+                message,
             )
             current_reactions = tuple(message.reactions)
             current_attachments = tuple(message.attachments)
             current_pinned = message.pinned
 
+            reply_baseline_present = message_id in synchronization_state.message_reply_to
+            previous_reply_to = synchronization_state.message_reply_to.get(message_id)
+
+            if previous_fingerprint is None and reply_baseline_present:
+                raise RuntimeError(
+                    "Synchronization state for message "
+                    f"{message_id} has a reply baseline but no complete canonical "
+                    "message fingerprint."
+                )
+
+            if previous_fingerprint is not None and not reply_baseline_present:
+                raise RuntimeError(
+                    "Synchronization state is missing the reply baseline "
+                    f"for message {message_id}."
+                )
+
             content_changed = (
-                previous_content_fingerprint
-                != current_content_fingerprint
+                previous_content_fingerprint != current_content_fingerprint
             )
             reactions_changed = previous_reactions != current_reactions
             attachments_changed = previous_attachments != current_attachments
             pinned_changed = previous_pinned != current_pinned
+            reply_changed = (
+                not reply_baseline_present
+                or previous_reply_to != message.reply_to
+            )
 
-            if attachments_changed and (
-                set(previous_attachments) == set(current_attachments)
+            if attachments_changed and set(previous_attachments) == set(
+                current_attachments,
             ):
                 raise RuntimeError(
                     "Attachment ordering changed for message "
@@ -449,13 +485,13 @@ class Planner:
                 or reactions_changed
                 or attachments_changed
                 or pinned_changed
+                or reply_changed
             ):
                 if previous_fingerprint != fingerprint:
                     raise RuntimeError(
                         "Synchronization state for message "
                         f"{message_id} has an inconsistent canonical fingerprint."
                     )
-
                 continue
 
             operations: list[SyncOperation] = []
@@ -466,12 +502,7 @@ class Planner:
                     "supports_message_editing",
                     "edit messages",
                 )
-
-                operations.append(
-                    EditMessageOperation(
-                        message=message,
-                    ),
-                )
+                operations.append(EditMessageOperation(message=message))
 
             if reactions_changed:
                 self._require_capability(
@@ -481,13 +512,10 @@ class Planner:
                 )
 
             working_reactions = list(previous_reactions)
-
             for reaction in previous_reactions:
                 if reaction in current_reactions:
                     continue
-
                 working_reactions.remove(reaction)
-
                 operations.append(
                     RemoveReactionOperation(
                         message_id=message.id,
@@ -499,9 +527,7 @@ class Planner:
             for reaction in current_reactions:
                 if reaction in previous_reactions:
                     continue
-
                 working_reactions.append(reaction)
-
                 operations.append(
                     AddReactionOperation(
                         message_id=message.id,
@@ -518,13 +544,10 @@ class Planner:
                 )
 
             working_attachments = list(previous_attachments)
-
             for attachment in previous_attachments:
                 if attachment in current_attachments:
                     continue
-
                 working_attachments.remove(attachment)
-
                 operations.append(
                     RemoveAttachmentOperation(
                         message_id=message.id,
@@ -536,9 +559,7 @@ class Planner:
             for attachment in current_attachments:
                 if attachment in previous_attachments:
                     continue
-
                 working_attachments.append(attachment)
-
                 operations.append(
                     AddAttachmentOperation(
                         message_id=message.id,
@@ -553,32 +574,37 @@ class Planner:
                     "supports_message_pinning",
                     "change message pin state",
                 )
-
-                if current_pinned:
-                    operations.append(
-                        PinMessageOperation(
-                            message_id=message.id,
-                        ),
-                    )
-                else:
-                    operations.append(
-                        UnpinMessageOperation(
-                            message_id=message.id,
-                        ),
-                    )
-
-            if not operations:
-                raise RuntimeError(
-                    "Message reconciliation produced no operation despite "
-                    f"detected changes for message {message_id}."
+                operations.append(
+                    PinMessageOperation(message_id=message.id)
+                    if current_pinned
+                    else UnpinMessageOperation(message_id=message.id)
                 )
 
-            operations[-1] = self._mark_message_operation_complete(
-                operation=operations[-1],
-                canonical_fingerprint=fingerprint,
-            )
+            if reply_changed:
+                self._require_capability(
+                    capabilities.supports_replying,
+                    "supports_replying",
+                    "set message replies",
+                )
+                reply_operations.append(
+                    SetMessageReplyOperation(
+                        message_id=message.id,
+                        reply_to=message.reply_to,
+                        canonical_fingerprint=fingerprint,
+                    ),
+                )
 
-            yield from operations
+            if operations:
+                if reply_changed:
+                    yield from operations
+                else:
+                    operations[-1] = self._mark_message_operation_complete(
+                        operation=operations[-1],
+                        canonical_fingerprint=fingerprint,
+                    )
+                    yield from operations
+
+        yield from reply_operations
 
     @staticmethod
     def _mark_message_operation_complete(

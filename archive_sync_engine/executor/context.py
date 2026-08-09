@@ -10,6 +10,7 @@ The context belongs to one execution and is never persisted.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from archive_sync_engine.adapters.references import (
     DestinationConversationRef,
@@ -24,6 +25,9 @@ from archive_sync_engine.models.ids import (
     IdentityKey,
     MessageId,
 )
+
+if TYPE_CHECKING:
+    from archive_sync_engine.sync.synchronization_state import SynchronizationState
 
 
 @dataclass(slots=True)
@@ -55,6 +59,28 @@ class ExecutionContext:
     ] = field(
         default_factory=dict,
     )
+
+    @classmethod
+    def from_synchronization_state(
+        cls,
+        state: "SynchronizationState",
+    ) -> "ExecutionContext":
+        """Create an execution context seeded from persisted references."""
+
+        context = cls()
+        context.conversations.update({
+            ConversationId(canonical_id): destination_ref
+            for canonical_id, destination_ref in state.conversations.items()
+        })
+        context.identities.update({
+            IdentityKey(canonical_id): destination_ref
+            for canonical_id, destination_ref in state.identities.items()
+        })
+        context.messages.update({
+            MessageId(canonical_id): destination_ref
+            for canonical_id, destination_ref in state.messages.items()
+        })
+        return context
 
     def record_conversation(
         self,

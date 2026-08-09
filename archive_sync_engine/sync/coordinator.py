@@ -28,6 +28,7 @@ from archive_sync_engine.adapters import (
     DestinationCapabilities,
 )
 from archive_sync_engine.executor import (
+    ExecutionContext,
     ExecutionResult,
     OperationExecutor,
 )
@@ -84,6 +85,10 @@ class SyncCoordinator:
             self._state_repository.load_synchronization_state()
         )
 
+        execution_context = ExecutionContext.from_synchronization_state(
+            synchronization_state,
+        )
+
         operations: Iterator[SyncOperation] = self._planner.plan(
             archive=self._archive,
             synchronization_state=synchronization_state,
@@ -94,6 +99,7 @@ class SyncCoordinator:
             result: ExecutionResult = self._executor.execute(
                 operation=operation,
                 destination=self._destination,
+                context=execution_context,
             )
 
             synchronization_state = (

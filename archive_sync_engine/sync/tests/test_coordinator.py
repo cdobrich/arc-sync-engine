@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
-from unittest.mock import Mock, call
+from dataclasses import replace
+from unittest.mock import ANY, Mock, call
 
 import pytest
 
@@ -32,6 +33,7 @@ from archive_sync_engine.sync.synchronization_state import (
 
 from archive_sync_engine.adapters.references import (
     DestinationConversationRef,
+    DestinationMessageRef,
 )
 from archive_sync_engine.executor import (
     ExecutionResult,
@@ -210,14 +212,17 @@ def test_synchronize_executes_operations_in_planner_order() -> None:
         call(
             operation=operation_one,
             destination=destination,
+            context=ANY,
         ),
         call(
             operation=operation_two,
             destination=destination,
+            context=ANY,
         ),
         call(
             operation=operation_three,
             destination=destination,
+            context=ANY,
         ),
     ]
 
@@ -335,6 +340,7 @@ def test_synchronize_propagates_executor_failure() -> None:
     executor.execute.assert_called_once_with(
         operation=operation,
         destination=destination,
+        context=ANY,
     )
 
 def test_synchronize_persists_component_progress_before_later_failure() -> None:
@@ -385,6 +391,7 @@ def test_synchronize_persists_component_progress_before_later_failure() -> None:
         message_reactions={"message-001": (old_reaction,)},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
     state_repository = InMemoryStateRepository(
         synchronization_state=initial_state,
@@ -481,6 +488,7 @@ def test_synchronize_persists_attachment_progress_before_later_pin_failure(
             message_reactions={"message-001": ()},
             message_attachments={"message-001": ()},
             message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
         ),
     )
 
@@ -570,6 +578,7 @@ def test_synchronize_records_successful_execution() -> None:
     executor.execute.assert_called_once_with(
         operation=operation,
         destination=destination,
+        context=ANY,
     )
 
     state_repository.record_execution.assert_called_once_with(
@@ -622,6 +631,7 @@ def test_synchronize_does_not_record_failed_execution() -> None:
     executor.execute.assert_called_once_with(
         operation=operation,
         destination=destination,
+        context=ANY,
     )
 
     state_repository.record_execution.assert_not_called()
@@ -977,4 +987,142 @@ def test_synchronize_persists_state_in_concrete_repository() -> None:
     assert (
         state.conversations["conversation-001"]
         == destination_ref
+    )
+
+def test_synchronize_creates_messages_then_applies_reply_using_execution_context() -> None:
+    archive = _archive()
+    destination = _destination()
+    conversation = CanonicalConversation(
+        id=ConversationId("conversation-001"),
+        conversation_type=ConversationType.CHANNEL,
+        title="conversation-001",
+    )
+    target = CanonicalMessage(
+        id=MessageId("message-002"),
+        conversation_id=conversation.id,
+        identity_key=IdentityKey("identity-001"),
+        content="Target",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+    )
+    reply = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=conversation.id,
+        identity_key=IdentityKey("identity-001"),
+        content="Reply",
+        created_at=datetime(2026, 8, 1, 12, 1, tzinfo=timezone.utc),
+        reply_to=target.id,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.side_effect = lambda: iter([reply, target])
+
+    destination.create_conversation.return_value = DestinationConversationRef(
+        "destination-conversation-001",
+    )
+    destination.create_message.side_effect = [
+        DestinationMessageRef("destination-message-001"),
+        DestinationMessageRef("destination-message-002"),
+    ]
+
+    state_repository = InMemoryStateRepository()
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=Planner(),
+        executor=OperationExecutor(),
+        destination=destination,
+        capabilities=_capabilities(),
+        state_repository=state_repository,
+    )
+
+    coordinator.synchronize()
+
+    destination.create_message.assert_has_calls(
+        [
+            call(replace(reply, reply_to=None)),
+            call(target),
+        ],
+    )
+    destination.set_message_reply.assert_called_once_with(
+        DestinationMessageRef("destination-message-001"),
+        DestinationMessageRef("destination-message-002"),
+    )
+
+    state = state_repository.load_synchronization_state()
+    assert state.message_reply_to == {
+        "message-001": target.id,
+        "message-002": None,
+    }
+    assert state.message_fingerprints["message-001"] == (
+        canonical_fingerprint(reply)
+    )
+
+
+def test_synchronize_retries_only_failed_reply_after_partial_message_creation() -> None:
+    archive = _archive()
+    destination = _destination()
+    conversation = CanonicalConversation(
+        id=ConversationId("conversation-001"),
+        conversation_type=ConversationType.CHANNEL,
+        title="conversation-001",
+    )
+    target = CanonicalMessage(
+        id=MessageId("message-002"),
+        conversation_id=conversation.id,
+        identity_key=IdentityKey("identity-001"),
+        content="Target",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+    )
+    reply = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=conversation.id,
+        identity_key=IdentityKey("identity-001"),
+        content="Reply",
+        created_at=datetime(2026, 8, 1, 12, 1, tzinfo=timezone.utc),
+        reply_to=target.id,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.side_effect = lambda: iter([reply, target])
+
+    destination.create_conversation.return_value = DestinationConversationRef(
+        "destination-conversation-001",
+    )
+    destination.create_message.side_effect = [
+        DestinationMessageRef("destination-message-001"),
+        DestinationMessageRef("destination-message-002"),
+    ]
+    destination.set_message_reply.side_effect = [
+        RuntimeError("reply failed"),
+        None,
+    ]
+
+    state_repository = InMemoryStateRepository()
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=Planner(),
+        executor=OperationExecutor(),
+        destination=destination,
+        capabilities=_capabilities(),
+        state_repository=state_repository,
+    )
+
+    with pytest.raises(RuntimeError, match="reply failed"):
+        coordinator.synchronize()
+
+    partial_state = state_repository.load_synchronization_state()
+    assert "message-001" in partial_state.messages
+    assert "message-001" not in partial_state.message_fingerprints
+    assert "message-001" not in partial_state.message_reply_to
+
+    coordinator.synchronize()
+
+    assert destination.create_message.call_count == 2
+    assert destination.set_message_reply.call_count == 2
+
+    final_state = state_repository.load_synchronization_state()
+    assert final_state.message_reply_to["message-001"] == target.id
+    assert final_state.message_fingerprints["message-001"] == (
+        canonical_fingerprint(reply)
     )

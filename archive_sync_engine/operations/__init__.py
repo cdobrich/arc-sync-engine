@@ -39,6 +39,8 @@ from .attachment import (
     RemoveAttachmentOperation,
 )
 
+from .reply import SetMessageReplyOperation
+
 __all__ = [
     "SyncOperation",
 
@@ -60,4 +62,6 @@ __all__ = [
 
     "AddAttachmentOperation",
     "RemoveAttachmentOperation",
+
+    "SetMessageReplyOperation",
 ]
