@@ -78,6 +78,8 @@ If I had to summarize the entire architecture in a single sentence, it would be:
 > Tests protect meaningful architectural or behavioral contracts; they are not the project deliverable.
 
 > One operation affects one canonical entity and therefore produces at most one destination reference.
+ 
+> SynchronizationState is immutable by transition semantics. Internal mappings are treated as read-only by convention and are replaced, never mutated, during state transitions.
 
 ## Archive & ArchiveWriter
 
@@ -436,6 +438,9 @@ Reactions belong to Messages.
 
 Multiple users reacting with the same emoji produce distinct rows.
 
+### Planner
+
+> A destination lacking capability to represent required canonical state causes planning to fail with CapabilityError. Archive state is never silently discarded unless the project introduces an explicit lossy synchronization policy.
         
 ### Syncing
 
@@ -453,6 +458,7 @@ Multiple users reacting with the same emoji produce distinct rows.
 
 > When syncing: Every feature becomes an Operation.
 
+> SynchronizationState is immutable by transition semantics. Internal mappings are treated as read-only by convention and are replaced, never mutated, during state transitions.
 
 
 ### Operation

@@ -26,6 +26,7 @@ class DestinationCapabilities:
     supports_threads: bool = False
     supports_message_editing: bool = True
     supports_message_deletion: bool = True
+    supports_conversation_deletion: bool = True
     supports_message_pinning: bool = True
     supports_reactions: bool = True
     supports_custom_emoji: bool = True

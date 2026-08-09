@@ -23,10 +23,15 @@ class CreateMessageOperation(SyncOperation):
 @dataclass(frozen=True, slots=True)
 class EditMessageOperation(SyncOperation):
     """
-    Edit a message.
+    Edit the message content state.
+
+    canonical_fingerprint is supplied when this operation also completes
+    the complete canonical message baseline. It is omitted when reaction
+    or pin operations still need to be executed.
     """
 
     message: CanonicalMessage
+    canonical_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,15 +47,23 @@ class DeleteMessageOperation(SyncOperation):
 class PinMessageOperation(SyncOperation):
     """
     Pin a message.
+
+    canonical_fingerprint is supplied when pinning completes the complete
+    canonical message baseline.
     """
 
     message_id: MessageId
+    canonical_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class UnpinMessageOperation(SyncOperation):
     """
     Unpin a message.
+
+    canonical_fingerprint is supplied when unpinning completes the complete
+    canonical message baseline.
     """
 
     message_id: MessageId
+    canonical_fingerprint: str | None = None

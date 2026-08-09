@@ -62,6 +62,45 @@ def canonical_fingerprint(
     ).hexdigest()
 
 
+def canonical_message_content_fingerprint(
+    message: CanonicalMessage,
+) -> str:
+    """
+    Return a fingerprint for message state excluding reactions and pin state.
+
+    Message content is reconciled through EditMessageOperation. Reactions
+    and pin state are reconciled by their dedicated operations.
+    """
+
+    normalized = _normalize(
+        message,
+    )
+
+    normalized.pop(
+        "reactions",
+        None,
+    )
+    normalized.pop(
+        "pinned",
+        None,
+    )
+
+    encoded = json.dumps(
+        normalized,
+        sort_keys=True,
+        separators=(
+            ",",
+            ":",
+        ),
+    ).encode(
+        "utf-8",
+    )
+
+    return hashlib.sha256(
+        encoded,
+    ).hexdigest()
+
+
 def _normalize(
     value: object,
 ) -> Any:

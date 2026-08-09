@@ -3,6 +3,8 @@ Tests for the synchronization coordinator.
 """
 
 from __future__ import annotations
+
+from datetime import datetime, timezone
 from unittest.mock import Mock, call
 
 import pytest
@@ -18,6 +20,10 @@ from archive_sync_engine.operations import (
 from archive_sync_engine.planner import Planner
 from archive_sync_engine.repository import StateRepository, InMemoryStateRepository
 from archive_sync_engine.sync.coordinator import SyncCoordinator
+from archive_sync_engine.sync.fingerprint import (
+    canonical_fingerprint,
+    canonical_message_content_fingerprint,
+)
 from archive_sync_engine.sync.synchronization_state import (
     SynchronizationState,
 )
@@ -31,15 +37,20 @@ from archive_sync_engine.executor import (
 )
 from archive_sync_engine.models import (
     CanonicalConversation,
+    CanonicalMessage,
+    CanonicalReaction,
 )
 from archive_sync_engine.models.enums import (
     ConversationType,
 )
 from archive_sync_engine.models.ids import (
     ConversationId,
+    IdentityKey,
+    MessageId,
 )
 from archive_sync_engine.operations import (
     CreateConversationOperation,
+    PinMessageOperation,
 )
 
 
@@ -91,6 +102,7 @@ def _capabilities() -> DestinationCapabilities:
     return DestinationCapabilities(
         supports_message_editing=True,
         supports_message_deletion=True,
+        supports_conversation_deletion=True,
         supports_message_pinning=True,
         supports_reactions=True,
         supports_custom_emoji=True,
@@ -321,6 +333,101 @@ def test_synchronize_propagates_executor_failure() -> None:
         destination=destination,
     )
 
+def test_synchronize_persists_component_progress_before_later_failure() -> None:
+    archive = _archive()
+    destination = _destination()
+    state_repository = InMemoryStateRepository()
+
+    old_reaction = CanonicalReaction(
+        emoji="👍",
+        identity_key=IdentityKey("identity-001"),
+    )
+    new_reaction = CanonicalReaction(
+        emoji="❤️",
+        identity_key=IdentityKey("identity-001"),
+    )
+
+    old_message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="old content",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        pinned=False,
+        reactions=(old_reaction,),
+    )
+    desired_message = CanonicalMessage(
+        id=old_message.id,
+        conversation_id=old_message.conversation_id,
+        identity_key=old_message.identity_key,
+        content="new content",
+        created_at=old_message.created_at,
+        pinned=True,
+        reactions=(new_reaction,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.side_effect = lambda: iter([desired_message])
+
+    initial_state = SynchronizationState(
+        messages={"message-001": Mock()},
+        message_fingerprints={
+            "message-001": canonical_fingerprint(old_message),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(old_message),
+        },
+        message_reactions={"message-001": (old_reaction,)},
+        message_pinned={"message-001": False},
+    )
+    state_repository = InMemoryStateRepository(
+        synchronization_state=initial_state,
+    )
+
+    destination.pin_message.side_effect = RuntimeError(
+        "pin failed",
+    )
+
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=Planner(),
+        executor=OperationExecutor(),
+        destination=destination,
+        capabilities=_capabilities(),
+        state_repository=state_repository,
+    )
+
+    with pytest.raises(RuntimeError, match="pin failed"):
+        coordinator.synchronize()
+
+    state = state_repository.load_synchronization_state()
+
+    assert state.message_content_fingerprints["message-001"] == (
+        canonical_message_content_fingerprint(desired_message)
+    )
+    assert state.message_reactions["message-001"] == (new_reaction,)
+    assert state.message_pinned["message-001"] is False
+    assert state.message_fingerprints["message-001"] == (
+        canonical_fingerprint(old_message)
+    )
+
+    remaining_operations = list(
+        Planner().plan(
+            archive=archive,
+            synchronization_state=state,
+            capabilities=_capabilities(),
+        ),
+    )
+
+    assert remaining_operations == [
+        PinMessageOperation(
+            message_id=desired_message.id,
+            canonical_fingerprint=canonical_fingerprint(desired_message),
+        ),
+    ]
+
+
 def test_synchronize_records_successful_execution() -> None:
     archive = _archive()
     planner = _planner()
@@ -446,6 +553,8 @@ def test_synchronize_accumulates_execution_state() -> None:
     result = ExecutionResult(
         conversation=destination_ref,
         canonical_id=str(conversation.id),
+        canonical_fingerprint=canonical_fingerprint(conversation),
+        conversation_parent_id=None,
     )
 
     state_repository.load_synchronization_state.return_value = (
@@ -474,6 +583,8 @@ def test_synchronize_accumulates_execution_state() -> None:
     expected_state = initial_state.with_conversation(
         canonical_id=str(conversation.id),
         destination_ref=destination_ref,
+        fingerprint=canonical_fingerprint(conversation),
+        parent_id=None,
     )
 
     state_repository.record_execution.assert_called_once_with(
@@ -523,11 +634,15 @@ def test_synchronize_accumulates_multiple_execution_results() -> None:
     result_one = ExecutionResult(
         conversation=destination_ref_one,
         canonical_id=str(conversation_one.id),
+        canonical_fingerprint=canonical_fingerprint(conversation_one),
+        conversation_parent_id=None,
     )
 
     result_two = ExecutionResult(
         conversation=destination_ref_two,
         canonical_id=str(conversation_two.id),
+        canonical_fingerprint=canonical_fingerprint(conversation_two),
+        conversation_parent_id=None,
     )
 
     state_repository.load_synchronization_state.return_value = (
@@ -560,11 +675,15 @@ def test_synchronize_accumulates_multiple_execution_results() -> None:
     expected_state_one = initial_state.with_conversation(
         canonical_id=str(conversation_one.id),
         destination_ref=destination_ref_one,
+        fingerprint=canonical_fingerprint(conversation_one),
+        parent_id=None,
     )
 
     expected_state_two = expected_state_one.with_conversation(
         canonical_id=str(conversation_two.id),
         destination_ref=destination_ref_two,
+        fingerprint=canonical_fingerprint(conversation_two),
+        parent_id=None,
     )
 
     assert state_repository.record_execution.call_args_list == [
@@ -648,6 +767,14 @@ def test_synchronize_records_updated_state_after_execution() -> None:
     result = ExecutionResult(
         canonical_id="conversation-001",
         conversation=destination_ref,
+        canonical_fingerprint=canonical_fingerprint(
+            CanonicalConversation(
+                id=ConversationId("conversation-001"),
+                conversation_type=ConversationType.CHANNEL,
+                title="General",
+            ),
+        ),
+        conversation_parent_id=None,
     )
 
     state_repository.load_synchronization_state.return_value = (
@@ -720,6 +847,10 @@ def test_synchronize_persists_state_in_concrete_repository() -> None:
     result = ExecutionResult(
         canonical_id=str(operation.conversation.id),
         conversation=destination_ref,
+        canonical_fingerprint=canonical_fingerprint(
+            operation.conversation,
+        ),
+        conversation_parent_id=None,
     )
 
     planner.plan.return_value = iter(

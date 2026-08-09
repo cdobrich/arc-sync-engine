@@ -4,13 +4,12 @@ Synchronization state.
 A SynchronizationState is an immutable snapshot of the synchronization
 metadata required by the Planner to compute synchronization work.
 
-The state records:
+The state records destination references and the canonical fingerprints
+last successfully synchronized for those references.
 
-    * destination references; and
-    * the canonical fingerprint last successfully synchronized.
-
-The Planner can therefore determine whether an entity is new, changed,
-unchanged, or stale.
+For messages, the state also records the independent canonical baselines
+for editable content, reactions, and pin state. This allows the Planner to
+decompose a message fingerprint difference into the appropriate operations.
 """
 
 from __future__ import annotations
@@ -22,183 +21,192 @@ from archive_sync_engine.adapters.references import (
     DestinationIdentityRef,
     DestinationMessageRef,
 )
-from archive_sync_engine.executor.result import ExecutionResult
+from archive_sync_engine.executor.result import (
+    DeletedEntityType,
+    ExecutionResult,
+)
+from archive_sync_engine.models import CanonicalReaction
 
 
 @dataclass(frozen=True, slots=True)
 class SynchronizationState:
     """
-    Immutable synchronization snapshot.
+    Transition-immutable synchronization snapshot.
+
+    State changes use functional transitions: every ``with_*`` or
+    ``without_*`` method returns a new snapshot and leaves the existing
+    snapshot unchanged. The mappings stored by the snapshot are treated as
+    read-only by contract; callers must not mutate them in place.
 
     Destination references identify corresponding destination objects.
 
-    Fingerprints identify the canonical state that was successfully
-    synchronized for each corresponding object.
+    Fingerprints identify canonical state successfully synchronized for
+    each corresponding object.
+
+    Message component baselines are part of the current state contract:
+    every synchronized message has a content fingerprint, reaction
+    baseline, and pin baseline.
+
+    Conversation parent relationships are retained because the canonical
+    parent may no longer be present in the Archive when a conversation is
+    deleted. They are required for child-before-parent deletion ordering.
     """
 
     conversations: dict[
         str,
         DestinationConversationRef,
-    ] = field(
-        default_factory=dict,
-    )
+    ] = field(default_factory=dict)
 
     identities: dict[
         str,
         DestinationIdentityRef,
-    ] = field(
-        default_factory=dict,
-    )
+    ] = field(default_factory=dict)
 
     messages: dict[
         str,
         DestinationMessageRef,
-    ] = field(
-        default_factory=dict,
-    )
+    ] = field(default_factory=dict)
 
     conversation_fingerprints: dict[
         str,
         str,
-    ] = field(
-        default_factory=dict,
-    )
+    ] = field(default_factory=dict)
+
+    conversation_parent_ids: dict[
+        str,
+        str | None,
+    ] = field(default_factory=dict)
 
     identity_fingerprints: dict[
         str,
         str,
-    ] = field(
-        default_factory=dict,
-    )
+    ] = field(default_factory=dict)
 
     message_fingerprints: dict[
         str,
         str,
-    ] = field(
-        default_factory=dict,
-    )
+    ] = field(default_factory=dict)
+
+    message_content_fingerprints: dict[
+        str,
+        str,
+    ] = field(default_factory=dict)
+
+    message_reactions: dict[
+        str,
+        tuple[CanonicalReaction, ...],
+    ] = field(default_factory=dict)
+
+    message_pinned: dict[
+        str,
+        bool,
+    ] = field(default_factory=dict)
 
     def with_conversation(
         self,
         canonical_id: str,
         destination_ref: DestinationConversationRef,
-        fingerprint: str | None = None,
+        fingerprint: str,
+        parent_id: str | None,
     ) -> SynchronizationState:
         """
-        Return a new state containing a destination conversation
-        reference and optional canonical fingerprint.
+        Return a new state containing a synchronized conversation.
         """
 
-        conversations = dict(
-            self.conversations,
-        )
-
+        conversations = dict(self.conversations)
         conversations[canonical_id] = destination_ref
 
-        fingerprints = dict(
-            self.conversation_fingerprints,
-        )
+        fingerprints = dict(self.conversation_fingerprints)
+        fingerprints[canonical_id] = fingerprint
 
-        if fingerprint is not None:
-            fingerprints[canonical_id] = fingerprint
+        parent_ids = dict(self.conversation_parent_ids)
+        parent_ids[canonical_id] = parent_id
 
         return SynchronizationState(
             conversations=conversations,
-            identities=dict(
-                self.identities,
-            ),
-            messages=dict(
-                self.messages,
-            ),
+            identities=dict(self.identities),
+            messages=dict(self.messages),
             conversation_fingerprints=fingerprints,
-            identity_fingerprints=dict(
-                self.identity_fingerprints,
+            conversation_parent_ids=parent_ids,
+            identity_fingerprints=dict(self.identity_fingerprints),
+            message_fingerprints=dict(self.message_fingerprints),
+            message_content_fingerprints=dict(
+                self.message_content_fingerprints,
             ),
-            message_fingerprints=dict(
-                self.message_fingerprints,
-            ),
+            message_reactions=dict(self.message_reactions),
+            message_pinned=dict(self.message_pinned),
         )
 
     def with_identity(
         self,
         identity_key: str,
         destination_ref: DestinationIdentityRef,
-        fingerprint: str | None = None,
+        fingerprint: str,
     ) -> SynchronizationState:
         """
-        Return a new state containing a destination identity
-        reference and optional canonical fingerprint.
+        Return a new state containing a synchronized identity.
         """
 
-        identities = dict(
-            self.identities,
-        )
-
+        identities = dict(self.identities)
         identities[identity_key] = destination_ref
 
-        fingerprints = dict(
-            self.identity_fingerprints,
-        )
-
-        if fingerprint is not None:
-            fingerprints[identity_key] = fingerprint
+        fingerprints = dict(self.identity_fingerprints)
+        fingerprints[identity_key] = fingerprint
 
         return SynchronizationState(
-            conversations=dict(
-                self.conversations,
-            ),
+            conversations=dict(self.conversations),
             identities=identities,
-            messages=dict(
-                self.messages,
-            ),
-            conversation_fingerprints=dict(
-                self.conversation_fingerprints,
-            ),
+            messages=dict(self.messages),
+            conversation_fingerprints=dict(self.conversation_fingerprints),
+            conversation_parent_ids=dict(self.conversation_parent_ids),
             identity_fingerprints=fingerprints,
-            message_fingerprints=dict(
-                self.message_fingerprints,
+            message_fingerprints=dict(self.message_fingerprints),
+            message_content_fingerprints=dict(
+                self.message_content_fingerprints,
             ),
+            message_reactions=dict(self.message_reactions),
+            message_pinned=dict(self.message_pinned),
         )
 
     def with_message(
         self,
         canonical_id: str,
         destination_ref: DestinationMessageRef,
-        fingerprint: str | None = None,
+        fingerprint: str,
+        content_fingerprint: str,
+        reactions: tuple[CanonicalReaction, ...],
+        pinned: bool,
     ) -> SynchronizationState:
         """
-        Return a new state containing a destination message
-        reference and optional canonical fingerprint.
+        Return a new state containing a fully synchronized message.
         """
 
-        messages = dict(
-            self.messages,
-        )
-
+        messages = dict(self.messages)
         messages[canonical_id] = destination_ref
 
-        fingerprints = dict(
-            self.message_fingerprints,
-        )
+        fingerprints = dict(self.message_fingerprints)
+        fingerprints[canonical_id] = fingerprint
 
-        if fingerprint is not None:
-            fingerprints[canonical_id] = fingerprint
+        content_fingerprints = dict(self.message_content_fingerprints)
+        content_fingerprints[canonical_id] = content_fingerprint
+
+        message_reactions = dict(self.message_reactions)
+        message_reactions[canonical_id] = tuple(reactions)
+
+        message_pinned = dict(self.message_pinned)
+        message_pinned[canonical_id] = pinned
 
         return SynchronizationState(
-            conversations=dict(
-                self.conversations,
-            ),
-            identities=dict(
-                self.identities,
-            ),
+            conversations=dict(self.conversations),
+            identities=dict(self.identities),
             messages=messages,
-            conversation_fingerprints=dict(
-                self.conversation_fingerprints,
-            ),
-            identity_fingerprints=dict(
-                self.identity_fingerprints,
-            ),
+            conversation_fingerprints=dict(self.conversation_fingerprints),
+            conversation_parent_ids=dict(self.conversation_parent_ids),
+            identity_fingerprints=dict(self.identity_fingerprints),
             message_fingerprints=fingerprints,
+            message_content_fingerprints=content_fingerprints,
+            message_reactions=message_reactions,
+            message_pinned=message_pinned,
         )
 
     def without_conversation(
@@ -209,39 +217,28 @@ class SynchronizationState:
         Return a new state without a synchronized conversation.
         """
 
-        conversations = dict(
-            self.conversations,
-        )
+        conversations = dict(self.conversations)
+        conversations.pop(canonical_id, None)
 
-        conversations.pop(
-            canonical_id,
-            None,
-        )
+        fingerprints = dict(self.conversation_fingerprints)
+        fingerprints.pop(canonical_id, None)
 
-        fingerprints = dict(
-            self.conversation_fingerprints,
-        )
-
-        fingerprints.pop(
-            canonical_id,
-            None,
-        )
+        parent_ids = dict(self.conversation_parent_ids)
+        parent_ids.pop(canonical_id, None)
 
         return SynchronizationState(
             conversations=conversations,
-            identities=dict(
-                self.identities,
-            ),
-            messages=dict(
-                self.messages,
-            ),
+            identities=dict(self.identities),
+            messages=dict(self.messages),
             conversation_fingerprints=fingerprints,
-            identity_fingerprints=dict(
-                self.identity_fingerprints,
+            conversation_parent_ids=parent_ids,
+            identity_fingerprints=dict(self.identity_fingerprints),
+            message_fingerprints=dict(self.message_fingerprints),
+            message_content_fingerprints=dict(
+                self.message_content_fingerprints,
             ),
-            message_fingerprints=dict(
-                self.message_fingerprints,
-            ),
+            message_reactions=dict(self.message_reactions),
+            message_pinned=dict(self.message_pinned),
         )
 
     def without_message(
@@ -252,39 +249,32 @@ class SynchronizationState:
         Return a new state without a synchronized message.
         """
 
-        messages = dict(
-            self.messages,
-        )
+        messages = dict(self.messages)
+        messages.pop(canonical_id, None)
 
-        messages.pop(
-            canonical_id,
-            None,
-        )
+        fingerprints = dict(self.message_fingerprints)
+        fingerprints.pop(canonical_id, None)
 
-        fingerprints = dict(
-            self.message_fingerprints,
-        )
+        content_fingerprints = dict(self.message_content_fingerprints)
+        content_fingerprints.pop(canonical_id, None)
 
-        fingerprints.pop(
-            canonical_id,
-            None,
-        )
+        message_reactions = dict(self.message_reactions)
+        message_reactions.pop(canonical_id, None)
+
+        message_pinned = dict(self.message_pinned)
+        message_pinned.pop(canonical_id, None)
 
         return SynchronizationState(
-            conversations=dict(
-                self.conversations,
-            ),
-            identities=dict(
-                self.identities,
-            ),
+            conversations=dict(self.conversations),
+            identities=dict(self.identities),
             messages=messages,
-            conversation_fingerprints=dict(
-                self.conversation_fingerprints,
-            ),
-            identity_fingerprints=dict(
-                self.identity_fingerprints,
-            ),
+            conversation_fingerprints=dict(self.conversation_fingerprints),
+            conversation_parent_ids=dict(self.conversation_parent_ids),
+            identity_fingerprints=dict(self.identity_fingerprints),
             message_fingerprints=fingerprints,
+            message_content_fingerprints=content_fingerprints,
+            message_reactions=message_reactions,
+            message_pinned=message_pinned,
         )
 
     def without_identity(
@@ -295,39 +285,25 @@ class SynchronizationState:
         Return a new state without a synchronized identity.
         """
 
-        identities = dict(
-            self.identities,
-        )
+        identities = dict(self.identities)
+        identities.pop(canonical_id, None)
 
-        identities.pop(
-            canonical_id,
-            None,
-        )
-
-        fingerprints = dict(
-            self.identity_fingerprints,
-        )
-
-        fingerprints.pop(
-            canonical_id,
-            None,
-        )
+        fingerprints = dict(self.identity_fingerprints)
+        fingerprints.pop(canonical_id, None)
 
         return SynchronizationState(
-            conversations=dict(
-                self.conversations,
-            ),
+            conversations=dict(self.conversations),
             identities=identities,
-            messages=dict(
-                self.messages,
-            ),
-            conversation_fingerprints=dict(
-                self.conversation_fingerprints,
-            ),
+            messages=dict(self.messages),
+            conversation_fingerprints=dict(self.conversation_fingerprints),
+            conversation_parent_ids=dict(self.conversation_parent_ids),
             identity_fingerprints=fingerprints,
-            message_fingerprints=dict(
-                self.message_fingerprints,
+            message_fingerprints=dict(self.message_fingerprints),
+            message_content_fingerprints=dict(
+                self.message_content_fingerprints,
             ),
+            message_reactions=dict(self.message_reactions),
+            message_pinned=dict(self.message_pinned),
         )
 
     def apply_execution_result(
@@ -336,38 +312,36 @@ class SynchronizationState:
         result: ExecutionResult,
     ) -> SynchronizationState:
         """
-        Return a new state containing the result of execution.
-
-        Results that contain no destination reference do not alter
-        synchronization state unless the result represents a deletion.
-
-        A result containing multiple destination references is rejected.
-
-        Deleted entities are removed from synchronization state.
+        Return a new state containing the result of successful execution.
         """
 
         if canonical_id is None:
             return self
 
         if result.deleted:
+            if result.deleted_entity is None:
+                raise ValueError(
+                    "Deleted ExecutionResult must identify its entity type."
+                )
 
-            references = (
-                result.conversation is not None,
-                result.identity is not None,
-                result.message is not None,
-            )
-
-            if any(
-                references,
+            if (
+                result.conversation is not None
+                or result.identity is not None
+                or result.message is not None
             ):
                 raise ValueError(
                     "Deleted ExecutionResult cannot contain "
                     "destination references."
                 )
 
-            raise RuntimeError(
-                "Deleted ExecutionResult requires operation-specific "
-                "state removal."
+            if result.deleted_entity is DeletedEntityType.CONVERSATION:
+                return self.without_conversation(canonical_id)
+
+            if result.deleted_entity is DeletedEntityType.MESSAGE:
+                return self.without_message(canonical_id)
+
+            raise ValueError(
+                f"Unsupported deleted entity type: {result.deleted_entity!r}"
             )
 
         references = (
@@ -376,35 +350,140 @@ class SynchronizationState:
             result.message is not None,
         )
 
-        reference_count = sum(
-            references,
-        )
-
-        if reference_count > 1:
+        if sum(references) > 1:
             raise ValueError(
                 "ExecutionResult cannot contain multiple destination "
                 "references."
             )
 
         if result.conversation is not None:
+            if result.canonical_fingerprint is None:
+                raise ValueError(
+                    "Conversation execution results require a canonical "
+                    "fingerprint."
+                )
+
             return self.with_conversation(
-                canonical_id,
-                result.conversation,
-                result.canonical_fingerprint,
+                canonical_id=canonical_id,
+                destination_ref=result.conversation,
+                fingerprint=result.canonical_fingerprint,
+                parent_id=result.conversation_parent_id,
             )
 
         if result.identity is not None:
+            if result.canonical_fingerprint is None:
+                raise ValueError(
+                    "Identity execution results require a canonical "
+                    "fingerprint."
+                )
+
             return self.with_identity(
-                canonical_id,
-                result.identity,
-                result.canonical_fingerprint,
+                identity_key=canonical_id,
+                destination_ref=result.identity,
+                fingerprint=result.canonical_fingerprint,
             )
 
         if result.message is not None:
+            if (
+                result.canonical_fingerprint is None
+                or result.message_content_fingerprint is None
+                or result.message_reactions is None
+                or result.message_pinned is None
+            ):
+                raise ValueError(
+                    "Message creation results require a complete canonical "
+                    "message baseline."
+                )
+
             return self.with_message(
-                canonical_id,
-                result.message,
-                result.canonical_fingerprint,
+                canonical_id=canonical_id,
+                destination_ref=result.message,
+                fingerprint=result.canonical_fingerprint,
+                content_fingerprint=result.message_content_fingerprint,
+                reactions=result.message_reactions,
+                pinned=result.message_pinned,
             )
 
-        return self
+        has_message_component_update = any(
+            value is not None
+            for value in (
+                result.message_content_fingerprint,
+                result.message_reactions,
+                result.message_pinned,
+            )
+        )
+
+        if not has_message_component_update:
+            if result.canonical_fingerprint is not None:
+                raise ValueError(
+                    "A message canonical fingerprint cannot be recorded "
+                    "without a message reference or component baseline update."
+                )
+
+            return self
+
+        if canonical_id not in self.messages:
+            raise ValueError(
+                "Message component execution results require an existing "
+                f"synchronized message {canonical_id}."
+            )
+
+        if result.canonical_fingerprint is not None:
+            missing_baselines = []
+
+            if canonical_id not in self.message_content_fingerprints:
+                missing_baselines.append("content")
+
+            if canonical_id not in self.message_reactions:
+                missing_baselines.append("reactions")
+
+            if canonical_id not in self.message_pinned:
+                missing_baselines.append("pin")
+
+            if missing_baselines:
+                raise ValueError(
+                    "A complete message canonical fingerprint cannot be "
+                    "recorded while message baselines are missing: "
+                    + ", ".join(missing_baselines)
+                    + "."
+                )
+
+        if result.message_content_fingerprint is not None:
+            content_fingerprints = dict(self.message_content_fingerprints)
+            content_fingerprints[canonical_id] = (
+                result.message_content_fingerprint
+            )
+        else:
+            content_fingerprints = dict(self.message_content_fingerprints)
+
+        if result.message_reactions is not None:
+            message_reactions = dict(self.message_reactions)
+            message_reactions[canonical_id] = tuple(
+                result.message_reactions,
+            )
+        else:
+            message_reactions = dict(self.message_reactions)
+
+        if result.message_pinned is not None:
+            message_pinned = dict(self.message_pinned)
+            message_pinned[canonical_id] = result.message_pinned
+        else:
+            message_pinned = dict(self.message_pinned)
+
+        fingerprints = dict(self.message_fingerprints)
+
+        if result.canonical_fingerprint is not None:
+            fingerprints[canonical_id] = result.canonical_fingerprint
+
+        return SynchronizationState(
+            conversations=dict(self.conversations),
+            identities=dict(self.identities),
+            messages=dict(self.messages),
+            conversation_fingerprints=dict(self.conversation_fingerprints),
+            conversation_parent_ids=dict(self.conversation_parent_ids),
+            identity_fingerprints=dict(self.identity_fingerprints),
+            message_fingerprints=fingerprints,
+            message_content_fingerprints=content_fingerprints,
+            message_reactions=message_reactions,
+            message_pinned=message_pinned,
+        )

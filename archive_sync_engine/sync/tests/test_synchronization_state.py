@@ -4,6 +4,7 @@ Tests for SynchronizationState.
 
 from __future__ import annotations
 from dataclasses import FrozenInstanceError
+from unittest.mock import Mock
 
 import pytest
 
@@ -15,8 +16,12 @@ from archive_sync_engine.adapters.references import (
 from archive_sync_engine.sync.synchronization_state import (
     SynchronizationState,
 )
+from archive_sync_engine.sync.fingerprint import canonical_fingerprint
 
-from archive_sync_engine.executor.result import ExecutionResult
+from archive_sync_engine.executor.result import (
+    DeletedEntityType,
+    ExecutionResult,
+)
 
 
 def test_with_conversation_returns_new_state() -> None:
@@ -29,6 +34,8 @@ def test_with_conversation_returns_new_state() -> None:
     updated = state.with_conversation(
         "conversation-001",
         destination_ref,
+        "fingerprint-001",
+        None,
     )
 
     assert updated is not state
@@ -49,6 +56,7 @@ def test_with_identity_returns_new_state() -> None:
     updated = state.with_identity(
         "identity-001",
         destination_ref,
+        "fingerprint-001",
     )
 
     assert updated is not state
@@ -69,6 +77,10 @@ def test_with_message_returns_new_state() -> None:
     updated = state.with_message(
         "message-001",
         destination_ref,
+        "fingerprint-001",
+        "content-fingerprint-001",
+        (),
+        False,
     )
 
     assert updated is not state
@@ -109,6 +121,10 @@ def test_with_methods_preserve_existing_state() -> None:
         DestinationMessageRef(
             "destination-message-002",
         ),
+        "fingerprint-002",
+        "content-fingerprint-002",
+        (),
+        False,
     )
 
     assert updated.conversations == state.conversations
@@ -140,6 +156,8 @@ def test_apply_execution_result_adds_conversation_reference() -> None:
 
     result = ExecutionResult(
         conversation=destination_ref,
+        canonical_fingerprint="fingerprint-001",
+        conversation_parent_id=None,
     )
 
     updated = state.apply_execution_result(
@@ -162,6 +180,7 @@ def test_apply_execution_result_adds_identity_reference() -> None:
 
     result = ExecutionResult(
         identity=destination_ref,
+        canonical_fingerprint="fingerprint-001",
     )
 
     updated = state.apply_execution_result(
@@ -184,6 +203,10 @@ def test_apply_execution_result_adds_message_reference() -> None:
 
     result = ExecutionResult(
         message=destination_ref,
+        canonical_fingerprint="fingerprint-001",
+        message_content_fingerprint="content-fingerprint-001",
+        message_reactions=(),
+        message_pinned=False,
     )
 
     updated = state.apply_execution_result(
@@ -196,6 +219,77 @@ def test_apply_execution_result_adds_message_reference() -> None:
     }
 
     assert state.messages == {}
+
+def test_apply_execution_result_updates_message_components_without_completing_fingerprint() -> None:
+    state = SynchronizationState(
+        messages={
+            "message-001": DestinationMessageRef("destination-message-001"),
+        },
+        message_fingerprints={
+            "message-001": "old-fingerprint",
+        },
+        message_content_fingerprints={
+            "message-001": "old-content-fingerprint",
+        },
+        message_reactions={
+            "message-001": (),
+        },
+        message_pinned={
+            "message-001": False,
+        },
+    )
+
+    updated = state.apply_execution_result(
+        "message-001",
+        ExecutionResult(
+            canonical_id="message-001",
+            message_content_fingerprint="new-content-fingerprint",
+        ),
+    )
+
+    assert updated.message_content_fingerprints == {
+        "message-001": "new-content-fingerprint",
+    }
+    assert updated.message_fingerprints == {
+        "message-001": "old-fingerprint",
+    }
+
+
+def test_apply_execution_result_completes_message_fingerprint() -> None:
+    state = SynchronizationState(
+        messages={
+            "message-001": DestinationMessageRef("destination-message-001"),
+        },
+        message_fingerprints={
+            "message-001": "old-fingerprint",
+        },
+        message_content_fingerprints={
+            "message-001": "new-content-fingerprint",
+        },
+        message_reactions={
+            "message-001": (),
+        },
+        message_pinned={
+            "message-001": False,
+        },
+    )
+
+    updated = state.apply_execution_result(
+        "message-001",
+        ExecutionResult(
+            canonical_id="message-001",
+            canonical_fingerprint="new-fingerprint",
+            message_pinned=True,
+        ),
+    )
+
+    assert updated.message_fingerprints == {
+        "message-001": "new-fingerprint",
+    }
+    assert updated.message_pinned == {
+        "message-001": True,
+    }
+
 
 def test_apply_execution_result_without_reference_returns_same_state() -> None:
     state = SynchronizationState()
@@ -230,3 +324,119 @@ def test_apply_execution_result_rejects_multiple_references() -> None:
             result,
         )
 
+
+
+def test_apply_execution_result_deletes_message() -> None:
+    state = SynchronizationState(
+        messages={
+            "message-001": DestinationMessageRef("destination-message-001"),
+        },
+        message_fingerprints={
+            "message-001": "fingerprint-001",
+        },
+    )
+
+    updated = state.apply_execution_result(
+        "message-001",
+        ExecutionResult(
+            canonical_id="message-001",
+            deleted=True,
+            deleted_entity=DeletedEntityType.MESSAGE,
+        ),
+    )
+
+    assert updated.messages == {}
+    assert updated.message_fingerprints == {}
+    assert state.messages["message-001"].id == "destination-message-001"
+
+
+def test_apply_execution_result_deletes_conversation_and_parent_metadata() -> None:
+    state = SynchronizationState(
+        conversations={
+            "conversation-001": DestinationConversationRef("destination-conversation-001"),
+        },
+        conversation_fingerprints={
+            "conversation-001": "fingerprint-001",
+        },
+        conversation_parent_ids={
+            "conversation-001": None,
+        },
+    )
+
+    updated = state.apply_execution_result(
+        "conversation-001",
+        ExecutionResult(
+            canonical_id="conversation-001",
+            deleted=True,
+            deleted_entity=DeletedEntityType.CONVERSATION,
+        ),
+    )
+
+    assert updated.conversations == {}
+    assert updated.conversation_fingerprints == {}
+    assert updated.conversation_parent_ids == {}
+
+
+def test_apply_execution_result_rejects_untyped_deletion() -> None:
+    with pytest.raises(
+        ValueError,
+        match="must identify its entity type",
+    ):
+        SynchronizationState().apply_execution_result(
+            "message-001",
+            ExecutionResult(
+                canonical_id="message-001",
+                deleted=True,
+            ),
+        )
+
+
+def test_partial_message_execution_requires_existing_message() -> None:
+    state = SynchronizationState()
+
+    with pytest.raises(ValueError, match="existing synchronized message"):
+        state.apply_execution_result(
+            canonical_id="message-001",
+            result=ExecutionResult(
+                canonical_id="message-001",
+                message_pinned=True,
+            ),
+        )
+
+
+def test_message_fingerprint_cannot_advance_without_component_update() -> None:
+    state = SynchronizationState(
+        messages={"message-001": Mock()},
+        message_fingerprints={"message-001": "old"},
+        message_content_fingerprints={"message-001": "content"},
+        message_reactions={"message-001": ()},
+        message_pinned={"message-001": False},
+    )
+
+    with pytest.raises(ValueError, match="without a message reference"):
+        state.apply_execution_result(
+            canonical_id="message-001",
+            result=ExecutionResult(
+                canonical_id="message-001",
+                canonical_fingerprint="new",
+            ),
+        )
+
+
+def test_complete_message_fingerprint_requires_existing_component_baselines() -> None:
+    state = SynchronizationState(
+        messages={"message-001": Mock()},
+        message_fingerprints={"message-001": "old"},
+        message_content_fingerprints={"message-001": "content"},
+        message_reactions={"message-001": ()},
+    )
+
+    with pytest.raises(ValueError, match="pin"):
+        state.apply_execution_result(
+            canonical_id="message-001",
+            result=ExecutionResult(
+                canonical_id="message-001",
+                canonical_fingerprint="new",
+                message_pinned=True,
+            ),
+        )

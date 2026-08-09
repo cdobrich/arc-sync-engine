@@ -24,7 +24,10 @@ from collections.abc import Iterable
 
 from archive_sync_engine.adapters import DestinationAdapter
 from archive_sync_engine.executor.context import ExecutionContext
-from archive_sync_engine.executor.result import ExecutionResult
+from archive_sync_engine.executor.result import (
+    DeletedEntityType,
+    ExecutionResult,
+)
 from archive_sync_engine.operations import (
     AddReactionOperation,
     CreateConversationOperation,
@@ -40,7 +43,10 @@ from archive_sync_engine.operations import (
     UpdateConversationOperation,
     UpdateIdentityOperation,
 )
-from archive_sync_engine.sync.fingerprint import canonical_fingerprint
+from archive_sync_engine.sync.fingerprint import (
+    canonical_fingerprint,
+    canonical_message_content_fingerprint,
+)
 
 
 class OperationExecutor:
@@ -83,6 +89,11 @@ class OperationExecutor:
                     canonical_fingerprint=canonical_fingerprint(
                         conversation,
                     ),
+                    conversation_parent_id=(
+                        str(conversation.parent_id)
+                        if conversation.parent_id is not None
+                        else None
+                    ),
                     conversation=destination_ref,
                 )
 
@@ -100,6 +111,11 @@ class OperationExecutor:
                     canonical_fingerprint=canonical_fingerprint(
                         conversation,
                     ),
+                    conversation_parent_id=(
+                        str(conversation.parent_id)
+                        if conversation.parent_id is not None
+                        else None
+                    ),
                 )
 
             case DeleteConversationOperation(
@@ -114,6 +130,7 @@ class OperationExecutor:
                         conversation_id,
                     ),
                     deleted=True,
+                    deleted_entity=DeletedEntityType.CONVERSATION,
                 )
 
             case CreateIdentityOperation(
@@ -167,11 +184,19 @@ class OperationExecutor:
                     canonical_fingerprint=canonical_fingerprint(
                         message,
                     ),
+                    message_content_fingerprint=(
+                        canonical_message_content_fingerprint(
+                            message,
+                        )
+                    ),
+                    message_reactions=message.reactions,
+                    message_pinned=message.pinned,
                     message=destination_ref,
                 )
 
             case EditMessageOperation(
                 message=message,
+                canonical_fingerprint=operation_fingerprint,
             ):
                 destination.edit_message(
                     message,
@@ -181,8 +206,11 @@ class OperationExecutor:
                     canonical_id=str(
                         message.id,
                     ),
-                    canonical_fingerprint=canonical_fingerprint(
-                        message,
+                    canonical_fingerprint=operation_fingerprint,
+                    message_content_fingerprint=(
+                        canonical_message_content_fingerprint(
+                            message,
+                        )
                     ),
                 )
 
@@ -198,10 +226,12 @@ class OperationExecutor:
                         message_id,
                     ),
                     deleted=True,
+                    deleted_entity=DeletedEntityType.MESSAGE,
                 )
 
             case PinMessageOperation(
                 message_id=message_id,
+                canonical_fingerprint=operation_fingerprint,
             ):
                 destination.pin_message(
                     message_id,
@@ -211,10 +241,13 @@ class OperationExecutor:
                     canonical_id=str(
                         message_id,
                     ),
+                    canonical_fingerprint=operation_fingerprint,
+                    message_pinned=True,
                 )
 
             case UnpinMessageOperation(
                 message_id=message_id,
+                canonical_fingerprint=operation_fingerprint,
             ):
                 destination.unpin_message(
                     message_id,
@@ -224,11 +257,15 @@ class OperationExecutor:
                     canonical_id=str(
                         message_id,
                     ),
+                    canonical_fingerprint=operation_fingerprint,
+                    message_pinned=False,
                 )
 
             case AddReactionOperation(
                 message_id=message_id,
                 reaction=reaction,
+                resulting_reactions=resulting_reactions,
+                canonical_fingerprint=operation_fingerprint,
             ):
                 destination.add_reaction(
                     message_id,
@@ -239,11 +276,15 @@ class OperationExecutor:
                     canonical_id=str(
                         message_id,
                     ),
+                    canonical_fingerprint=operation_fingerprint,
+                    message_reactions=resulting_reactions,
                 )
 
             case RemoveReactionOperation(
                 message_id=message_id,
                 reaction=reaction,
+                resulting_reactions=resulting_reactions,
+                canonical_fingerprint=operation_fingerprint,
             ):
                 destination.remove_reaction(
                     message_id,
@@ -254,6 +295,8 @@ class OperationExecutor:
                     canonical_id=str(
                         message_id,
                     ),
+                    canonical_fingerprint=operation_fingerprint,
+                    message_reactions=resulting_reactions,
                 )
 
             case _:

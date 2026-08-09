@@ -17,6 +17,10 @@ from archive_sync_engine.executor import ExecutionResult
 from archive_sync_engine.executor.executor import (
     OperationExecutor,
 )
+from archive_sync_engine.sync.fingerprint import (
+    canonical_fingerprint,
+    canonical_message_content_fingerprint,
+)
 from archive_sync_engine.models import (
     CanonicalConversation,
     CanonicalIdentity,
@@ -414,6 +418,45 @@ def test_remove_reaction_dispatches() -> None:
     assert result.identity is None
     assert result.message is None
     assert result.canonical_id == "message-001"
+
+def test_pin_message_returns_component_baseline_and_optional_fingerprint() -> None:
+    destination = _destination()
+
+    operation = PinMessageOperation(
+        message_id=MessageId("message-001"),
+        canonical_fingerprint="message-fingerprint",
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    assert result.canonical_id == "message-001"
+    assert result.canonical_fingerprint == "message-fingerprint"
+    assert result.message_pinned is True
+
+
+def test_add_reaction_returns_resulting_reaction_baseline() -> None:
+    destination = _destination()
+    reaction = _reaction()
+
+    operation = AddReactionOperation(
+        message_id=MessageId("message-001"),
+        reaction=reaction,
+        resulting_reactions=(reaction,),
+        canonical_fingerprint="message-fingerprint",
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    assert result.canonical_id == "message-001"
+    assert result.canonical_fingerprint == "message-fingerprint"
+    assert result.message_reactions == (reaction,)
+
 
 def test_unsupported_operation_raises() -> None:
     destination = _destination()
