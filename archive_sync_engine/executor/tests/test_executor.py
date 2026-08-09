@@ -18,7 +18,11 @@ from archive_sync_engine.adapters.references import (
     DestinationIdentityRef,
     DestinationMessageRef,
 )
-from archive_sync_engine.executor import ExecutionResult
+from archive_sync_engine.executor import (
+    ExecutionContext,
+    ExecutionResult,
+    MissingDestinationReferenceError,
+)
 from archive_sync_engine.executor.executor import (
     OperationExecutor,
 )
@@ -52,6 +56,7 @@ from archive_sync_engine.operations import (
     PinMessageOperation,
     RemoveAttachmentOperation,
     RemoveReactionOperation,
+    SetMessageReplyOperation,
     SyncOperation,
     UnpinMessageOperation,
     UpdateConversationOperation,
@@ -590,3 +595,77 @@ def test_execution_result_defaults_to_no_references() -> None:
     assert result.conversation is None
     assert result.identity is None
     assert result.message is None
+
+def test_set_message_reply_uses_execution_local_destination_references() -> None:
+    destination = _destination()
+    context = ExecutionContext()
+    message_ref = DestinationMessageRef("destination-message-001")
+    reply_ref = DestinationMessageRef("destination-message-002")
+    context.record_message(MessageId("message-001"), message_ref)
+    context.record_message(MessageId("message-002"), reply_ref)
+
+    operation = SetMessageReplyOperation(
+        message_id=MessageId("message-001"),
+        reply_to=MessageId("message-002"),
+        canonical_fingerprint="message-fingerprint",
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+        context=context,
+    )
+
+    destination.set_message_reply.assert_called_once_with(
+        message_ref,
+        reply_ref,
+    )
+    assert result.canonical_id == "message-001"
+    assert result.canonical_fingerprint == "message-fingerprint"
+    assert result.message_reply_to == MessageId("message-002")
+    assert result.message_reply_to_synchronized is True
+
+
+def test_set_message_reply_can_clear_reply() -> None:
+    destination = _destination()
+    context = ExecutionContext()
+    message_ref = DestinationMessageRef("destination-message-001")
+    context.record_message(MessageId("message-001"), message_ref)
+
+    operation = SetMessageReplyOperation(
+        message_id=MessageId("message-001"),
+        reply_to=None,
+        canonical_fingerprint="message-fingerprint",
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+        context=context,
+    )
+
+    destination.set_message_reply.assert_called_once_with(
+        message_ref,
+        None,
+    )
+    assert result.message_reply_to is None
+    assert result.message_reply_to_synchronized is True
+
+
+def test_set_message_reply_requires_destination_references() -> None:
+    destination = _destination()
+    context = ExecutionContext()
+
+    operation = SetMessageReplyOperation(
+        message_id=MessageId("message-001"),
+        reply_to=MessageId("message-002"),
+    )
+
+    with pytest.raises(MissingDestinationReferenceError):
+        OperationExecutor().execute(
+            operation,
+            destination,
+            context=context,
+        )
+
+    destination.set_message_reply.assert_not_called()

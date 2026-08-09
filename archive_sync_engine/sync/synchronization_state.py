@@ -26,6 +26,7 @@ from archive_sync_engine.executor.result import (
     ExecutionResult,
 )
 from archive_sync_engine.models import CanonicalAttachment, CanonicalReaction
+from archive_sync_engine.models.ids import MessageId
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,8 +45,9 @@ class SynchronizationState:
     each corresponding object.
 
     Message component baselines are part of the current state contract:
-    every synchronized message has a content fingerprint, reaction
-    baseline, and pin baseline.
+    every fully synchronized message has content, reaction, attachment,
+    pin, and reply baselines. A newly created message may temporarily
+    omit the reply baseline while its deferred reply operation is pending.
 
     Conversation parent relationships are retained because the canonical
     parent may no longer be present in the Archive when a conversation is
@@ -107,6 +109,11 @@ class SynchronizationState:
         bool,
     ] = field(default_factory=dict)
 
+    message_reply_to: dict[
+        str,
+        MessageId | None,
+    ] = field(default_factory=dict)
+
     def with_conversation(
         self,
         canonical_id: str,
@@ -141,6 +148,7 @@ class SynchronizationState:
             message_reactions=dict(self.message_reactions),
             message_attachments=dict(self.message_attachments),
             message_pinned=dict(self.message_pinned),
+            message_reply_to=dict(self.message_reply_to),
         )
 
     def with_identity(
@@ -173,6 +181,7 @@ class SynchronizationState:
             message_reactions=dict(self.message_reactions),
             message_attachments=dict(self.message_attachments),
             message_pinned=dict(self.message_pinned),
+            message_reply_to=dict(self.message_reply_to),
         )
 
     def with_message(
@@ -184,6 +193,7 @@ class SynchronizationState:
         reactions: tuple[CanonicalReaction, ...],
         attachments: tuple[CanonicalAttachment, ...],
         pinned: bool,
+        reply_to: MessageId | None = None,
     ) -> SynchronizationState:
         """
         Return a new state containing a fully synchronized message.
@@ -207,6 +217,9 @@ class SynchronizationState:
         message_pinned = dict(self.message_pinned)
         message_pinned[canonical_id] = pinned
 
+        message_reply_to = dict(self.message_reply_to)
+        message_reply_to[canonical_id] = reply_to
+
         return SynchronizationState(
             conversations=dict(self.conversations),
             identities=dict(self.identities),
@@ -219,6 +232,7 @@ class SynchronizationState:
             message_reactions=message_reactions,
             message_attachments=message_attachments,
             message_pinned=message_pinned,
+            message_reply_to=message_reply_to,
         )
 
     def without_conversation(
@@ -252,6 +266,7 @@ class SynchronizationState:
             message_reactions=dict(self.message_reactions),
             message_attachments=dict(self.message_attachments),
             message_pinned=dict(self.message_pinned),
+            message_reply_to=dict(self.message_reply_to),
         )
 
     def without_message(
@@ -279,6 +294,9 @@ class SynchronizationState:
 
         message_pinned = dict(self.message_pinned)
         message_pinned.pop(canonical_id, None)
+
+        message_reply_to = dict(self.message_reply_to)
+        message_reply_to.pop(canonical_id, None)
 
         return SynchronizationState(
             conversations=dict(self.conversations),
@@ -322,6 +340,52 @@ class SynchronizationState:
             message_reactions=dict(self.message_reactions),
             message_attachments=dict(self.message_attachments),
             message_pinned=dict(self.message_pinned),
+            message_reply_to=dict(self.message_reply_to),
+        )
+
+    def _with_partial_message(
+        self,
+        *,
+        canonical_id: str,
+        destination_ref: DestinationMessageRef,
+        content_fingerprint: str,
+        reactions: tuple[CanonicalReaction, ...],
+        attachments: tuple[CanonicalAttachment, ...],
+        pinned: bool,
+    ) -> SynchronizationState:
+        """Record a newly created message awaiting reply reconciliation."""
+
+        messages = dict(self.messages)
+        messages[canonical_id] = destination_ref
+
+        content_fingerprints = dict(self.message_content_fingerprints)
+        content_fingerprints[canonical_id] = content_fingerprint
+
+        message_reactions = dict(self.message_reactions)
+        message_reactions[canonical_id] = tuple(reactions)
+
+        message_attachments = dict(self.message_attachments)
+        message_attachments[canonical_id] = tuple(attachments)
+
+        message_pinned = dict(self.message_pinned)
+        message_pinned[canonical_id] = pinned
+
+        fingerprints = dict(self.message_fingerprints)
+        fingerprints.pop(canonical_id, None)
+
+        return SynchronizationState(
+            conversations=dict(self.conversations),
+            identities=dict(self.identities),
+            messages=messages,
+            conversation_fingerprints=dict(self.conversation_fingerprints),
+            conversation_parent_ids=dict(self.conversation_parent_ids),
+            identity_fingerprints=dict(self.identity_fingerprints),
+            message_fingerprints=fingerprints,
+            message_content_fingerprints=content_fingerprints,
+            message_reactions=message_reactions,
+            message_attachments=message_attachments,
+            message_pinned=message_pinned,
+            message_reply_to=dict(self.message_reply_to),
         )
 
     def apply_execution_result(
@@ -403,15 +467,38 @@ class SynchronizationState:
 
         if result.message is not None:
             if (
-                result.canonical_fingerprint is None
-                or result.message_content_fingerprint is None
+                result.message_content_fingerprint is None
                 or result.message_reactions is None
                 or result.message_attachments is None
                 or result.message_pinned is None
             ):
                 raise ValueError(
-                    "Message creation results require a complete canonical "
-                    "message baseline."
+                    "Message creation results require all message component "
+                    "baselines."
+                )
+
+            if result.canonical_fingerprint is None and (
+                not result.message_reply_to_synchronized
+            ):
+                return self._with_partial_message(
+                    canonical_id=canonical_id,
+                    destination_ref=result.message,
+                    content_fingerprint=result.message_content_fingerprint,
+                    reactions=result.message_reactions,
+                    attachments=result.message_attachments,
+                    pinned=result.message_pinned,
+                )
+
+            if result.canonical_fingerprint is None:
+                raise ValueError(
+                    "A complete message creation result requires a canonical "
+                    "fingerprint."
+                )
+
+            if not result.message_reply_to_synchronized:
+                raise ValueError(
+                    "A complete message creation result must record the "
+                    "reply baseline."
                 )
 
             return self.with_message(
@@ -422,16 +509,20 @@ class SynchronizationState:
                 reactions=result.message_reactions,
                 attachments=result.message_attachments,
                 pinned=result.message_pinned,
+                reply_to=result.message_reply_to,
             )
 
-        has_message_component_update = any(
-            value is not None
-            for value in (
-                result.message_content_fingerprint,
-                result.message_reactions,
-                result.message_attachments,
-                result.message_pinned,
+        has_message_component_update = (
+            any(
+                value is not None
+                for value in (
+                    result.message_content_fingerprint,
+                    result.message_reactions,
+                    result.message_attachments,
+                    result.message_pinned,
+                )
             )
+            or result.message_reply_to_synchronized
         )
 
         if not has_message_component_update:
@@ -463,6 +554,12 @@ class SynchronizationState:
 
             if canonical_id not in self.message_pinned:
                 missing_baselines.append("pin")
+
+            if (
+                canonical_id not in self.message_reply_to
+                and not result.message_reply_to_synchronized
+            ):
+                missing_baselines.append("reply")
 
             if missing_baselines:
                 raise ValueError(
@@ -502,6 +599,12 @@ class SynchronizationState:
         else:
             message_pinned = dict(self.message_pinned)
 
+        if result.message_reply_to_synchronized:
+            message_reply_to = dict(self.message_reply_to)
+            message_reply_to[canonical_id] = result.message_reply_to
+        else:
+            message_reply_to = dict(self.message_reply_to)
+
         fingerprints = dict(self.message_fingerprints)
 
         if result.canonical_fingerprint is not None:
@@ -519,4 +622,5 @@ class SynchronizationState:
             message_reactions=message_reactions,
             message_attachments=message_attachments,
             message_pinned=message_pinned,
+            message_reply_to=message_reply_to,
         )

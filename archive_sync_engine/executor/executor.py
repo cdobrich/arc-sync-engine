@@ -20,10 +20,11 @@ Operations are executed exactly in the order received.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from dataclasses import replace
 
 from archive_sync_engine.adapters import DestinationAdapter
 from archive_sync_engine.asset_store import AssetStore
+
 from archive_sync_engine.executor.context import ExecutionContext
 from archive_sync_engine.executor.result import (
     DeletedEntityType,
@@ -41,6 +42,7 @@ from archive_sync_engine.operations import (
     PinMessageOperation,
     RemoveAttachmentOperation,
     RemoveReactionOperation,
+    SetMessageReplyOperation,
     SyncOperation,
     UnpinMessageOperation,
     UpdateConversationOperation,
@@ -61,7 +63,8 @@ class OperationExecutor:
 
     Attachment operations read canonical bytes from the supplied AssetStore;
     the DestinationAdapter remains responsible for platform-specific upload
-    and attachment behavior.
+    and attachment behavior. Reply operations resolve canonical message IDs
+    through the execution-local destination reference context.
 
     It performs no planning or reconciliation.
     """
@@ -77,6 +80,7 @@ class OperationExecutor:
         self,
         operation: SyncOperation,
         destination: DestinationAdapter,
+        context: ExecutionContext | None = None,
     ) -> ExecutionResult:
         """
         Execute one synchronization operation.
@@ -84,6 +88,9 @@ class OperationExecutor:
         The operation is executed exactly as supplied. No additional
         operations are created and no operations are reordered.
         """
+
+        if context is None:
+            context = ExecutionContext()
 
         match operation:
 
@@ -94,6 +101,11 @@ class OperationExecutor:
                     destination.create_conversation(
                         conversation,
                     )
+                )
+
+                context.record_conversation(
+                    conversation.id,
+                    destination_ref,
                 )
 
                 return ExecutionResult(
@@ -156,6 +168,11 @@ class OperationExecutor:
                     )
                 )
 
+                context.record_identity(
+                    identity.identity_key,
+                    destination_ref,
+                )
+
                 return ExecutionResult(
                     canonical_id=str(
                         identity.identity_key,
@@ -185,18 +202,33 @@ class OperationExecutor:
             case CreateMessageOperation(
                 message=message,
             ):
+                message_for_creation = message
+
+                if message.reply_to is not None:
+                    message_for_creation = replace(
+                        message,
+                        reply_to=None,
+                    )
+
                 destination_ref = (
                     destination.create_message(
-                        message,
+                        message_for_creation,
                     )
+                )
+
+                context.record_message(
+                    message.id,
+                    destination_ref,
                 )
 
                 return ExecutionResult(
                     canonical_id=str(
                         message.id,
                     ),
-                    canonical_fingerprint=canonical_fingerprint(
-                        message,
+                    canonical_fingerprint=(
+                        canonical_fingerprint(message)
+                        if message.reply_to is None
+                        else None
                     ),
                     message_content_fingerprint=(
                         canonical_message_content_fingerprint(
@@ -206,6 +238,14 @@ class OperationExecutor:
                     message_reactions=message.reactions,
                     message_attachments=message.attachments,
                     message_pinned=message.pinned,
+                    message_reply_to=(
+                        message.reply_to
+                        if message.reply_to is None
+                        else None
+                    ),
+                    message_reply_to_synchronized=(
+                        message.reply_to is None
+                    ),
                     message=destination_ref,
                 )
 
@@ -286,6 +326,33 @@ class OperationExecutor:
                     canonical_id=str(message_id),
                     canonical_fingerprint=operation_fingerprint,
                     message_attachments=resulting_attachments,
+                )
+
+            case SetMessageReplyOperation(
+                message_id=message_id,
+                reply_to=reply_to,
+                canonical_fingerprint=operation_fingerprint,
+            ):
+                message_ref = context.require_message(
+                    message_id,
+                )
+
+                reply_ref = (
+                    context.require_message(reply_to)
+                    if reply_to is not None
+                    else None
+                )
+
+                destination.set_message_reply(
+                    message_ref,
+                    reply_ref,
+                )
+
+                return ExecutionResult(
+                    canonical_id=str(message_id),
+                    canonical_fingerprint=operation_fingerprint,
+                    message_reply_to=reply_to,
+                    message_reply_to_synchronized=True,
                 )
 
             case PinMessageOperation(

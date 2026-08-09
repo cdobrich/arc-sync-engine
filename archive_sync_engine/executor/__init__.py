@@ -9,6 +9,7 @@ The executor is responsible for performing synchronization work.
 It must execute operations exactly in the order received.
 """
 
+from .context import ExecutionContext
 from .errors import (
     ExecutionError,
     MissingDestinationReferenceError,
@@ -17,6 +18,7 @@ from .executor import OperationExecutor
 from .result import ExecutionResult
 
 __all__ = [
+    "ExecutionContext",
     "ExecutionError",
     "ExecutionResult",
     "MissingDestinationReferenceError",

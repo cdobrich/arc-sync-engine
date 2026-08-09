@@ -13,6 +13,7 @@ from archive_sync_engine.adapters.references import (
     DestinationMessageRef,
 )
 from archive_sync_engine.models import CanonicalAttachment, CanonicalReaction
+from archive_sync_engine.models.ids import MessageId
 
 
 class DeletedEntityType(str, Enum):
@@ -47,6 +48,9 @@ class ExecutionResult:
     message_attachments: tuple[CanonicalAttachment, ...] | None = None
 
     message_pinned: bool | None = None
+
+    message_reply_to: MessageId | None = None
+    message_reply_to_synchronized: bool = False
 
     deleted: bool = False
 

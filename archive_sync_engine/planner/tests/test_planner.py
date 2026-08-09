@@ -4,6 +4,7 @@ Tests for the synchronization planner.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from datetime import timezone
 from unittest.mock import Mock
@@ -41,6 +42,7 @@ from archive_sync_engine.operations import (
     PinMessageOperation,
     RemoveAttachmentOperation,
     RemoveReactionOperation,
+    SetMessageReplyOperation,
 )
 from archive_sync_engine.planner import Planner
 from archive_sync_engine.sync import SynchronizationState
@@ -324,6 +326,9 @@ def test_plan_skips_already_synchronized_entities() -> None:
         message_pinned={
             "message-001": False,
         },
+        message_reply_to={
+            "message-001": None,
+        },
     )
 
     operations = _planned_operations(
@@ -601,6 +606,7 @@ def test_plan_message_unchanged_attachments_produce_no_attachment_operation() ->
         message_reactions={"message-001": ()},
         message_attachments={"message-001": (attachment,)},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     operations = _planned_operations(Planner(), archive, state)
@@ -648,6 +654,7 @@ def test_plan_rejects_attachment_order_change_without_reorder_operation() -> Non
         message_reactions={"message-001": ()},
         message_attachments={"message-001": (first, second)},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     with pytest.raises(RuntimeError, match="attachment reorder operation"):
@@ -688,6 +695,7 @@ def test_plan_message_attachment_addition_uses_attachment_operation() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     operations = _planned_operations(Planner(), archive, state)
@@ -736,6 +744,7 @@ def test_plan_message_attachment_removal_uses_attachment_operation() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": (attachment,)},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     operations = _planned_operations(Planner(), archive, state)
@@ -784,6 +793,7 @@ def test_plan_attachment_change_does_not_use_edit_operation() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     operations = _planned_operations(Planner(), archive, state)
@@ -828,6 +838,7 @@ def test_plan_rejects_unsupported_attachment_reconciliation() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     capabilities = DestinationCapabilities(
@@ -884,6 +895,7 @@ def test_plan_message_reaction_change_uses_reaction_operations() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     operations = _planned_operations(Planner(), archive, state)
@@ -936,6 +948,7 @@ def test_plan_message_pin_change_uses_pin_operation() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     operations = _planned_operations(Planner(), archive, state)
@@ -986,6 +999,7 @@ def test_plan_message_content_change_uses_edit_operation() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     operations = _planned_operations(Planner(), archive, state)
@@ -1043,6 +1057,7 @@ def test_plan_message_changes_decompose_content_reaction_and_pin() -> None:
         message_reactions={"message-001": (old_reaction,)},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     operations = _planned_operations(Planner(), archive, state)
@@ -1247,6 +1262,7 @@ def test_plan_rejects_unsupported_message_editing() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     capabilities = DestinationCapabilities(
@@ -1301,6 +1317,7 @@ def test_plan_rejects_unsupported_reactions() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     capabilities = DestinationCapabilities(
@@ -1354,6 +1371,7 @@ def test_plan_rejects_unsupported_message_pinning() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     capabilities = DestinationCapabilities(
@@ -1598,6 +1616,7 @@ def test_plan_validates_all_capabilities_before_yielding_operations() -> None:
         message_reactions={"message-001": ()},
         message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
     )
 
     capabilities = DestinationCapabilities(
@@ -1618,3 +1637,195 @@ def test_plan_validates_all_capabilities_before_yielding_operations() -> None:
 
     with pytest.raises(CapabilityError, match="supports_message_editing"):
         next(operations)
+
+
+def test_plan_message_reply_change_uses_reply_operation() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    target = _message("message-002", "conversation-001")
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="Message message-001",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        reply_to=target.id,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([target, message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={"conversation-001": None},
+        messages={
+            "message-001": Mock(),
+            "message-002": Mock(),
+        },
+        message_fingerprints={
+            "message-001": canonical_fingerprint(
+                replace(message, reply_to=None),
+            ),
+            "message-002": canonical_fingerprint(target),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+            "message-002": canonical_message_content_fingerprint(target),
+        },
+        message_reactions={"message-001": (), "message-002": ()},
+        message_attachments={"message-001": (), "message-002": ()},
+        message_pinned={"message-001": False, "message-002": False},
+        message_reply_to={"message-001": None, "message-002": None},
+    )
+
+    operations = _planned_operations(Planner(), archive, state)
+
+    assert operations == [
+        SetMessageReplyOperation(
+            message_id=message.id,
+            reply_to=target.id,
+            canonical_fingerprint=canonical_fingerprint(message),
+        ),
+    ]
+
+
+def test_plan_new_reply_message_defers_reply_until_after_message_creations() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    target = _message("message-002", "conversation-001")
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="Message message-001",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        reply_to=target.id,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message, target])
+
+    operations = _planned_operations(Planner(), archive)
+
+    assert operations == [
+        CreateConversationOperation(conversation=conversation),
+        CreateMessageOperation(message=message),
+        CreateMessageOperation(message=target),
+        SetMessageReplyOperation(
+            message_id=message.id,
+            reply_to=target.id,
+            canonical_fingerprint=canonical_fingerprint(message),
+        ),
+    ]
+
+
+def test_plan_rejects_reply_to_missing_archive_message() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    target = _message("message-missing", "conversation-001")
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="Message message-001",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        reply_to=target.id,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    with pytest.raises(RuntimeError, match="not present in the canonical Archive"):
+        list(Planner().plan(
+            archive=archive,
+            synchronization_state=SynchronizationState(),
+            capabilities=_capabilities(),
+        ))
+
+
+def test_plan_rejects_unsupported_replying() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    target = _message("message-002", "conversation-001")
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="Message message-001",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        reply_to=target.id,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message, target])
+
+    capabilities = _capabilities()
+    capabilities = replace(capabilities, supports_replying=False)
+
+    with pytest.raises(CapabilityError, match="supports_replying"):
+        list(Planner().plan(
+            archive=archive,
+            synchronization_state=SynchronizationState(),
+            capabilities=capabilities,
+        ))
+
+
+def test_plan_message_unreply_uses_reply_operation_and_finalizes_fingerprint() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    target = _message("message-002", "conversation-001")
+    message = _message("message-001", "conversation-001")
+    old_message = replace(message, reply_to=target.id)
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([target, message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock(), "message-002": Mock()},
+        message_fingerprints={
+            "message-001": canonical_fingerprint(old_message),
+            "message-002": canonical_fingerprint(target),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(old_message),
+            "message-002": canonical_message_content_fingerprint(target),
+        },
+        message_reactions={"message-001": (), "message-002": ()},
+        message_attachments={"message-001": (), "message-002": ()},
+        message_pinned={"message-001": False, "message-002": False},
+        message_reply_to={"message-001": target.id, "message-002": None},
+    )
+
+    operations = _planned_operations(Planner(), archive, state)
+
+    assert operations == [
+        SetMessageReplyOperation(
+            message_id=message.id,
+            reply_to=None,
+            canonical_fingerprint=canonical_fingerprint(message),
+        ),
+    ]
+
+
+def test_message_reply_is_not_part_of_content_fingerprint() -> None:
+    message = _message("message-001", "conversation-001")
+    reply = _message("message-002", "conversation-001")
+
+    assert canonical_message_content_fingerprint(message) == (
+        canonical_message_content_fingerprint(
+            replace(message, reply_to=reply.id),
+        )
+    )
