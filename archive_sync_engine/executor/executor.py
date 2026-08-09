@@ -41,6 +41,7 @@ from archive_sync_engine.operations import (
     EditMessageOperation,
     PinMessageOperation,
     RemoveAttachmentOperation,
+    ReorderAttachmentsOperation,
     RemoveReactionOperation,
     SetMessageReplyOperation,
     SyncOperation,
@@ -326,6 +327,22 @@ class OperationExecutor:
                     canonical_id=str(message_id),
                     canonical_fingerprint=operation_fingerprint,
                     message_attachments=resulting_attachments,
+                )
+
+            case ReorderAttachmentsOperation(
+                message_id=message_id,
+                attachments=attachments,
+                canonical_fingerprint=operation_fingerprint,
+            ):
+                destination.reorder_attachments(
+                    message_id,
+                    attachments,
+                )
+
+                return ExecutionResult(
+                    canonical_id=str(message_id),
+                    canonical_fingerprint=operation_fingerprint,
+                    message_attachments=attachments,
                 )
 
             case SetMessageReplyOperation(

@@ -42,6 +42,7 @@ from archive_sync_engine.operations import (
     EditMessageOperation,
     PinMessageOperation,
     RemoveAttachmentOperation,
+    ReorderAttachmentsOperation,
     RemoveReactionOperation,
     SetMessageReplyOperation,
     SyncOperation,
@@ -471,15 +472,6 @@ class Planner:
                 or previous_reply_to != message.reply_to
             )
 
-            if attachments_changed and set(previous_attachments) == set(
-                current_attachments,
-            ):
-                raise RuntimeError(
-                    "Attachment ordering changed for message "
-                    f"{message_id}, but the current attachment slice does "
-                    "not provide an attachment reorder operation."
-                )
-
             if not (
                 content_changed
                 or reactions_changed
@@ -582,6 +574,19 @@ class Planner:
                         message_id=message.id,
                         attachment=attachment,
                         resulting_attachments=tuple(working_attachments),
+                    ),
+                )
+
+            if attachments_changed and tuple(working_attachments) != current_attachments:
+                self._require_capability(
+                    capabilities.supports_attachment_reordering,
+                    "supports_attachment_reordering",
+                    "reorder message attachments",
+                )
+                operations.append(
+                    ReorderAttachmentsOperation(
+                        message_id=message.id,
+                        attachments=current_attachments,
                     ),
                 )
 

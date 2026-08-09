@@ -143,6 +143,15 @@ class DestinationAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def reorder_attachments(
+        self,
+        message_id: MessageId,
+        attachments: tuple[CanonicalAttachment, ...],
+    ) -> None:
+        """Set the complete canonical attachment order for a message."""
+        raise NotImplementedError
+
+    @abstractmethod
     def create_message(
         self,
         message: CanonicalMessage,

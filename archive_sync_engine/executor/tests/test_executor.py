@@ -55,6 +55,7 @@ from archive_sync_engine.operations import (
     EditMessageOperation,
     PinMessageOperation,
     RemoveAttachmentOperation,
+    ReorderAttachmentsOperation,
     RemoveReactionOperation,
     SetMessageReplyOperation,
     SyncOperation,
@@ -443,6 +444,35 @@ def test_remove_attachment_dispatches() -> None:
     assert result.canonical_id == "message-001"
     assert result.canonical_fingerprint == "message-fingerprint"
     assert result.message_attachments == ()
+
+
+
+def test_reorder_attachments_dispatches() -> None:
+    destination = _destination()
+    first = _attachment(b"first")
+    second = CanonicalAttachment(
+        id=AttachmentId("attachment-002"),
+        filename="second.txt",
+        content_type="text/plain",
+        size=6,
+        sha256=hashlib.sha256(b"second").hexdigest(),
+    )
+
+    operation = ReorderAttachmentsOperation(
+        message_id=MessageId("message-001"),
+        attachments=(second, first),
+        canonical_fingerprint="message-fingerprint",
+    )
+
+    result = OperationExecutor().execute(operation, destination)
+
+    destination.reorder_attachments.assert_called_once_with(
+        operation.message_id,
+        operation.attachments,
+    )
+    assert result.canonical_id == "message-001"
+    assert result.canonical_fingerprint == "message-fingerprint"
+    assert result.message_attachments == (second, first)
 
 
 def test_pin_message_dispatches() -> None:

@@ -41,6 +41,7 @@ from archive_sync_engine.operations import (
     EditMessageOperation,
     PinMessageOperation,
     RemoveAttachmentOperation,
+    ReorderAttachmentsOperation,
     RemoveReactionOperation,
     SetMessageReplyOperation,
 )
@@ -76,6 +77,7 @@ def _capabilities(**overrides: bool) -> DestinationCapabilities:
         "supports_reactions": True,
         "supports_custom_emoji": True,
         "supports_attachments": True,
+        "supports_attachment_reordering": True,
         "supports_replying": True,
         "supports_identity_updates": True,
     }
@@ -210,6 +212,70 @@ def _planned_operations(
             capabilities=capabilities,
         ),
     )
+
+
+
+def test_plan_messages_reconciles_attachment_reordering() -> None:
+    archive = _archive()
+    message = _message("message-001", "conversation-001")
+    first = _attachment("attachment-001", "1" * 64, "first.txt")
+    second = _attachment("attachment-002", "2" * 64, "second.txt")
+    current = replace(message, attachments=(second, first))
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.return_value = iter([current])
+
+    state = SynchronizationState(
+        messages={"message-001": Mock()},
+        message_fingerprints={"message-001": canonical_fingerprint(message)},
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": (first, second)},
+        message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
+    )
+
+    operations = list(Planner().plan(archive, state, _capabilities()))
+
+    assert operations == [
+        ReorderAttachmentsOperation(
+            message_id=MessageId("message-001"),
+            attachments=(second, first),
+            canonical_fingerprint=canonical_fingerprint(current),
+        ),
+    ]
+
+
+def test_plan_messages_rejects_unsupported_attachment_reordering() -> None:
+    archive = _archive()
+    message = _message("message-001", "conversation-001")
+    first = _attachment("attachment-001", "1" * 64, "first.txt")
+    second = _attachment("attachment-002", "2" * 64, "second.txt")
+    current = replace(message, attachments=(second, first))
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.return_value = iter([current])
+
+    state = SynchronizationState(
+        messages={"message-001": Mock()},
+        message_fingerprints={"message-001": canonical_fingerprint(message)},
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": (first, second)},
+        message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
+    )
+
+    with pytest.raises(CapabilityError, match="supports_attachment_reordering"):
+        list(Planner().plan(archive, state, _capabilities(
+            supports_attachment_reordering=False,
+        )))
 
 
 def test_plan_creates_identities_before_conversations_and_messages() -> None:
@@ -620,7 +686,7 @@ def test_plan_message_unchanged_attachments_produce_no_attachment_operation() ->
     assert operations == []
 
 
-def test_plan_rejects_attachment_order_change_without_reorder_operation() -> None:
+def test_plan_attachment_order_change_uses_reorder_operation() -> None:
     archive = _archive()
     conversation = _conversation("conversation-001")
     first = _attachment("attachment-001", "a" * 64, "first.txt")
@@ -633,12 +699,8 @@ def test_plan_rejects_attachment_order_change_without_reorder_operation() -> Non
         created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
         attachments=(first, second),
     )
-    desired_message = CanonicalMessage(
-        id=message.id,
-        conversation_id=message.conversation_id,
-        identity_key=message.identity_key,
-        content=message.content,
-        created_at=message.created_at,
+    desired_message = replace(
+        message,
         attachments=(second, first),
     )
 
@@ -663,8 +725,21 @@ def test_plan_rejects_attachment_order_change_without_reorder_operation() -> Non
         message_reply_to={"message-001": None},
     )
 
-    with pytest.raises(RuntimeError, match="attachment reorder operation"):
-        list(Planner().plan(archive=archive, synchronization_state=state, capabilities=_capabilities()))
+    operations = list(
+        Planner().plan(
+            archive=archive,
+            synchronization_state=state,
+            capabilities=_capabilities(),
+        ),
+    )
+
+    assert operations == [
+        ReorderAttachmentsOperation(
+            message_id=MessageId("message-001"),
+            attachments=(second, first),
+            canonical_fingerprint=canonical_fingerprint(desired_message),
+        ),
+    ]
 
 
 def test_plan_message_attachment_addition_uses_attachment_operation() -> None:
