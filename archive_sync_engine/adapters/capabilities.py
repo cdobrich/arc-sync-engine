@@ -34,3 +34,4 @@ class DestinationCapabilities:
     supports_attachment_reordering: bool = False
     supports_replying: bool = True
     supports_identity_updates: bool = False
+    supports_identity_deletion: bool = False

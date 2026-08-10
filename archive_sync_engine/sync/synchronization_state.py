@@ -422,6 +422,9 @@ class SynchronizationState:
             if result.deleted_entity is DeletedEntityType.MESSAGE:
                 return self.without_message(canonical_id)
 
+            if result.deleted_entity is DeletedEntityType.IDENTITY:
+                return self.without_identity(canonical_id)
+
             raise ValueError(
                 f"Unsupported deleted entity type: {result.deleted_entity!r}"
             )

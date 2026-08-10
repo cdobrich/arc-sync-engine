@@ -13,7 +13,7 @@ The current vertical slices support:
     * message reaction reconciliation;
     * message pin reconciliation;
     * message attachment reconciliation;
-    * deletion reconciliation.
+    * deletion reconciliation for messages, conversations, and identities.
 
 Conversation hierarchy is respected.
 
@@ -36,6 +36,7 @@ from archive_sync_engine.operations import (
     AddReactionOperation,
     CreateConversationOperation,
     CreateIdentityOperation,
+    DeleteIdentityOperation,
     CreateMessageOperation,
     DeleteConversationOperation,
     DeleteMessageOperation,
@@ -157,6 +158,7 @@ class Planner:
 
         yield from self._plan_deletions(
             conversations=conversations,
+            identities=identities,
             messages=messages,
             synchronization_state=synchronization_state,
             capabilities=capabilities,
@@ -672,6 +674,7 @@ class Planner:
         self,
         *,
         conversations,
+        identities,
         messages,
         synchronization_state: SynchronizationState,
         capabilities: DestinationCapabilities,
@@ -720,6 +723,45 @@ class Planner:
             synchronization_state=synchronization_state,
             capabilities=capabilities,
         )
+
+        archive_identity_keys = {
+            str(identity.identity_key)
+            for identity in identities
+        }
+
+        stale_identity_keys = {
+            identity_key
+            for identity_key in synchronization_state.identities
+            if identity_key not in archive_identity_keys
+        }
+
+        referenced_identity_keys = {
+            str(message.identity_key)
+            for message in messages
+        }
+
+        invalid_identity_references = (
+            stale_identity_keys & referenced_identity_keys
+        )
+        if invalid_identity_references:
+            raise RuntimeError(
+                "Canonical Archive messages reference identities that are "
+                "missing from the Archive identity set: "
+                + ", ".join(sorted(invalid_identity_references))
+                + "."
+            )
+
+        for identity_key in stale_identity_keys:
+            if identity_key not in archive_identity_keys:
+                self._require_capability(
+                    capabilities.supports_identity_deletion,
+                    "supports_identity_deletion",
+                    "delete identities",
+                )
+
+                yield DeleteIdentityOperation(
+                    identity_key=identity_key,
+                )
 
     def _plan_stale_conversations(
         self,
