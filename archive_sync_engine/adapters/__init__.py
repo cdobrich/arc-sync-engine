@@ -36,6 +36,12 @@ from .exceptions import (
 )
 
 from .source import SourceAdapter
+from .references import (
+    DestinationAttachmentRef,
+    DestinationConversationRef,
+    DestinationIdentityRef,
+    DestinationMessageRef,
+)
 
 __all__ = [
     "AdapterError",

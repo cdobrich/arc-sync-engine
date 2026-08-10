@@ -8,6 +8,9 @@ from unittest.mock import Mock
 
 import pytest
 
+from archive_sync_engine.models import CanonicalAttachment
+from archive_sync_engine.models.ids import AttachmentId
+
 from archive_sync_engine.adapters.references import (
     DestinationConversationRef,
     DestinationIdentityRef,
@@ -80,6 +83,7 @@ def test_with_message_returns_new_state() -> None:
         "fingerprint-001",
         "content-fingerprint-001",
         (),
+        (),
         False,
     )
 
@@ -88,6 +92,9 @@ def test_with_message_returns_new_state() -> None:
 
     assert updated.messages == {
         "message-001": destination_ref,
+    }
+    assert updated.message_attachments == {
+        "message-001": (),
     }
 
 
@@ -123,6 +130,7 @@ def test_with_methods_preserve_existing_state() -> None:
         ),
         "fingerprint-002",
         "content-fingerprint-002",
+        (),
         (),
         False,
     )
@@ -206,6 +214,7 @@ def test_apply_execution_result_adds_message_reference() -> None:
         canonical_fingerprint="fingerprint-001",
         message_content_fingerprint="content-fingerprint-001",
         message_reactions=(),
+        message_attachments=(),
         message_pinned=False,
     )
 
@@ -234,6 +243,9 @@ def test_apply_execution_result_updates_message_components_without_completing_fi
         message_reactions={
             "message-001": (),
         },
+        message_attachments={
+            "message-001": (),
+        },
         message_pinned={
             "message-001": False,
         },
@@ -255,6 +267,38 @@ def test_apply_execution_result_updates_message_components_without_completing_fi
     }
 
 
+def test_apply_execution_result_updates_attachment_baseline_without_completing_fingerprint() -> None:
+    state = SynchronizationState(
+        messages={
+            "message-001": DestinationMessageRef("destination-message-001"),
+        },
+        message_fingerprints={"message-001": "old-fingerprint"},
+        message_content_fingerprints={"message-001": "old-content-fingerprint"},
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
+        message_pinned={"message-001": False},
+    )
+
+    attachment = CanonicalAttachment(
+        id=AttachmentId("attachment-001"),
+        filename="example.txt",
+        content_type="text/plain",
+        size=1,
+        sha256="a" * 64,
+    )
+
+    updated = state.apply_execution_result(
+        "message-001",
+        ExecutionResult(
+            canonical_id="message-001",
+            message_attachments=(attachment,),
+        ),
+    )
+
+    assert updated.message_attachments == {"message-001": (attachment,)}
+    assert updated.message_fingerprints == {"message-001": "old-fingerprint"}
+
+
 def test_apply_execution_result_completes_message_fingerprint() -> None:
     state = SynchronizationState(
         messages={
@@ -267,6 +311,9 @@ def test_apply_execution_result_completes_message_fingerprint() -> None:
             "message-001": "new-content-fingerprint",
         },
         message_reactions={
+            "message-001": (),
+        },
+        message_attachments={
             "message-001": (),
         },
         message_pinned={
@@ -347,6 +394,7 @@ def test_apply_execution_result_deletes_message() -> None:
 
     assert updated.messages == {}
     assert updated.message_fingerprints == {}
+    assert updated.message_attachments == {}
     assert state.messages["message-001"].id == "destination-message-001"
 
 
@@ -410,6 +458,7 @@ def test_message_fingerprint_cannot_advance_without_component_update() -> None:
         message_fingerprints={"message-001": "old"},
         message_content_fingerprints={"message-001": "content"},
         message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
         message_pinned={"message-001": False},
     )
 

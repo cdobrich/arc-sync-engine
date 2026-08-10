@@ -117,6 +117,32 @@ class DestinationAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def add_attachment(
+        self,
+        message_id: MessageId,
+        attachment: CanonicalAttachment,
+        data: bytes,
+    ) -> DestinationAttachmentRef:
+        """
+        Add an attachment to an existing destination message.
+
+        The supplied bytes correspond to the attachment's SHA-256
+        digest.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def remove_attachment(
+        self,
+        message_id: MessageId,
+        attachment: CanonicalAttachment,
+    ) -> None:
+        """
+        Remove a canonical attachment from an existing destination message.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def create_message(
         self,
         message: CanonicalMessage,

@@ -12,6 +12,7 @@ The current vertical slices support:
     * message content reconciliation;
     * message reaction reconciliation;
     * message pin reconciliation;
+    * message attachment reconciliation;
     * deletion reconciliation.
 
 Conversation hierarchy is respected.
@@ -31,6 +32,7 @@ from archive_sync_engine.adapters import (
 from archive_sync_engine.archive import Archive
 from archive_sync_engine.models.enums import ConversationType
 from archive_sync_engine.operations import (
+    AddAttachmentOperation,
     AddReactionOperation,
     CreateConversationOperation,
     CreateIdentityOperation,
@@ -39,6 +41,7 @@ from archive_sync_engine.operations import (
     DeleteMessageOperation,
     EditMessageOperation,
     PinMessageOperation,
+    RemoveAttachmentOperation,
     RemoveReactionOperation,
     SyncOperation,
     UnpinMessageOperation,
@@ -349,10 +352,10 @@ class Planner:
         """
         Plan message creation and component-level reconciliation.
 
-        A message fingerprint includes content, reactions, and pin state.
-        Those components are deliberately decomposed into their own
-        operations so that a reaction or pin change does not become an
-        EditMessageOperation.
+        A message fingerprint includes content, attachments, reactions,
+        and pin state. Those components are deliberately decomposed into
+        their own operations so that attachment, reaction, or pin changes
+        do not become an EditMessageOperation.
 
         Existing synchronized messages must have a complete component
         baseline in SynchronizationState. Missing required state is an
@@ -394,6 +397,12 @@ class Planner:
                     f"for message {message_id}."
                 )
 
+            if message_id not in synchronization_state.message_attachments:
+                raise RuntimeError(
+                    "Synchronization state is missing the attachment baseline "
+                    f"for message {message_id}."
+                )
+
             if message_id not in synchronization_state.message_pinned:
                 raise RuntimeError(
                     "Synchronization state is missing the pin baseline "
@@ -406,12 +415,16 @@ class Planner:
             previous_reactions = synchronization_state.message_reactions[
                 message_id
             ]
+            previous_attachments = synchronization_state.message_attachments[
+                message_id
+            ]
             previous_pinned = synchronization_state.message_pinned[message_id]
 
             current_content_fingerprint = (
                 canonical_message_content_fingerprint(message)
             )
             current_reactions = tuple(message.reactions)
+            current_attachments = tuple(message.attachments)
             current_pinned = message.pinned
 
             content_changed = (
@@ -419,11 +432,22 @@ class Planner:
                 != current_content_fingerprint
             )
             reactions_changed = previous_reactions != current_reactions
+            attachments_changed = previous_attachments != current_attachments
             pinned_changed = previous_pinned != current_pinned
+
+            if attachments_changed and (
+                set(previous_attachments) == set(current_attachments)
+            ):
+                raise RuntimeError(
+                    "Attachment ordering changed for message "
+                    f"{message_id}, but the current attachment slice does "
+                    "not provide an attachment reorder operation."
+                )
 
             if not (
                 content_changed
                 or reactions_changed
+                or attachments_changed
                 or pinned_changed
             ):
                 if previous_fingerprint != fingerprint:
@@ -483,6 +507,43 @@ class Planner:
                         message_id=message.id,
                         reaction=reaction,
                         resulting_reactions=tuple(working_reactions),
+                    ),
+                )
+
+            if attachments_changed:
+                self._require_capability(
+                    capabilities.supports_attachments,
+                    "supports_attachments",
+                    "reconcile message attachments",
+                )
+
+            working_attachments = list(previous_attachments)
+
+            for attachment in previous_attachments:
+                if attachment in current_attachments:
+                    continue
+
+                working_attachments.remove(attachment)
+
+                operations.append(
+                    RemoveAttachmentOperation(
+                        message_id=message.id,
+                        attachment=attachment,
+                        resulting_attachments=tuple(working_attachments),
+                    ),
+                )
+
+            for attachment in current_attachments:
+                if attachment in previous_attachments:
+                    continue
+
+                working_attachments.append(attachment)
+
+                operations.append(
+                    AddAttachmentOperation(
+                        message_id=message.id,
+                        attachment=attachment,
+                        resulting_attachments=tuple(working_attachments),
                     ),
                 )
 

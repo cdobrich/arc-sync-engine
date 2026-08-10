@@ -23,12 +23,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from archive_sync_engine.adapters import DestinationAdapter
+from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.executor.context import ExecutionContext
 from archive_sync_engine.executor.result import (
     DeletedEntityType,
     ExecutionResult,
 )
 from archive_sync_engine.operations import (
+    AddAttachmentOperation,
     AddReactionOperation,
     CreateConversationOperation,
     CreateIdentityOperation,
@@ -37,6 +39,7 @@ from archive_sync_engine.operations import (
     DeleteMessageOperation,
     EditMessageOperation,
     PinMessageOperation,
+    RemoveAttachmentOperation,
     RemoveReactionOperation,
     SyncOperation,
     UnpinMessageOperation,
@@ -56,8 +59,19 @@ class OperationExecutor:
     OperationExecutor is deliberately small. It translates canonical
     synchronization operations into calls on a DestinationAdapter.
 
+    Attachment operations read canonical bytes from the supplied AssetStore;
+    the DestinationAdapter remains responsible for platform-specific upload
+    and attachment behavior.
+
     It performs no planning or reconciliation.
     """
+
+    def __init__(
+        self,
+        *,
+        asset_store: AssetStore | None = None,
+    ) -> None:
+        self._asset_store = asset_store
 
     def execute(
         self,
@@ -190,6 +204,7 @@ class OperationExecutor:
                         )
                     ),
                     message_reactions=message.reactions,
+                    message_attachments=message.attachments,
                     message_pinned=message.pinned,
                     message=destination_ref,
                 )
@@ -227,6 +242,50 @@ class OperationExecutor:
                     ),
                     deleted=True,
                     deleted_entity=DeletedEntityType.MESSAGE,
+                )
+
+            case AddAttachmentOperation(
+                message_id=message_id,
+                attachment=attachment,
+                resulting_attachments=resulting_attachments,
+                canonical_fingerprint=operation_fingerprint,
+            ):
+                if self._asset_store is None:
+                    raise RuntimeError(
+                        "AddAttachmentOperation requires an AssetStore."
+                    )
+
+                data = self._asset_store.get(
+                    attachment.sha256,
+                )
+
+                destination.add_attachment(
+                    message_id,
+                    attachment,
+                    data,
+                )
+
+                return ExecutionResult(
+                    canonical_id=str(message_id),
+                    canonical_fingerprint=operation_fingerprint,
+                    message_attachments=resulting_attachments,
+                )
+
+            case RemoveAttachmentOperation(
+                message_id=message_id,
+                attachment=attachment,
+                resulting_attachments=resulting_attachments,
+                canonical_fingerprint=operation_fingerprint,
+            ):
+                destination.remove_attachment(
+                    message_id,
+                    attachment,
+                )
+
+                return ExecutionResult(
+                    canonical_id=str(message_id),
+                    canonical_fingerprint=operation_fingerprint,
+                    message_attachments=resulting_attachments,
                 )
 
             case PinMessageOperation(
