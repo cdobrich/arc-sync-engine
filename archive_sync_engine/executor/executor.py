@@ -35,6 +35,7 @@ from archive_sync_engine.operations import (
     AddReactionOperation,
     CreateConversationOperation,
     CreateIdentityOperation,
+    DeleteIdentityOperation,
     CreateMessageOperation,
     DeleteConversationOperation,
     DeleteMessageOperation,
@@ -198,6 +199,19 @@ class OperationExecutor:
                     canonical_fingerprint=canonical_fingerprint(
                         identity,
                     ),
+                )
+
+            case DeleteIdentityOperation(
+                identity_key=identity_key,
+            ):
+                destination.delete_identity(
+                    identity_key,
+                )
+
+                return ExecutionResult(
+                    canonical_id=str(identity_key),
+                    deleted=True,
+                    deleted_entity=DeletedEntityType.IDENTITY,
                 )
 
             case CreateMessageOperation(

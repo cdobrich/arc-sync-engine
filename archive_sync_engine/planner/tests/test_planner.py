@@ -35,6 +35,7 @@ from archive_sync_engine.operations import (
     AddReactionOperation,
     CreateConversationOperation,
     CreateIdentityOperation,
+    DeleteIdentityOperation,
     CreateMessageOperation,
     DeleteConversationOperation,
     DeleteMessageOperation,
@@ -80,6 +81,7 @@ def _capabilities(**overrides: bool) -> DestinationCapabilities:
         "supports_attachment_reordering": True,
         "supports_replying": True,
         "supports_identity_updates": True,
+        "supports_identity_deletion": True,
     }
     values.update(overrides)
     return DestinationCapabilities(**values)
@@ -2023,3 +2025,111 @@ def test_message_reply_is_not_part_of_content_fingerprint() -> None:
             replace(message, reply_to=reply.id),
         )
     )
+
+
+def test_plan_deletes_stale_identity_after_messages_and_conversations() -> None:
+    archive = _archive()
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.return_value = iter([])
+
+    state = SynchronizationState(
+        identities={"identity-001": Mock()},
+        identity_fingerprints={"identity-001": "fingerprint"},
+    )
+
+    operations = _planned_operations(Planner(), archive, state)
+
+    assert operations == [
+        DeleteIdentityOperation(
+            identity_key=IdentityKey("identity-001"),
+        ),
+    ]
+
+
+def test_plan_deletes_stale_identity_after_stale_messages_and_conversations() -> None:
+    archive = _archive()
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.return_value = iter([])
+
+    state = SynchronizationState(
+        identities={"identity-001": Mock()},
+        identity_fingerprints={"identity-001": "identity-fingerprint"},
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={"conversation-001": "conversation-fingerprint"},
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock()},
+        message_fingerprints={"message-001": "message-fingerprint"},
+        message_content_fingerprints={"message-001": "content-fingerprint"},
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
+        message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
+    )
+
+    operations = _planned_operations(Planner(), archive, state)
+
+    assert operations == [
+        DeleteMessageOperation(
+            message_id=MessageId("message-001"),
+        ),
+        DeleteConversationOperation(
+            conversation_id=ConversationId("conversation-001"),
+        ),
+        DeleteIdentityOperation(
+            identity_key=IdentityKey("identity-001"),
+        ),
+    ]
+
+
+def test_plan_rejects_unsupported_identity_deletion() -> None:
+    archive = _archive()
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.return_value = iter([])
+
+    state = SynchronizationState(
+        identities={"identity-001": Mock()},
+        identity_fingerprints={"identity-001": "fingerprint"},
+    )
+
+    with pytest.raises(
+        CapabilityError,
+        match="supports_identity_deletion",
+    ):
+        list(
+            Planner().plan(
+                archive=archive,
+                synchronization_state=state,
+                capabilities=_capabilities(
+                    supports_identity_deletion=False,
+                ),
+            ),
+        )
+
+
+def test_plan_rejects_stale_identity_referenced_by_canonical_message() -> None:
+    archive = _archive()
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.return_value = iter([
+        _message("message-001", "conversation-001"),
+    ])
+
+    state = SynchronizationState(
+        identities={"identity-001": Mock()},
+        identity_fingerprints={"identity-001": "fingerprint"},
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="missing from the Archive identity set",
+    ):
+        list(
+            Planner().plan(
+                archive=archive,
+                synchronization_state=state,
+                capabilities=_capabilities(),
+            ),
+        )

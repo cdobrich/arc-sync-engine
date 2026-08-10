@@ -20,7 +20,7 @@ from archive_sync_engine.models import (
     CanonicalMessage,
     CanonicalReaction,
 )
-from archive_sync_engine.models.ids import ConversationId, MessageId
+from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId
 
 from .capabilities import DestinationCapabilities
 from .references import (
@@ -99,6 +99,16 @@ class DestinationAdapter(ABC):
     ) -> None:
         """
         Update an existing destination identity.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_identity(
+        self,
+        identity_key: IdentityKey,
+    ) -> None:
+        """
+        Delete an existing destination identity.
         """
         raise NotImplementedError
 

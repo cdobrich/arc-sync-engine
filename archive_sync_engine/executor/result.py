@@ -19,10 +19,14 @@ from archive_sync_engine.models.ids import MessageId
 class DeletedEntityType(str, Enum):
     """
     Canonical entity type removed by a successful delete operation.
+
+    Deletions are explicit because synchronization state uses the entity
+    type to remove the correct destination mapping and canonical baseline.
     """
 
     CONVERSATION = "conversation"
     MESSAGE = "message"
+    IDENTITY = "identity"
 
 
 @dataclass(frozen=True, slots=True)

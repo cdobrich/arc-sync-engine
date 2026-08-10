@@ -19,6 +19,7 @@ from .conversation import (
 from .identity import (
     CreateIdentityOperation,
     UpdateIdentityOperation,
+    DeleteIdentityOperation,
 )
 
 from .message import (
@@ -51,6 +52,7 @@ __all__ = [
 
     "CreateIdentityOperation",
     "UpdateIdentityOperation",
+    "DeleteIdentityOperation",
 
     "CreateMessageOperation",
     "EditMessageOperation",

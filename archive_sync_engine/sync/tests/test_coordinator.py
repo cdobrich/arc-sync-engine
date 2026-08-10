@@ -116,6 +116,7 @@ def _capabilities() -> DestinationCapabilities:
         supports_attachment_reordering=True,
         supports_replying=True,
         supports_identity_updates=True,
+        supports_identity_deletion=True,
     )
 
 

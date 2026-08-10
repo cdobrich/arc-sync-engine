@@ -49,6 +49,7 @@ from archive_sync_engine.operations import (
     AddReactionOperation,
     CreateConversationOperation,
     CreateIdentityOperation,
+    DeleteIdentityOperation,
     CreateMessageOperation,
     DeleteConversationOperation,
     DeleteMessageOperation,
@@ -699,3 +700,24 @@ def test_set_message_reply_requires_destination_references() -> None:
         )
 
     destination.set_message_reply.assert_not_called()
+
+
+def test_delete_identity_dispatches() -> None:
+    destination = _destination()
+
+    operation = DeleteIdentityOperation(
+        identity_key=IdentityKey("identity-001"),
+    )
+
+    result = OperationExecutor().execute(
+        operation,
+        destination,
+    )
+
+    destination.delete_identity.assert_called_once_with(
+        operation.identity_key,
+    )
+
+    assert result.canonical_id == "identity-001"
+    assert result.deleted is True
+    assert result.deleted_entity.value == "identity"

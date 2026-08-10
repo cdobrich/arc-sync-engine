@@ -501,3 +501,29 @@ def test_complete_message_fingerprint_requires_existing_component_baselines() ->
                 message_pinned=True,
             ),
         )
+
+
+def test_apply_execution_result_deletes_identity() -> None:
+    state = SynchronizationState(
+        identities={
+            "identity-001": DestinationIdentityRef(
+                "destination-identity-001",
+            ),
+        },
+        identity_fingerprints={
+            "identity-001": "fingerprint-001",
+        },
+    )
+
+    updated = state.apply_execution_result(
+        "identity-001",
+        ExecutionResult(
+            canonical_id="identity-001",
+            deleted=True,
+            deleted_entity=DeletedEntityType.IDENTITY,
+        ),
+    )
+
+    assert updated.identities == {}
+    assert updated.identity_fingerprints == {}
+    assert state.identities["identity-001"].id == "destination-identity-001"
