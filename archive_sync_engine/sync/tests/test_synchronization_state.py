@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 from archive_sync_engine.models import CanonicalAttachment
-from archive_sync_engine.models.ids import AttachmentId
+from archive_sync_engine.models.ids import AttachmentId, MessageId
 
 from archive_sync_engine.adapters.references import (
     DestinationConversationRef,
@@ -95,6 +95,49 @@ def test_with_message_returns_new_state() -> None:
     }
     assert updated.message_attachments == {
         "message-001": (),
+    }
+    assert updated.message_reply_to == {
+        "message-001": None,
+    }
+
+
+def test_with_message_records_reply_baseline() -> None:
+    state = SynchronizationState()
+
+    updated = state.with_message(
+        "message-001",
+        DestinationMessageRef("destination-message-001"),
+        "fingerprint-001",
+        "content-fingerprint-001",
+        (),
+        (),
+        False,
+        MessageId("message-parent"),
+    )
+
+    assert updated.message_reply_to == {
+        "message-001": MessageId("message-parent"),
+    }
+
+
+def test_without_message_removes_reply_baseline() -> None:
+    state = SynchronizationState(
+        messages={
+            "message-001": DestinationMessageRef("destination-message-001"),
+        },
+        message_fingerprints={"message-001": "fingerprint-001"},
+        message_content_fingerprints={"message-001": "content-fingerprint-001"},
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
+        message_pinned={"message-001": False},
+        message_reply_to={"message-001": MessageId("message-parent")},
+    )
+
+    updated = state.without_message("message-001")
+
+    assert updated.message_reply_to == {}
+    assert state.message_reply_to == {
+        "message-001": MessageId("message-parent"),
     }
 
 
@@ -303,6 +346,33 @@ def test_apply_execution_result_updates_attachment_baseline_without_completing_f
 
     assert updated.message_attachments == {"message-001": (attachment,)}
     assert updated.message_fingerprints == {"message-001": "old-fingerprint"}
+
+
+def test_apply_execution_result_preserves_uncompleted_reply_baseline() -> None:
+    state = SynchronizationState(
+        messages={
+            "message-001": DestinationMessageRef("destination-message-001"),
+        },
+        message_fingerprints={"message-001": "old-fingerprint"},
+        message_content_fingerprints={"message-001": "old-content-fingerprint"},
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
+        message_pinned={"message-001": False},
+    )
+
+    updated = state.apply_execution_result(
+        "message-001",
+        ExecutionResult(
+            canonical_id="message-001",
+            message_reply_to=None,
+            message_reply_to_synchronized=False,
+        ),
+    )
+
+    assert updated.message_reply_to == {}
+    assert updated.message_fingerprints == {
+        "message-001": "old-fingerprint",
+    }
 
 
 def test_apply_execution_result_completes_message_fingerprint() -> None:

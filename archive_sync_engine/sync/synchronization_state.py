@@ -310,6 +310,7 @@ class SynchronizationState:
             message_reactions=message_reactions,
             message_attachments=message_attachments,
             message_pinned=message_pinned,
+            message_reply_to=message_reply_to,
         )
 
     def without_identity(
