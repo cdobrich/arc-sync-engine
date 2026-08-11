@@ -601,3 +601,56 @@ def test_apply_execution_result_deletes_identity() -> None:
     assert updated.identities == {}
     assert updated.identity_fingerprints == {}
     assert state.identities["identity-001"].id == "destination-identity-001"
+
+
+def test_without_message_rejects_dangling_reply_baseline() -> None:
+    state = SynchronizationState(
+        messages={
+            "message-parent": DestinationMessageRef("destination-parent"),
+            "message-reply": DestinationMessageRef("destination-reply"),
+        },
+        message_reply_to={
+            "message-reply": MessageId("message-parent"),
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="still reference it as a reply target",
+    ):
+        state.without_message("message-parent")
+
+    assert state.messages == {
+        "message-parent": DestinationMessageRef("destination-parent"),
+        "message-reply": DestinationMessageRef("destination-reply"),
+    }
+    assert state.message_reply_to == {
+        "message-reply": MessageId("message-parent"),
+    }
+
+
+def test_without_message_preserves_unrelated_reply_baselines() -> None:
+    state = SynchronizationState(
+        messages={
+            "message-parent": DestinationMessageRef("destination-parent"),
+            "message-reply": DestinationMessageRef("destination-reply"),
+            "message-other": DestinationMessageRef("destination-other"),
+        },
+        message_reply_to={
+            "message-reply": MessageId("message-parent"),
+            "message-other": None,
+        },
+    )
+
+    with pytest.raises(ValueError):
+        state.without_message("message-parent")
+
+    updated = state.without_message("message-other")
+
+    assert updated.message_reply_to == {
+        "message-reply": MessageId("message-parent"),
+    }
+    assert state.message_reply_to == {
+        "message-reply": MessageId("message-parent"),
+        "message-other": None,
+    }

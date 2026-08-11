@@ -303,6 +303,20 @@ class SynchronizationState:
         message_reply_to = dict(self.message_reply_to)
         message_reply_to.pop(canonical_id, None)
 
+        dangling_replyers = sorted(
+            message_id
+            for message_id, reply_to in message_reply_to.items()
+            if reply_to is not None and str(reply_to) == canonical_id
+        )
+        if dangling_replyers:
+            raise ValueError(
+                "Cannot remove message "
+                f"{canonical_id!r} while synchronized messages "
+                "still reference it as a reply target: "
+                + ", ".join(dangling_replyers)
+                + "."
+            )
+
         return SynchronizationState(
             conversations=dict(self.conversations),
             identities=dict(self.identities),
