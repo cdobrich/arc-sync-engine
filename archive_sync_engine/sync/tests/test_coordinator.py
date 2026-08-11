@@ -21,7 +21,11 @@ from archive_sync_engine.operations import (
     SyncOperation,
 )
 from archive_sync_engine.planner import Planner
-from archive_sync_engine.repository import StateRepository, InMemoryStateRepository
+from archive_sync_engine.repository import (
+    InMemoryStateRepository,
+    SQLiteStateRepository,
+    StateRepository,
+)
 from archive_sync_engine.sync.coordinator import SyncCoordinator
 from archive_sync_engine.sync.fingerprint import (
     canonical_fingerprint,
@@ -56,6 +60,7 @@ from archive_sync_engine.models.ids import (
 )
 from archive_sync_engine.operations import (
     CreateConversationOperation,
+    EditMessageOperation,
     PinMessageOperation,
 )
 
@@ -383,7 +388,9 @@ def test_synchronize_persists_component_progress_before_later_failure() -> None:
     archive.iter_messages.side_effect = lambda: iter([desired_message])
 
     initial_state = SynchronizationState(
-        messages={"message-001": Mock()},
+        messages={
+            "message-001": DestinationMessageRef("destination-message-001"),
+        },
         message_fingerprints={
             "message-001": canonical_fingerprint(old_message),
         },
@@ -535,6 +542,103 @@ def test_synchronize_persists_attachment_progress_before_later_pin_failure(
             message_id=desired_message.id,
             canonical_fingerprint=canonical_fingerprint(desired_message),
         ),
+    ]
+
+
+def test_synchronize_with_sqlite_does_not_persist_failed_operation(
+    tmp_path,
+) -> None:
+    archive = _archive()
+    destination = _destination()
+    old_reaction = CanonicalReaction(
+        emoji="👍",
+        identity_key=IdentityKey("identity-001"),
+    )
+    new_reaction = CanonicalReaction(
+        emoji="❤️",
+        identity_key=IdentityKey("identity-001"),
+    )
+    old_message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=ConversationId("conversation-001"),
+        identity_key=IdentityKey("identity-001"),
+        content="old content",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        pinned=False,
+        reactions=(old_reaction,),
+    )
+    desired_message = CanonicalMessage(
+        id=old_message.id,
+        conversation_id=old_message.conversation_id,
+        identity_key=old_message.identity_key,
+        content="new content",
+        created_at=old_message.created_at,
+        pinned=True,
+        reactions=(new_reaction,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.side_effect = lambda: iter([desired_message])
+
+    initial_state = SynchronizationState(
+        messages={
+            "message-001": DestinationMessageRef("destination-message-001"),
+        },
+        message_fingerprints={
+            "message-001": canonical_fingerprint(old_message),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(old_message),
+        },
+        message_reactions={"message-001": (old_reaction,)},
+        message_attachments={"message-001": ()},
+        message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
+    )
+
+    path = tmp_path / "state.sqlite3"
+    with SQLiteStateRepository(path) as repository:
+        repository.record_execution(
+            operation=EditMessageOperation(message=old_message),
+            result=ExecutionResult(canonical_id="message-001"),
+            synchronization_state=initial_state,
+        )
+
+    destination.pin_message.side_effect = RuntimeError("pin failed")
+
+    with SQLiteStateRepository(path) as repository:
+        coordinator = SyncCoordinator(
+            archive=archive,
+            planner=Planner(),
+            executor=OperationExecutor(),
+            destination=destination,
+            capabilities=_capabilities(),
+            state_repository=repository,
+        )
+
+        with pytest.raises(RuntimeError, match="pin failed"):
+            coordinator.synchronize()
+
+    with SQLiteStateRepository(path) as repository:
+        state = repository.load_synchronization_state()
+        rows = repository._connection.execute(
+            "SELECT operation_type, canonical_id FROM execution_log ORDER BY id",
+        ).fetchall()
+
+    assert state.message_content_fingerprints["message-001"] == (
+        canonical_message_content_fingerprint(desired_message)
+    )
+    assert state.message_reactions["message-001"] == (new_reaction,)
+    assert state.message_pinned["message-001"] is False
+    assert state.message_fingerprints["message-001"] == (
+        canonical_fingerprint(old_message)
+    )
+    assert [(row[0], row[1]) for row in rows] == [
+        ("EditMessageOperation", "message-001"),
+        ("EditMessageOperation", "message-001"),
+        ("RemoveReactionOperation", "message-001"),
+        ("AddReactionOperation", "message-001"),
     ]
 
 

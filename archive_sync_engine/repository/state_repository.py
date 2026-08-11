@@ -68,6 +68,11 @@ class StateRepository(ABC):
         Persist synchronization metadata resulting from a
         successfully executed operation.
 
+        The Coordinator calls this method only after the operation has
+        executed successfully and the supplied state has been transitioned
+        to reflect that success. Implementations must not decide whether an
+        operation succeeded or perform synchronization logic themselves.
+
         The supplied synchronization state represents the complete
         post-execution snapshot and must be persisted atomically with
         the execution metadata.

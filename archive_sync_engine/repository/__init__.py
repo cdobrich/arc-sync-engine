@@ -14,9 +14,11 @@ Instead they store engine metadata such as:
 - future planner metadata
 """
 from .in_memory_state_repository import InMemoryStateRepository
+from .sqlite_state_repository import SQLiteStateRepository
 from .state_repository import StateRepository
 
 __all__ = [
     "InMemoryStateRepository",
+    "SQLiteStateRepository",
     "StateRepository",
 ]
