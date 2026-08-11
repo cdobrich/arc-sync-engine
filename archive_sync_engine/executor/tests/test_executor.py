@@ -635,6 +635,47 @@ def test_execution_result_defaults_to_no_references() -> None:
     assert result.identity is None
     assert result.message is None
 
+def test_execute_all_preserves_execution_context_across_operations() -> None:
+    destination = _destination()
+
+    first_message = _message()
+    second_message = replace(
+        first_message,
+        id=MessageId("message-002"),
+    )
+
+    first_ref = DestinationMessageRef("destination-message-001")
+    second_ref = DestinationMessageRef("destination-message-002")
+    destination.create_message.side_effect = [
+        first_ref,
+        second_ref,
+    ]
+
+    operations = (
+        CreateMessageOperation(message=first_message),
+        CreateMessageOperation(message=second_message),
+        SetMessageReplyOperation(
+            message_id=second_message.id,
+            reply_to=first_message.id,
+        ),
+    )
+
+    context, results = OperationExecutor().execute_all(
+        operations,
+        destination,
+    )
+
+    destination.set_message_reply.assert_called_once_with(
+        second_ref,
+        first_ref,
+    )
+    assert context.message(first_message.id) == first_ref
+    assert context.message(second_message.id) == second_ref
+    assert len(results) == 3
+    assert results[-1].message_reply_to == first_message.id
+    assert results[-1].message_reply_to_synchronized is True
+
+
 def test_set_message_reply_uses_execution_local_destination_references() -> None:
     destination = _destination()
     context = ExecutionContext()

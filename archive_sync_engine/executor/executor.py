@@ -20,7 +20,6 @@ Operations are executed exactly in the order received.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import replace
 
 from archive_sync_engine.adapters import DestinationAdapter
@@ -517,6 +516,7 @@ class OperationExecutor:
             result = self.execute(
                 operation,
                 destination,
+                context=context,
             )
 
             self._record_result(
