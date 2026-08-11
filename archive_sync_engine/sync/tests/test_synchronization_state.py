@@ -654,3 +654,122 @@ def test_without_message_preserves_unrelated_reply_baselines() -> None:
         "message-reply": MessageId("message-parent"),
         "message-other": None,
     }
+
+def test_apply_execution_result_deletes_conversation_and_preserves_unrelated_state() -> None:
+    parent_ref = DestinationConversationRef(
+        "destination-parent",
+    )
+    child_ref = DestinationConversationRef(
+        "destination-child",
+    )
+    message_ref = DestinationMessageRef(
+        "destination-message",
+    )
+
+    state = SynchronizationState(
+        conversations={
+            "conversation-parent": parent_ref,
+            "conversation-child": child_ref,
+        },
+        conversation_fingerprints={
+            "conversation-parent": "parent-fingerprint",
+            "conversation-child": "child-fingerprint",
+        },
+        conversation_parent_ids={
+            "conversation-parent": None,
+            "conversation-child": "conversation-parent",
+        },
+        messages={
+            "message-001": message_ref,
+        },
+        message_fingerprints={
+            "message-001": "message-fingerprint",
+        },
+    )
+
+    updated = state.apply_execution_result(
+        "conversation-child",
+        ExecutionResult(
+            canonical_id="conversation-child",
+            deleted=True,
+            deleted_entity=DeletedEntityType.CONVERSATION,
+        ),
+    )
+
+    assert updated.conversations == {
+        "conversation-parent": parent_ref,
+    }
+
+    assert updated.conversation_fingerprints == {
+        "conversation-parent": "parent-fingerprint",
+    }
+
+    assert updated.conversation_parent_ids == {
+        "conversation-parent": None,
+    }
+
+    assert updated.messages == {
+        "message-001": message_ref,
+    }
+
+    assert updated.message_fingerprints == {
+        "message-001": "message-fingerprint",
+    }
+
+    assert state.conversations == {
+        "conversation-parent": parent_ref,
+        "conversation-child": child_ref,
+    }
+
+    assert state.conversation_parent_ids == {
+        "conversation-parent": None,
+        "conversation-child": "conversation-parent",
+    }
+
+def test_apply_execution_result_deletes_message_reply_metadata() -> None:
+    state = SynchronizationState(
+        messages={
+            "message-001": DestinationMessageRef(
+                "destination-message-001",
+            ),
+        },
+        message_fingerprints={
+            "message-001": "fingerprint-001",
+        },
+        message_content_fingerprints={
+            "message-001": "content-fingerprint-001",
+        },
+        message_reactions={
+            "message-001": (),
+        },
+        message_attachments={
+            "message-001": (),
+        },
+        message_pinned={
+            "message-001": False,
+        },
+        message_reply_to={
+            "message-001": None,
+        },
+    )
+
+    updated = state.apply_execution_result(
+        "message-001",
+        ExecutionResult(
+            canonical_id="message-001",
+            deleted=True,
+            deleted_entity=DeletedEntityType.MESSAGE,
+        ),
+    )
+
+    assert updated.messages == {}
+    assert updated.message_fingerprints == {}
+    assert updated.message_content_fingerprints == {}
+    assert updated.message_reactions == {}
+    assert updated.message_attachments == {}
+    assert updated.message_pinned == {}
+    assert updated.message_reply_to == {}
+
+    assert state.message_reply_to == {
+        "message-001": None,
+    }

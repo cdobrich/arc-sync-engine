@@ -2247,3 +2247,139 @@ def test_plan_new_message_attachment_requires_attachment_capability() -> None:
             archive,
             capabilities=_capabilities(supports_attachments=False),
         )
+
+def test_plan_does_not_reconcile_already_ordered_attachments() -> None:
+    archive = _archive()
+
+    conversation = _conversation("conversation-001")
+    attachment_a = _attachment()
+    attachment_b = replace(
+        attachment_a,
+        id=type(attachment_a.id)("attachment-002"),
+        filename="second.txt",
+        sha256="b" * 64,
+    )
+
+    message = replace(
+        _message("message-001", "conversation-001"),
+        attachments=(attachment_a, attachment_b),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    state = SynchronizationState(
+        conversations={
+            "conversation-001": Mock(),
+        },
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        messages={
+            "message-001": Mock(),
+        },
+        message_fingerprints={
+            "message-001": canonical_fingerprint(message),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_attachments={
+            "message-001": (
+                attachment_a,
+                attachment_b,
+            ),
+        },
+        message_reactions={
+            "message-001": (),
+        },
+        message_pinned={
+            "message-001": False,
+        },
+        message_reply_to={
+            "message-001": None,
+        },
+    )
+
+    operations = _planned_operations(
+        Planner(),
+        archive,
+        state,
+    )
+
+    assert operations == []
+
+def test_plan_reconciles_attachment_and_reaction_changes_together() -> None:
+    archive = _archive()
+
+    conversation = _conversation("conversation-001")
+
+    old_attachment = _attachment()
+
+    new_attachment = replace(
+        old_attachment,
+        id=type(old_attachment.id)("attachment-002"),
+        filename="new.txt",
+        sha256="b" * 64,
+    )
+
+    old_reaction = _reaction()
+
+    new_reaction = replace(
+        old_reaction,
+        emoji="🔥",
+    )
+
+    message = replace(
+        _message("message-001", "conversation-001"),
+        attachments=(new_attachment,),
+        reactions=(new_reaction,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    state = SynchronizationState(
+        conversations={
+            "conversation-001": Mock(),
+        },
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        messages={
+            "message-001": Mock(),
+        },
+        message_fingerprints={
+            "message-001": "old-message-fingerprint",
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_reactions={
+            "message-001": (old_reaction,),
+        },
+        message_attachments={
+            "message-001": (old_attachment,),
+        },
+        message_pinned={
+            "message-001": False,
+        },
+        message_reply_to={
+            "message-001": None,
+        },
+    )
+
+    operations = _planned_operations(
+        Planner(),
+        archive,
+        state,
+    )
+
+    assert len(operations) == 4
+
+    assert operations[0].reaction == old_reaction
+    assert operations[1].reaction == new_reaction
+    assert operations[2].attachment == old_attachment
+    assert operations[3].attachment == new_attachment
