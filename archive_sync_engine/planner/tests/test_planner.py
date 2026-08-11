@@ -1315,6 +1315,59 @@ def test_build_plan_materializes_operations() -> None:
         ),
     ]
 
+def test_plan_deletes_stale_replying_message_before_stale_reply_target() -> None:
+    archive = _archive()
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.return_value = iter([])
+
+    state = SynchronizationState(
+        messages={
+            "message-parent": Mock(),
+            "message-reply": Mock(),
+        },
+        message_reply_to={
+            "message-parent": None,
+            "message-reply": MessageId("message-parent"),
+        },
+    )
+
+    operations = _planned_operations(Planner(), archive, state)
+
+    assert operations == [
+        DeleteMessageOperation(
+            message_id=MessageId("message-reply"),
+        ),
+        DeleteMessageOperation(
+            message_id=MessageId("message-parent"),
+        ),
+    ]
+
+
+def test_plan_rejects_circular_stale_message_reply_relationship() -> None:
+    archive = _archive()
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.return_value = iter([])
+
+    state = SynchronizationState(
+        messages={
+            "message-001": Mock(),
+            "message-002": Mock(),
+        },
+        message_reply_to={
+            "message-001": MessageId("message-002"),
+            "message-002": MessageId("message-001"),
+        },
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Circular synchronization-state message reply relationship",
+    ):
+        _planned_operations(Planner(), archive, state)
+
+
 def test_plan_deletes_stale_messages_before_stale_conversations() -> None:
     archive = _archive()
 
@@ -2132,4 +2185,65 @@ def test_plan_rejects_stale_identity_referenced_by_canonical_message() -> None:
                 synchronization_state=state,
                 capabilities=_capabilities(),
             ),
+        )
+
+
+def test_plan_new_message_decomposes_initial_components() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    attachment = _attachment()
+    reaction = _reaction()
+    message = replace(
+        _message("message-001", "conversation-001"),
+        attachments=(attachment,),
+        reactions=(reaction,),
+        pinned=True,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    operations = _planned_operations(Planner(), archive)
+
+    assert operations == [
+        CreateConversationOperation(conversation=conversation),
+        CreateMessageOperation(message=message),
+        AddAttachmentOperation(
+            message_id=message.id,
+            attachment=attachment,
+            resulting_attachments=(attachment,),
+        ),
+        AddReactionOperation(
+            message_id=message.id,
+            reaction=reaction,
+            resulting_reactions=(reaction,),
+        ),
+        PinMessageOperation(
+            message_id=message.id,
+            canonical_fingerprint=canonical_fingerprint(message),
+        ),
+    ]
+
+
+def test_plan_new_message_attachment_requires_attachment_capability() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    message = replace(
+        _message("message-001", "conversation-001"),
+        attachments=(_attachment(),),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    with pytest.raises(
+        CapabilityError,
+        match="supports_attachments",
+    ):
+        _planned_operations(
+            Planner(),
+            archive,
+            capabilities=_capabilities(supports_attachments=False),
         )

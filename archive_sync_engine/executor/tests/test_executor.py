@@ -3,6 +3,7 @@ Tests for the default synchronization operation executor.
 """
 
 from __future__ import annotations
+from dataclasses import replace
 from unittest.mock import Mock
 
 import hashlib
@@ -300,7 +301,13 @@ def test_create_message_dispatches_and_returns_reference() -> None:
     )
 
     destination.create_message.assert_called_once_with(
-        operation.message,
+        replace(
+            operation.message,
+            attachments=(),
+            reactions=(),
+            pinned=False,
+            reply_to=None,
+        ),
     )
 
     assert result.message == destination_ref
@@ -309,7 +316,7 @@ def test_create_message_dispatches_and_returns_reference() -> None:
     assert result.canonical_id == "message-001"
 
 
-def test_create_message_returns_attachment_baseline() -> None:
+def test_create_message_does_not_mark_pending_attachment_baseline_as_synchronized() -> None:
     destination = _destination()
     attachment = _attachment()
     message = CanonicalMessage(
@@ -329,7 +336,8 @@ def test_create_message_returns_attachment_baseline() -> None:
         destination,
     )
 
-    assert result.message_attachments == (attachment,)
+    assert result.message_attachments is None
+    assert result.canonical_fingerprint is None
 
 
 def test_edit_message_dispatches() -> None:
@@ -721,3 +729,42 @@ def test_delete_identity_dispatches() -> None:
     assert result.canonical_id == "identity-001"
     assert result.deleted is True
     assert result.deleted_entity.value == "identity"
+
+
+def test_create_message_strips_decomposed_components_from_destination_creation() -> None:
+    destination = _destination()
+    attachment = _attachment()
+    reaction = _reaction()
+    message = replace(
+        _message(),
+        attachments=(attachment,),
+        reactions=(reaction,),
+        pinned=True,
+        reply_to=MessageId("message-002"),
+    )
+    destination.create_message.return_value = DestinationMessageRef(
+        "destination-message-001",
+    )
+
+    result = OperationExecutor().execute(
+        CreateMessageOperation(message=message),
+        destination,
+    )
+
+    destination.create_message.assert_called_once_with(
+        replace(
+            message,
+            attachments=(),
+            reactions=(),
+            pinned=False,
+            reply_to=None,
+        ),
+    )
+    assert result.canonical_fingerprint is None
+    assert result.message_content_fingerprint == (
+        canonical_message_content_fingerprint(message)
+    )
+    assert result.message_attachments is None
+    assert result.message_reactions is None
+    assert result.message_pinned is None
+    assert not result.message_reply_to_synchronized

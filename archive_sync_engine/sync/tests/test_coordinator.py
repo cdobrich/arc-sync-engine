@@ -1232,3 +1232,254 @@ def test_synchronize_retries_only_failed_reply_after_partial_message_creation() 
     assert final_state.message_fingerprints["message-001"] == (
         canonical_fingerprint(reply)
     )
+
+
+def test_synchronize_decomposes_initial_message_components_end_to_end(tmp_path) -> None:
+    archive = _archive()
+    destination = _destination()
+    conversation = CanonicalConversation(
+        id=ConversationId("conversation-001"),
+        conversation_type=ConversationType.CHANNEL,
+        title="conversation-001",
+    )
+    content = b"attachment content"
+    attachment = CanonicalAttachment(
+        id=AttachmentId("attachment-001"),
+        filename="example.txt",
+        content_type="text/plain",
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+    reaction = CanonicalReaction(
+        identity_key=IdentityKey("identity-001"),
+        emoji="👍",
+    )
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=conversation.id,
+        identity_key=IdentityKey("identity-001"),
+        content="Hello",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        attachments=(attachment,),
+        reactions=(reaction,),
+        pinned=True,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    destination.create_conversation.return_value = DestinationConversationRef(
+        "destination-conversation-001",
+    )
+    destination.create_message.return_value = DestinationMessageRef(
+        "destination-message-001",
+    )
+
+    asset_store = AssetStore(tmp_path)
+    asset_store.put_attachment(attachment, content)
+
+    state_repository = InMemoryStateRepository()
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=Planner(),
+        executor=OperationExecutor(asset_store=asset_store),
+        destination=destination,
+        capabilities=_capabilities(),
+        state_repository=state_repository,
+    )
+
+    coordinator.synchronize()
+
+    destination.create_message.assert_called_once_with(
+        replace(
+            message,
+            attachments=(),
+            reactions=(),
+            pinned=False,
+            reply_to=None,
+        ),
+    )
+    destination.add_attachment.assert_called_once_with(
+        message.id,
+        attachment,
+        content,
+    )
+    destination.add_reaction.assert_called_once_with(
+        message.id,
+        reaction,
+    )
+    destination.pin_message.assert_called_once_with(message.id)
+
+    state = state_repository.load_synchronization_state()
+    assert state.message_fingerprints["message-001"] == canonical_fingerprint(
+        message,
+    )
+    assert state.message_content_fingerprints["message-001"] == (
+        canonical_message_content_fingerprint(message)
+    )
+    assert state.message_attachments["message-001"] == (attachment,)
+    assert state.message_reactions["message-001"] == (reaction,)
+    assert state.message_pinned["message-001"] is True
+    assert state.message_reply_to["message-001"] is None
+
+
+def test_synchronize_retries_only_remaining_initial_message_components(
+    tmp_path,
+) -> None:
+    archive = _archive()
+    destination = _destination()
+    conversation = CanonicalConversation(
+        id=ConversationId("conversation-001"),
+        conversation_type=ConversationType.CHANNEL,
+        title="conversation-001",
+    )
+    content = b"attachment content"
+    attachment = CanonicalAttachment(
+        id=AttachmentId("attachment-001"),
+        filename="example.txt",
+        content_type="text/plain",
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+    reaction = CanonicalReaction(
+        identity_key=IdentityKey("identity-001"),
+        emoji="👍",
+    )
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=conversation.id,
+        identity_key=IdentityKey("identity-001"),
+        content="Hello",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        attachments=(attachment,),
+        reactions=(reaction,),
+        pinned=True,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.side_effect = lambda: iter([message])
+
+    destination.create_conversation.return_value = DestinationConversationRef(
+        "destination-conversation-001",
+    )
+    destination.create_message.return_value = DestinationMessageRef(
+        "destination-message-001",
+    )
+    destination.pin_message.side_effect = [
+        RuntimeError("pin failed"),
+        None,
+    ]
+
+    asset_store = AssetStore(tmp_path)
+    asset_store.put_attachment(attachment, content)
+    state_repository = InMemoryStateRepository()
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=Planner(),
+        executor=OperationExecutor(asset_store=asset_store),
+        destination=destination,
+        capabilities=_capabilities(),
+        state_repository=state_repository,
+    )
+
+    with pytest.raises(RuntimeError, match="pin failed"):
+        coordinator.synchronize()
+
+    partial_state = state_repository.load_synchronization_state()
+    assert partial_state.messages["message-001"] == DestinationMessageRef(
+        "destination-message-001",
+    )
+    assert partial_state.message_attachments["message-001"] == (attachment,)
+    assert partial_state.message_reactions["message-001"] == (reaction,)
+    assert partial_state.message_pinned.get("message-001") is None
+    assert "message-001" not in partial_state.message_fingerprints
+
+    coordinator.synchronize()
+
+    assert destination.create_message.call_count == 1
+    assert destination.add_attachment.call_count == 1
+    assert destination.add_reaction.call_count == 1
+    assert destination.pin_message.call_count == 2
+
+    final_state = state_repository.load_synchronization_state()
+    assert final_state.message_attachments["message-001"] == (attachment,)
+    assert final_state.message_reactions["message-001"] == (reaction,)
+    assert final_state.message_pinned["message-001"] is True
+    assert final_state.message_fingerprints["message-001"] == (
+        canonical_fingerprint(message)
+    )
+
+
+
+def test_synchronize_retries_only_failed_initial_attachment(tmp_path) -> None:
+    archive = _archive()
+    destination = _destination()
+    conversation = CanonicalConversation(
+        id=ConversationId("conversation-001"),
+        conversation_type=ConversationType.CHANNEL,
+        title="conversation-001",
+    )
+    content = b"attachment content"
+    attachment = CanonicalAttachment(
+        id=AttachmentId("attachment-001"),
+        filename="example.txt",
+        content_type="text/plain",
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=conversation.id,
+        identity_key=IdentityKey("identity-001"),
+        content="Hello",
+        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+        attachments=(attachment,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.side_effect = lambda: iter([message])
+
+    destination.create_conversation.return_value = DestinationConversationRef(
+        "destination-conversation-001",
+    )
+    destination.create_message.return_value = DestinationMessageRef(
+        "destination-message-001",
+    )
+    destination.add_attachment.side_effect = [
+        RuntimeError("attachment failed"),
+        None,
+    ]
+
+    asset_store = AssetStore(tmp_path)
+    asset_store.put_attachment(attachment, content)
+    state_repository = InMemoryStateRepository()
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=Planner(),
+        executor=OperationExecutor(asset_store=asset_store),
+        destination=destination,
+        capabilities=_capabilities(),
+        state_repository=state_repository,
+    )
+
+    with pytest.raises(RuntimeError, match="attachment failed"):
+        coordinator.synchronize()
+
+    partial_state = state_repository.load_synchronization_state()
+    assert "message-001" in partial_state.messages
+    assert "message-001" not in partial_state.message_attachments
+    assert "message-001" not in partial_state.message_fingerprints
+
+    coordinator.synchronize()
+
+    assert destination.create_message.call_count == 1
+    assert destination.add_attachment.call_count == 2
+
+    final_state = state_repository.load_synchronization_state()
+    assert final_state.message_attachments["message-001"] == (attachment,)
+    assert final_state.message_fingerprints["message-001"] == (
+        canonical_fingerprint(message)
+    )

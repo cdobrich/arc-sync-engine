@@ -217,13 +217,18 @@ class OperationExecutor:
             case CreateMessageOperation(
                 message=message,
             ):
-                message_for_creation = message
-
-                if message.reply_to is not None:
-                    message_for_creation = replace(
-                        message,
-                        reply_to=None,
-                    )
+                # Initial message creation establishes only the destination
+                # message object and its content. Attachments, reactions, pin
+                # state, and replies are deliberately reconciled by their
+                # dedicated operations so each component has an explicit
+                # successful state transition.
+                message_for_creation = replace(
+                    message,
+                    attachments=(),
+                    reactions=(),
+                    pinned=False,
+                    reply_to=None,
+                )
 
                 destination_ref = (
                     destination.create_message(
@@ -236,25 +241,44 @@ class OperationExecutor:
                     destination_ref,
                 )
 
+                components_pending = bool(
+                    message.attachments
+                    or message.reactions
+                    or message.pinned
+                    or message.reply_to is not None
+                )
+
                 return ExecutionResult(
                     canonical_id=str(
                         message.id,
                     ),
                     canonical_fingerprint=(
-                        canonical_fingerprint(message)
-                        if message.reply_to is None
-                        else None
+                        None
+                        if components_pending
+                        else canonical_fingerprint(message)
                     ),
                     message_content_fingerprint=(
                         canonical_message_content_fingerprint(
                             message,
                         )
                     ),
-                    message_reactions=message.reactions,
-                    message_attachments=message.attachments,
-                    message_pinned=message.pinned,
+                    message_reactions=(
+                        ()
+                        if not message.reactions
+                        else None
+                    ),
+                    message_attachments=(
+                        ()
+                        if not message.attachments
+                        else None
+                    ),
+                    message_pinned=(
+                        False
+                        if not message.pinned
+                        else None
+                    ),
                     message_reply_to=(
-                        message.reply_to
+                        None
                         if message.reply_to is None
                         else None
                     ),

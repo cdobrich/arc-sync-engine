@@ -560,6 +560,8 @@ def test_complete_message_fingerprint_requires_existing_component_baselines() ->
         message_fingerprints={"message-001": "old"},
         message_content_fingerprints={"message-001": "content"},
         message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
+        message_reply_to={"message-001": None},
     )
 
     with pytest.raises(ValueError, match="pin"):
@@ -568,7 +570,9 @@ def test_complete_message_fingerprint_requires_existing_component_baselines() ->
             result=ExecutionResult(
                 canonical_id="message-001",
                 canonical_fingerprint="new",
-                message_pinned=True,
+                message_content_fingerprint="content",
+                message_reactions=(),
+                message_attachments=(),
             ),
         )
 

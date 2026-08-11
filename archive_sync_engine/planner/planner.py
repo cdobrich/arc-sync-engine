@@ -383,9 +383,75 @@ class Planner:
             fingerprint = canonical_fingerprint(message)
 
             if message_id not in synchronization_state.messages:
+                # Message creation establishes only the destination message
+                # object and canonical content. Component state is reconciled
+                # through the same dedicated operations used for existing
+                # messages so AssetStore-backed attachments, reactions, pins,
+                # and replies cannot be marked synchronized prematurely.
                 yield CreateMessageOperation(
                     message=message,
                 )
+
+                component_operations: list[SyncOperation] = []
+
+                if message.attachments:
+                    self._require_capability(
+                        capabilities.supports_attachments,
+                        "supports_attachments",
+                        "reconcile message attachments",
+                    )
+
+                    working_attachments: list = []
+                    for attachment in message.attachments:
+                        working_attachments.append(attachment)
+                        component_operations.append(
+                            AddAttachmentOperation(
+                                message_id=message.id,
+                                attachment=attachment,
+                                resulting_attachments=(
+                                    tuple(working_attachments)
+                                ),
+                            ),
+                        )
+
+                if message.reactions:
+                    self._require_capability(
+                        capabilities.supports_reactions,
+                        "supports_reactions",
+                        "reconcile message reactions",
+                    )
+
+                    if any(reaction.is_custom for reaction in message.reactions):
+                        self._require_capability(
+                            capabilities.supports_custom_emoji,
+                            "supports_custom_emoji",
+                            "reconcile custom emoji reactions",
+                        )
+
+                    working_reactions: list = []
+                    for reaction in message.reactions:
+                        working_reactions.append(reaction)
+                        component_operations.append(
+                            AddReactionOperation(
+                                message_id=message.id,
+                                reaction=reaction,
+                                resulting_reactions=(
+                                    tuple(working_reactions)
+                                ),
+                            ),
+                        )
+
+                if message.pinned:
+                    self._require_capability(
+                        capabilities.supports_message_pinning,
+                        "supports_message_pinning",
+                        "change message pin state",
+                    )
+                    component_operations.append(
+                        PinMessageOperation(
+                            message_id=message.id,
+                        ),
+                    )
 
                 if message.reply_to is not None:
                     self._require_capability(
@@ -401,6 +467,14 @@ class Planner:
                         ),
                     )
 
+                if component_operations:
+                    if message.reply_to is None:
+                        component_operations[-1] = self._mark_message_operation_complete(
+                            operation=component_operations[-1],
+                            canonical_fingerprint=fingerprint,
+                        )
+                    yield from component_operations
+
                 continue
 
             previous_fingerprint = synchronization_state.message_fingerprints.get(
@@ -413,32 +487,46 @@ class Planner:
                     f"fingerprint for message {message_id}."
                 )
 
-            if message_id not in synchronization_state.message_reactions:
-                raise RuntimeError(
-                    "Synchronization state is missing the reaction baseline "
-                    f"for message {message_id}."
-                )
+            # A message without a complete fingerprint can be a legitimate
+            # partial synchronization snapshot left by a failed initial
+            # component operation. Missing component baselines therefore mean
+            # that the component has not yet been established and should be
+            # reconciled from its empty destination baseline. Once the full
+            # fingerprint exists, all component baselines are mandatory.
+            if previous_fingerprint is not None:
+                if message_id not in synchronization_state.message_reactions:
+                    raise RuntimeError(
+                        "Synchronization state is missing the reaction baseline "
+                        f"for message {message_id}."
+                    )
 
-            if message_id not in synchronization_state.message_attachments:
-                raise RuntimeError(
-                    "Synchronization state is missing the attachment baseline "
-                    f"for message {message_id}."
-                )
+                if message_id not in synchronization_state.message_attachments:
+                    raise RuntimeError(
+                        "Synchronization state is missing the attachment baseline "
+                        f"for message {message_id}."
+                    )
 
-            if message_id not in synchronization_state.message_pinned:
-                raise RuntimeError(
-                    "Synchronization state is missing the pin baseline "
-                    f"for message {message_id}."
-                )
+                if message_id not in synchronization_state.message_pinned:
+                    raise RuntimeError(
+                        "Synchronization state is missing the pin baseline "
+                        f"for message {message_id}."
+                    )
 
             previous_content_fingerprint = (
                 synchronization_state.message_content_fingerprints[message_id]
             )
-            previous_reactions = synchronization_state.message_reactions[message_id]
-            previous_attachments = synchronization_state.message_attachments[
-                message_id
-            ]
-            previous_pinned = synchronization_state.message_pinned[message_id]
+            previous_reactions = synchronization_state.message_reactions.get(
+                message_id,
+                (),
+            )
+            previous_attachments = synchronization_state.message_attachments.get(
+                message_id,
+                (),
+            )
+            previous_pinned = synchronization_state.message_pinned.get(
+                message_id,
+                False,
+            )
 
             current_content_fingerprint = canonical_message_content_fingerprint(
                 message,
@@ -449,13 +537,6 @@ class Planner:
 
             reply_baseline_present = message_id in synchronization_state.message_reply_to
             previous_reply_to = synchronization_state.message_reply_to.get(message_id)
-
-            if previous_fingerprint is None and reply_baseline_present:
-                raise RuntimeError(
-                    "Synchronization state for message "
-                    f"{message_id} has a reply baseline but no complete canonical "
-                    "message fingerprint."
-                )
 
             if previous_fingerprint is not None and not reply_baseline_present:
                 raise RuntimeError(
@@ -695,17 +776,17 @@ class Planner:
             for message in messages
         }
 
-        for message_id in synchronization_state.messages:
-            if message_id not in archive_message_ids:
-                self._require_capability(
-                    capabilities.supports_message_deletion,
-                    "supports_message_deletion",
-                    "delete messages",
-                )
+        stale_message_ids = {
+            message_id
+            for message_id in synchronization_state.messages
+            if message_id not in archive_message_ids
+        }
 
-                yield DeleteMessageOperation(
-                    message_id=message_id,
-                )
+        yield from self._plan_stale_messages(
+            stale_message_ids=stale_message_ids,
+            synchronization_state=synchronization_state,
+            capabilities=capabilities,
+        )
 
         archive_conversation_ids = {
             str(conversation.id)
@@ -762,6 +843,108 @@ class Planner:
                 yield DeleteIdentityOperation(
                     identity_key=identity_key,
                 )
+
+    def _plan_stale_messages(
+        self,
+        *,
+        stale_message_ids: set[str],
+        synchronization_state: SynchronizationState,
+        capabilities: DestinationCapabilities,
+    ) -> Iterator[SyncOperation]:
+        """
+        Emit stale messages in reply-dependency-safe order.
+
+        When a stale message replies to another stale message, the replying
+        message must be deleted first so the destination never has to retain
+        a reply relationship pointing at a message that has already been
+        removed. The persisted reply baseline is the only synchronization
+        metadata consulted here; the Archive is authoritative for messages
+        that still exist.
+        """
+
+        children_by_parent: dict[str, list[str]] = {}
+
+        for message_id in synchronization_state.messages:
+            if message_id not in stale_message_ids:
+                continue
+
+            reply_to = synchronization_state.message_reply_to.get(message_id)
+
+            if reply_to is None:
+                continue
+
+            parent_id = str(reply_to)
+            if parent_id in stale_message_ids:
+                children_by_parent.setdefault(
+                    parent_id,
+                    [],
+                ).append(
+                    message_id,
+                )
+
+        processed: set[str] = set()
+        visiting: set[str] = set()
+
+        for message_id in synchronization_state.messages:
+            if message_id not in stale_message_ids:
+                continue
+
+            yield from self._plan_stale_message(
+                message_id=message_id,
+                children_by_parent=children_by_parent,
+                processed=processed,
+                visiting=visiting,
+                capabilities=capabilities,
+            )
+
+    def _plan_stale_message(
+        self,
+        *,
+        message_id: str,
+        children_by_parent: dict[str, list[str]],
+        processed: set[str],
+        visiting: set[str],
+        capabilities: DestinationCapabilities,
+    ) -> Iterator[SyncOperation]:
+        """
+        Recursively emit a stale message after its stale reply children.
+        """
+
+        if message_id in processed:
+            return
+
+        if message_id in visiting:
+            raise RuntimeError(
+                "Circular synchronization-state message reply relationship "
+                f"detected at {message_id}."
+            )
+
+        visiting.add(message_id)
+
+        for child_id in children_by_parent.get(
+            message_id,
+            [],
+        ):
+            yield from self._plan_stale_message(
+                message_id=child_id,
+                children_by_parent=children_by_parent,
+                processed=processed,
+                visiting=visiting,
+                capabilities=capabilities,
+            )
+
+        visiting.remove(message_id)
+        processed.add(message_id)
+
+        self._require_capability(
+            capabilities.supports_message_deletion,
+            "supports_message_deletion",
+            "delete messages",
+        )
+
+        yield DeleteMessageOperation(
+            message_id=message_id,
+        )
 
     def _plan_stale_conversations(
         self,
