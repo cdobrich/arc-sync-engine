@@ -71,7 +71,7 @@ def test_sqlite_repository_round_trips_complete_synchronization_state(
         message_reactions={"message-1": (reaction,)},
         message_attachments={"message-1": (attachment,)},
         message_pinned={"message-1": True},
-        message_reply_to={"message-1": MessageId("message-0")},
+        message_reply_to={"message-1": None},
     )
 
     result = ExecutionResult(canonical_id="message-1")
@@ -118,10 +118,12 @@ def test_sqlite_repository_serializes_state_deterministically(tmp_path: Path) ->
             "message-b": "b",
             "message-a": "a",
         },
+        message_reactions={"message-b": (), "message-a": ()},
+        message_attachments={"message-b": (), "message-a": ()},
         message_pinned={"message-b": False, "message-a": True},
         message_reply_to={
             "message-b": None,
-            "message-a": MessageId("message-parent"),
+            "message-a": None,
         },
     )
 
@@ -156,11 +158,13 @@ def test_sqlite_repository_rolls_back_state_and_execution_log_together(
         messages={
             "message-1": DestinationMessageRef("destination-old"),
         },
+        message_content_fingerprints={"message-1": "old-content"},
     )
     new_state = SynchronizationState(
         messages={
             "message-1": DestinationMessageRef("destination-new"),
         },
+        message_content_fingerprints={"message-1": "new-content"},
     )
 
     with SQLiteStateRepository(path) as repository:
@@ -230,6 +234,7 @@ def test_sqlite_repository_records_execution_and_state_atomically(
     path = tmp_path / "state.sqlite3"
     state = SynchronizationState(
         messages={"message-1": DestinationMessageRef("destination-1")},
+        message_content_fingerprints={"message-1": "content"},
     )
 
     with SQLiteStateRepository(path) as repository:
@@ -259,4 +264,120 @@ def _message():
         content="hello",
         created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
+
+def test_sqlite_repository_accepts_valid_partial_message_state(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = SynchronizationState(
+        messages={"message-1": DestinationMessageRef("destination-1")},
+        message_content_fingerprints={"message-1": "content"},
+        message_reactions={"message-1": ()},
+    )
+
+    with SQLiteStateRepository(path) as repository:
+        repository.record_execution(
+            EditMessageOperation(message=_message()),
+            ExecutionResult(canonical_id="message-1"),
+            state,
+        )
+
+    with SQLiteStateRepository(path) as repository:
+        assert repository.load_synchronization_state() == state
+
+
+def test_sqlite_repository_rejects_state_with_orphan_fingerprint(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = SynchronizationState(
+        message_fingerprints={"message-1": "full"},
+    )
+
+    with SQLiteStateRepository(path) as repository:
+        try:
+            repository.record_execution(
+                EditMessageOperation(message=_message()),
+                ExecutionResult(canonical_id="message-1"),
+                state,
+            )
+        except ValueError as exc:
+            assert "message fingerprints" in str(exc)
+        else:
+            raise AssertionError("Expected invalid synchronization state.")
+
+        assert repository.load_synchronization_state() == SynchronizationState()
+
+
+def test_sqlite_repository_rejects_full_message_without_all_baselines(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = SynchronizationState(
+        messages={"message-1": DestinationMessageRef("destination-1")},
+        message_fingerprints={"message-1": "full"},
+        message_content_fingerprints={"message-1": "content"},
+        message_reactions={"message-1": ()},
+        message_attachments={"message-1": ()},
+        message_reply_to={"message-1": None},
+    )
+
+    with SQLiteStateRepository(path) as repository:
+        try:
+            repository.record_execution(
+                EditMessageOperation(message=_message()),
+                ExecutionResult(canonical_id="message-1"),
+                state,
+            )
+        except ValueError as exc:
+            assert "required component baselines" in str(exc)
+        else:
+            raise AssertionError("Expected invalid synchronization state.")
+
+
+def test_sqlite_repository_rejects_dangling_reply_baseline(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = SynchronizationState(
+        messages={"message-1": DestinationMessageRef("destination-1")},
+        message_content_fingerprints={"message-1": "content"},
+        message_reply_to={"message-1": MessageId("missing")},
+    )
+
+    with SQLiteStateRepository(path) as repository:
+        try:
+            repository.record_execution(
+                EditMessageOperation(message=_message()),
+                ExecutionResult(canonical_id="message-1"),
+                state,
+            )
+        except ValueError as exc:
+            assert "dangling message reply baselines" in str(exc)
+        else:
+            raise AssertionError("Expected invalid synchronization state.")
+
+
+def test_sqlite_repository_rejects_invalid_persisted_state_on_load(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+
+    with SQLiteStateRepository(path) as repository:
+        repository._connection.execute(
+            """
+            INSERT INTO synchronization_state (id, payload)
+            VALUES (1, ?)
+            """,
+            ('{"message_fingerprints":{"message-1":"full"}}',),
+        )
+        repository._connection.commit()
+
+    with SQLiteStateRepository(path) as repository:
+        try:
+            repository.load_synchronization_state()
+        except ValueError as exc:
+            assert "message fingerprints" in str(exc)
+        else:
+            raise AssertionError("Expected invalid persisted state.")
 
