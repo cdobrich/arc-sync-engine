@@ -229,6 +229,29 @@ def test_delete_conversation_dispatches() -> None:
     assert result.canonical_id == "conversation-001"
 
 
+def test_delete_conversation_forgets_execution_context_reference() -> None:
+    destination = _destination()
+    context = ExecutionContext()
+    conversation_id = ConversationId("conversation-001")
+    destination_ref = DestinationConversationRef("destination-conversation-001")
+    context.record_conversation(conversation_id, destination_ref)
+
+    result = OperationExecutor().execute(
+        DeleteConversationOperation(
+            conversation_id=conversation_id,
+        ),
+        destination,
+        context=context,
+    )
+
+    destination.delete_conversation.assert_called_once_with(
+        conversation_id,
+    )
+    assert result.deleted is True
+    with pytest.raises(MissingDestinationReferenceError):
+        context.require_conversation(conversation_id)
+
+
 def test_create_identity_dispatches_and_returns_reference() -> None:
     destination = _destination()
 
@@ -361,6 +384,29 @@ def test_edit_message_dispatches() -> None:
     assert result.identity is None
     assert result.message is None
     assert result.canonical_id == "message-001"
+
+
+def test_delete_message_forgets_execution_context_reference() -> None:
+    destination = _destination()
+    context = ExecutionContext()
+    message_id = MessageId("message-001")
+    destination_ref = DestinationMessageRef("destination-message-001")
+    context.record_message(message_id, destination_ref)
+
+    result = OperationExecutor().execute(
+        DeleteMessageOperation(
+            message_id=message_id,
+        ),
+        destination,
+        context=context,
+    )
+
+    destination.delete_message.assert_called_once_with(
+        message_id,
+    )
+    assert result.deleted is True
+    with pytest.raises(MissingDestinationReferenceError):
+        context.require_message(message_id)
 
 
 def test_delete_message_dispatches() -> None:
@@ -676,7 +722,7 @@ def test_execute_all_preserves_execution_context_across_operations() -> None:
     assert results[-1].message_reply_to_synchronized is True
 
 
-def test_execute_all_removes_deleted_message_reference_from_context() -> None:
+def test_execute_all_forgets_deleted_message_reference() -> None:
     destination = _destination()
     message = _message()
     destination.create_message.return_value = DestinationMessageRef(
@@ -691,9 +737,9 @@ def test_execute_all_removes_deleted_message_reference_from_context() -> None:
         destination,
     )
 
-    assert message.id not in context.messages
     assert len(results) == 2
-    assert results[-1].deleted is True
+    with pytest.raises(MissingDestinationReferenceError):
+        context.require_message(message.id)
 
 
 def test_execute_all_removes_deleted_conversation_reference_from_context() -> None:
@@ -809,6 +855,49 @@ def test_set_message_reply_requires_destination_references() -> None:
         )
 
     destination.set_message_reply.assert_not_called()
+
+
+def test_failed_message_deletion_preserves_execution_context_reference() -> None:
+    destination = _destination()
+    context = ExecutionContext()
+    message_id = MessageId("message-001")
+    destination_ref = DestinationMessageRef("destination-message-001")
+    context.record_message(message_id, destination_ref)
+    destination.delete_message.side_effect = RuntimeError("delete failed")
+
+    with pytest.raises(RuntimeError, match="delete failed"):
+        OperationExecutor().execute(
+            DeleteMessageOperation(
+                message_id=message_id,
+            ),
+            destination,
+            context=context,
+        )
+
+    assert context.require_message(message_id) == destination_ref
+
+
+def test_delete_identity_forgets_execution_context_reference() -> None:
+    destination = _destination()
+    context = ExecutionContext()
+    identity_key = IdentityKey("identity-001")
+    destination_ref = DestinationIdentityRef("destination-identity-001")
+    context.record_identity(identity_key, destination_ref)
+
+    result = OperationExecutor().execute(
+        DeleteIdentityOperation(
+            identity_key=identity_key,
+        ),
+        destination,
+        context=context,
+    )
+
+    destination.delete_identity.assert_called_once_with(
+        identity_key,
+    )
+    assert result.deleted is True
+    with pytest.raises(MissingDestinationReferenceError):
+        context.require_identity(identity_key)
 
 
 def test_delete_identity_dispatches() -> None:

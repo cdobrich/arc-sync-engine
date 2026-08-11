@@ -121,6 +121,30 @@ class ExecutionContext:
             canonical_id
         ] = destination_ref
 
+    def forget_conversation(
+        self,
+        canonical_id: ConversationId,
+    ) -> None:
+        """Remove a destination conversation reference after deletion."""
+
+        self.conversations.pop(canonical_id, None)
+
+    def forget_identity(
+        self,
+        canonical_id: IdentityKey,
+    ) -> None:
+        """Remove a destination identity reference after deletion."""
+
+        self.identities.pop(canonical_id, None)
+
+    def forget_message(
+        self,
+        canonical_id: MessageId,
+    ) -> None:
+        """Remove a destination message reference after deletion."""
+
+        self.messages.pop(canonical_id, None)
+
     def conversation(
         self,
         canonical_id: ConversationId,
@@ -150,30 +174,6 @@ class ExecutionContext:
         return self.identities[
             canonical_id
         ]
-
-    def forget_conversation(
-        self,
-        canonical_id: ConversationId,
-    ) -> None:
-        """Remove a destination conversation reference after deletion."""
-
-        self.conversations.pop(canonical_id, None)
-
-    def forget_identity(
-        self,
-        canonical_id: IdentityKey,
-    ) -> None:
-        """Remove a destination identity reference after deletion."""
-
-        self.identities.pop(canonical_id, None)
-
-    def forget_message(
-        self,
-        canonical_id: MessageId,
-    ) -> None:
-        """Remove a destination message reference after deletion."""
-
-        self.messages.pop(canonical_id, None)
 
     def message(
         self,

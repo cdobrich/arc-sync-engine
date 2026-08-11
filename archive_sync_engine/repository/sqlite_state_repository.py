@@ -137,6 +137,8 @@ class SQLiteStateRepository(StateRepository):
     ) -> None:
         """
         Atomically persist the new state and successful execution metadata.
+
+        The state is validated before any SQLite write is attempted.
         """
         _validate_synchronization_state(synchronization_state)
         state_payload = _encode_json(_state_to_dict(synchronization_state))
@@ -306,6 +308,124 @@ def _attachment_from_dict(value: dict[str, Any]) -> CanonicalAttachment:
     )
 
 
+def _validate_synchronization_state(
+    state: SynchronizationState,
+) -> None:
+    """Validate the current synchronization-state persistence contract.
+
+    This validation is deliberately limited to invariants of the current
+    state representation. It does not inspect the Archive, contact a
+    destination adapter, or make synchronization decisions.
+    """
+
+    _require_subset(
+        state.conversation_fingerprints,
+        state.conversations,
+        "conversation fingerprints",
+    )
+    _require_subset(
+        state.conversation_parent_ids,
+        state.conversations,
+        "conversation parent IDs",
+    )
+    _require_subset(
+        state.identity_fingerprints,
+        state.identities,
+        "identity fingerprints",
+    )
+    _require_subset(
+        state.message_fingerprints,
+        state.messages,
+        "message fingerprints",
+    )
+    _require_subset(
+        state.message_content_fingerprints,
+        state.messages,
+        "message content baselines",
+    )
+    _require_subset(
+        state.message_reactions,
+        state.messages,
+        "message reaction baselines",
+    )
+    _require_subset(
+        state.message_attachments,
+        state.messages,
+        "message attachment baselines",
+    )
+    _require_subset(
+        state.message_pinned,
+        state.messages,
+        "message pin baselines",
+    )
+    _require_subset(
+        state.message_reply_to,
+        state.messages,
+        "message reply baselines",
+    )
+
+    missing_full_components: dict[str, list[str]] = {}
+
+    for canonical_id in state.message_fingerprints:
+        missing = []
+        if canonical_id not in state.message_reactions:
+            missing.append("reactions")
+        if canonical_id not in state.message_attachments:
+            missing.append("attachments")
+        if canonical_id not in state.message_pinned:
+            missing.append("pin")
+        if canonical_id not in state.message_reply_to:
+            missing.append("reply")
+        if missing:
+            missing_full_components[canonical_id] = missing
+
+    if missing_full_components:
+        details = "; ".join(
+            f"{canonical_id}: {', '.join(missing)}"
+            for canonical_id, missing in sorted(
+                missing_full_components.items(),
+            )
+        )
+        raise ValueError(
+            "Persisted synchronization state contains full message "
+            "fingerprints without required component baselines: "
+            + details
+            + "."
+        )
+
+    dangling_replies = {
+        canonical_id: str(reply_to)
+        for canonical_id, reply_to in state.message_reply_to.items()
+        if reply_to is not None and str(reply_to) not in state.messages
+    }
+    if dangling_replies:
+        details = "; ".join(
+            f"{canonical_id} -> {reply_to}"
+            for canonical_id, reply_to in sorted(dangling_replies.items())
+        )
+        raise ValueError(
+            "Persisted synchronization state contains dangling message "
+            "reply baselines: "
+            + details
+            + "."
+        )
+
+def _require_subset(
+    values: dict[str, object],
+    owners: dict[str, object],
+    description: str,
+) -> None:
+    missing = sorted(set(values) - set(owners))
+    if missing:
+        raise ValueError(
+            f"Persisted synchronization state contains {description} "
+            "without destination mappings: "
+            + ", ".join(missing)
+            + "."
+        )
+
+
+
 def _state_to_dict(state: SynchronizationState) -> dict[str, Any]:
     return {
         "conversations": {
@@ -345,93 +465,6 @@ def _state_to_dict(state: SynchronizationState) -> dict[str, Any]:
             for key, value in state.message_reply_to.items()
         },
     }
-
-
-def _validate_synchronization_state(
-    state: SynchronizationState,
-) -> None:
-    """Validate the current synchronization-state persistence contract."""
-
-    conversation_ids = set(state.conversations)
-    identity_ids = set(state.identities)
-    message_ids = set(state.messages)
-
-    orphan_conversation_fingerprints = (
-        set(state.conversation_fingerprints) - conversation_ids
-    )
-    if orphan_conversation_fingerprints:
-        raise ValueError(
-            "SynchronizationState contains conversation fingerprints "
-            "without destination mappings: "
-            f"{sorted(orphan_conversation_fingerprints)!r}"
-        )
-
-    orphan_identity_fingerprints = (
-        set(state.identity_fingerprints) - identity_ids
-    )
-    if orphan_identity_fingerprints:
-        raise ValueError(
-            "SynchronizationState contains identity fingerprints "
-            "without destination mappings: "
-            f"{sorted(orphan_identity_fingerprints)!r}"
-        )
-
-    component_baselines = {
-        "message_content_fingerprints": set(
-            state.message_content_fingerprints
-        ),
-        "message_reactions": set(state.message_reactions),
-        "message_attachments": set(state.message_attachments),
-        "message_pinned": set(state.message_pinned),
-        "message_reply_to": set(state.message_reply_to),
-        "message_fingerprints": set(state.message_fingerprints),
-    }
-
-    for name, ids in component_baselines.items():
-        orphan_ids = ids - message_ids
-        if orphan_ids:
-            raise ValueError(
-                f"SynchronizationState contains {name} entries "
-                "without destination mappings: "
-                f"{sorted(orphan_ids)!r}"
-            )
-
-    missing_content_baselines = (
-        message_ids - set(state.message_content_fingerprints)
-    )
-    if missing_content_baselines:
-        raise ValueError(
-            "SynchronizationState messages are missing content "
-            "baselines: "
-            f"{sorted(missing_content_baselines)!r}"
-        )
-
-    complete_messages = set(state.message_fingerprints)
-    required_component_names = (
-        "message_reactions",
-        "message_attachments",
-        "message_pinned",
-        "message_reply_to",
-    )
-    for name in required_component_names:
-        missing_ids = complete_messages - set(getattr(state, name))
-        if missing_ids:
-            raise ValueError(
-                "SynchronizationState contains complete message "
-                f"fingerprints without {name} baselines: "
-                f"{sorted(missing_ids)!r}"
-            )
-
-    dangling_replies = {
-        canonical_id: reply_to
-        for canonical_id, reply_to in state.message_reply_to.items()
-        if reply_to is not None and str(reply_to) not in message_ids
-    }
-    if dangling_replies:
-        raise ValueError(
-            "SynchronizationState contains dangling message reply "
-            f"baselines: {dangling_replies!r}"
-        )
 
 
 def _state_from_dict(value: dict[str, Any]) -> SynchronizationState:

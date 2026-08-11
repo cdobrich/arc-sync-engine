@@ -152,7 +152,10 @@ class OperationExecutor:
                 destination.delete_conversation(
                     conversation_id,
                 )
-                context.forget_conversation(conversation_id)
+
+                context.forget_conversation(
+                    conversation_id,
+                )
 
                 return ExecutionResult(
                     canonical_id=str(
@@ -208,7 +211,10 @@ class OperationExecutor:
                 destination.delete_identity(
                     identity_key,
                 )
-                context.forget_identity(identity_key)
+
+                context.forget_identity(
+                    identity_key,
+                )
 
                 return ExecutionResult(
                     canonical_id=str(identity_key),
@@ -316,7 +322,10 @@ class OperationExecutor:
                 destination.delete_message(
                     message_id,
                 )
-                context.forget_message(message_id)
+
+                context.forget_message(
+                    message_id,
+                )
 
                 return ExecutionResult(
                     canonical_id=str(
