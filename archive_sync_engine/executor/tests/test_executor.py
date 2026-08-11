@@ -676,6 +676,66 @@ def test_execute_all_preserves_execution_context_across_operations() -> None:
     assert results[-1].message_reply_to_synchronized is True
 
 
+def test_execute_all_removes_deleted_message_reference_from_context() -> None:
+    destination = _destination()
+    message = _message()
+    destination.create_message.return_value = DestinationMessageRef(
+        "destination-message-001",
+    )
+
+    context, results = OperationExecutor().execute_all(
+        (
+            CreateMessageOperation(message=message),
+            DeleteMessageOperation(message_id=message.id),
+        ),
+        destination,
+    )
+
+    assert message.id not in context.messages
+    assert len(results) == 2
+    assert results[-1].deleted is True
+
+
+def test_execute_all_removes_deleted_conversation_reference_from_context() -> None:
+    destination = _destination()
+    conversation = _conversation()
+    destination.create_conversation.return_value = DestinationConversationRef(
+        "destination-conversation-001",
+    )
+
+    context, results = OperationExecutor().execute_all(
+        (
+            CreateConversationOperation(conversation=conversation),
+            DeleteConversationOperation(conversation_id=conversation.id),
+        ),
+        destination,
+    )
+
+    assert conversation.id not in context.conversations
+    assert len(results) == 2
+    assert results[-1].deleted is True
+
+
+def test_execute_all_removes_deleted_identity_reference_from_context() -> None:
+    destination = _destination()
+    identity = _identity()
+    destination.create_identity.return_value = DestinationIdentityRef(
+        "destination-identity-001",
+    )
+
+    context, results = OperationExecutor().execute_all(
+        (
+            CreateIdentityOperation(identity=identity),
+            DeleteIdentityOperation(identity_key=identity.identity_key),
+        ),
+        destination,
+    )
+
+    assert identity.identity_key not in context.identities
+    assert len(results) == 2
+    assert results[-1].deleted is True
+
+
 def test_set_message_reply_uses_execution_local_destination_references() -> None:
     destination = _destination()
     context = ExecutionContext()

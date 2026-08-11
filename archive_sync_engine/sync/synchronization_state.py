@@ -54,24 +54,6 @@ class SynchronizationState:
     Conversation parent relationships are retained because the canonical
     parent may no longer be present in the Archive when a conversation is
     deleted. They are required for child-before-parent deletion ordering.
-
-    Persistence invariants for the current state representation are:
-
-    * every conversation fingerprint and parent entry has a conversation
-      destination mapping;
-    * every identity fingerprint has an identity destination mapping;
-    * every message component baseline and full message fingerprint has a
-      message destination mapping;
-    * every synchronized message has a content baseline;
-    * a message with a full fingerprint has reaction, attachment, pin, and
-      reply baselines as well;
-    * a reply baseline may be absent for a partial message, but when present
-      its target must also be a synchronized message; and
-    * a partial message must not have a full message fingerprint.
-
-    Conversation parent IDs are allowed to refer to a conversation that is
-    no longer synchronized because stale parent information is intentionally
-    retained for deletion ordering.
     """
 
     conversations: dict[
