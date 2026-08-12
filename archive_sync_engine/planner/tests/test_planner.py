@@ -2248,6 +2248,7 @@ def test_plan_new_message_attachment_requires_attachment_capability() -> None:
             capabilities=_capabilities(supports_attachments=False),
         )
 
+
 def test_plan_does_not_reconcile_already_ordered_attachments() -> None:
     archive = _archive()
 
@@ -2309,6 +2310,7 @@ def test_plan_does_not_reconcile_already_ordered_attachments() -> None:
     )
 
     assert operations == []
+
 
 def test_plan_reconciles_attachment_and_reaction_changes_together() -> None:
     archive = _archive()

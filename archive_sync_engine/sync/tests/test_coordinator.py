@@ -1483,3 +1483,108 @@ def test_synchronize_retries_only_failed_initial_attachment(tmp_path) -> None:
     assert final_state.message_fingerprints["message-001"] == (
         canonical_fingerprint(message)
     )
+
+
+def test_synchronize_stops_at_failed_checkpoint_and_does_not_execute_next_operation() -> None:
+    archive = _archive()
+    planner = _planner()
+    executor = _executor()
+    destination = _destination()
+    capabilities = _capabilities()
+    state_repository = _state_repository()
+
+    initial_state = SynchronizationState()
+    state_repository.load_synchronization_state.return_value = initial_state
+
+    operation_one = Mock(spec=SyncOperation)
+    operation_two = Mock(spec=SyncOperation)
+
+    planner.plan.return_value = iter((operation_one, operation_two))
+    executor.execute.return_value = ExecutionResult(
+        canonical_id="message-001",
+    )
+    state_repository.record_execution.side_effect = RuntimeError(
+        "checkpoint persistence failed",
+    )
+
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=planner,
+        executor=executor,
+        destination=destination,
+        capabilities=capabilities,
+        state_repository=state_repository,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="checkpoint persistence failed",
+    ):
+        coordinator.synchronize()
+
+    executor.execute.assert_called_once_with(
+        operation=operation_one,
+        destination=destination,
+        context=ANY,
+    )
+    state_repository.record_execution.assert_called_once()
+
+
+def test_synchronize_does_not_expose_checkpoint_state_after_repository_failure() -> None:
+    archive = _archive()
+    planner = _planner()
+    executor = _executor()
+    destination = _destination()
+    capabilities = _capabilities()
+
+    state_repository = InMemoryStateRepository()
+    initial_state = SynchronizationState()
+    state_repository._synchronization_state = initial_state
+
+    operation = CreateConversationOperation(
+        conversation=CanonicalConversation(
+            id=ConversationId("conversation-001"),
+            conversation_type=ConversationType.CHANNEL,
+            title="General",
+        ),
+    )
+    destination_ref = DestinationConversationRef(
+        "destination-conversation-001",
+    )
+    result = ExecutionResult(
+        canonical_id="conversation-001",
+        conversation=destination_ref,
+        canonical_fingerprint="conversation-fingerprint",
+        conversation_parent_id=None,
+    )
+
+    planner.plan.return_value = iter((operation,))
+    executor.execute.return_value = result
+
+    original_record_execution = state_repository.record_execution
+
+    def fail_checkpoint(*args, **kwargs):
+        raise RuntimeError("checkpoint persistence failed")
+
+    state_repository.record_execution = fail_checkpoint
+
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=planner,
+        executor=executor,
+        destination=destination,
+        capabilities=capabilities,
+        state_repository=state_repository,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="checkpoint persistence failed",
+    ):
+        coordinator.synchronize()
+
+    assert state_repository.load_synchronization_state() is initial_state
+
+    # Restore the repository implementation to verify that the state was
+    # never replaced before the failed checkpoint.
+    state_repository.record_execution = original_record_execution

@@ -655,6 +655,7 @@ def test_without_message_preserves_unrelated_reply_baselines() -> None:
         "message-other": None,
     }
 
+
 def test_apply_execution_result_deletes_conversation_and_preserves_unrelated_state() -> None:
     parent_ref = DestinationConversationRef(
         "destination-parent",
@@ -725,6 +726,7 @@ def test_apply_execution_result_deletes_conversation_and_preserves_unrelated_sta
         "conversation-parent": None,
         "conversation-child": "conversation-parent",
     }
+
 
 def test_apply_execution_result_deletes_message_reply_metadata() -> None:
     state = SynchronizationState(
