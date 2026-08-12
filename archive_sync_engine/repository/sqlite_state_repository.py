@@ -22,6 +22,7 @@ from archive_sync_engine.adapters.references import (
     DestinationMessageRef,
 )
 from archive_sync_engine.executor import ExecutionResult
+from archive_sync_engine.executor.result import DeletedEntityType
 from archive_sync_engine.importer import ImportSession
 from archive_sync_engine.importer.state import ImportState
 from archive_sync_engine.models import CanonicalAttachment, CanonicalReaction
@@ -29,6 +30,7 @@ from archive_sync_engine.models.ids import MessageId
 from archive_sync_engine.operations import SyncOperation
 from archive_sync_engine.sync import SynchronizationState
 
+from .execution_log import ExecutionLogEntry
 from .state_repository import StateRepository
 
 
@@ -173,6 +175,56 @@ class SQLiteStateRepository(StateRepository):
                     ),
                 ),
             )
+
+    def query_execution_log(
+        self,
+        *,
+        canonical_id: str | None = None,
+        operation_type: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[ExecutionLogEntry, ...]:
+        """Return matching successful execution records, newest first."""
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be non-negative or None.")
+
+        clauses: list[str] = []
+        parameters: list[object] = []
+
+        if canonical_id is not None:
+            clauses.append("canonical_id = ?")
+            parameters.append(canonical_id)
+
+        if operation_type is not None:
+            clauses.append("operation_type = ?")
+            parameters.append(operation_type)
+
+        query = "SELECT id, operation_type, canonical_id, deleted, deleted_entity FROM execution_log"
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY id DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            parameters.append(limit)
+
+        rows = self._connection.execute(query, parameters).fetchall()
+        return tuple(
+            ExecutionLogEntry(
+                id=int(row["id"]),
+                operation_type=str(row["operation_type"]),
+                canonical_id=(
+                    str(row["canonical_id"])
+                    if row["canonical_id"] is not None
+                    else None
+                ),
+                deleted=bool(row["deleted"]),
+                deleted_entity=(
+                    DeletedEntityType(str(row["deleted_entity"]))
+                    if row["deleted_entity"] is not None
+                    else None
+                ),
+            )
+            for row in rows
+        )
 
     def _initialize(self) -> None:
         with self._connection:

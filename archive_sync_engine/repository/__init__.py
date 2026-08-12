@@ -13,11 +13,13 @@ Instead they store engine metadata such as:
 - importer state
 - future planner metadata
 """
+from .execution_log import ExecutionLogEntry
 from .in_memory_state_repository import InMemoryStateRepository
 from .sqlite_state_repository import SQLiteStateRepository
 from .state_repository import StateRepository
 
 __all__ = [
+    "ExecutionLogEntry",
     "InMemoryStateRepository",
     "SQLiteStateRepository",
     "StateRepository",

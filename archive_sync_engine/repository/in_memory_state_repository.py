@@ -14,6 +14,7 @@ from archive_sync_engine.importer import ImportSession
 from archive_sync_engine.operations import SyncOperation
 from archive_sync_engine.sync import SynchronizationState
 
+from .execution_log import ExecutionLogEntry
 from .state_repository import StateRepository
 
 
@@ -40,6 +41,7 @@ class InMemoryStateRepository(StateRepository):
         )
 
         self._import_session: ImportSession | None = None
+        self._execution_log: list[ExecutionLogEntry] = []
 
     def save_import_session(
         self,
@@ -84,3 +86,38 @@ class InMemoryStateRepository(StateRepository):
         """
 
         self._synchronization_state = synchronization_state
+        self._execution_log.append(
+            ExecutionLogEntry(
+                id=len(self._execution_log) + 1,
+                operation_type=type(operation).__name__,
+                canonical_id=result.canonical_id,
+                deleted=result.deleted,
+                deleted_entity=result.deleted_entity,
+            )
+        )
+
+    def query_execution_log(
+        self,
+        *,
+        canonical_id: str | None = None,
+        operation_type: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[ExecutionLogEntry, ...]:
+        """Return matching successful execution records, newest first."""
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be non-negative or None.")
+
+        records = [
+            entry
+            for entry in reversed(self._execution_log)
+            if (canonical_id is None or entry.canonical_id == canonical_id)
+            and (
+                operation_type is None
+                or entry.operation_type == operation_type
+            )
+        ]
+
+        if limit is not None:
+            records = records[:limit]
+
+        return tuple(records)

@@ -378,3 +378,95 @@ def test_sqlite_repository_rejects_invalid_persisted_state_on_load(
         else:
             raise AssertionError("Expected invalid persisted state.")
 
+
+
+def test_sqlite_repository_queries_execution_log_newest_first(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+
+    with SQLiteStateRepository(path) as repository:
+        repository.record_execution(
+            EditMessageOperation(message=_message()),
+            ExecutionResult(canonical_id="message-1"),
+            SynchronizationState(),
+        )
+        repository.record_execution(
+            EditMessageOperation(message=_message()),
+            ExecutionResult(canonical_id="message-2"),
+            SynchronizationState(),
+        )
+
+        entries = repository.query_execution_log()
+
+        assert [entry.canonical_id for entry in entries] == [
+            "message-2",
+            "message-1",
+        ]
+        assert [entry.id for entry in entries] == [2, 1]
+
+
+def test_sqlite_repository_queries_execution_log_with_filters_and_limit(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+
+    with SQLiteStateRepository(path) as repository:
+        repository.record_execution(
+            EditMessageOperation(message=_message()),
+            ExecutionResult(canonical_id="message-1"),
+            SynchronizationState(),
+        )
+        repository.record_execution(
+            EditMessageOperation(message=_message()),
+            ExecutionResult(canonical_id="message-1"),
+            SynchronizationState(),
+        )
+
+        entries = repository.query_execution_log(
+            canonical_id="message-1",
+            operation_type="EditMessageOperation",
+            limit=1,
+        )
+
+        assert len(entries) == 1
+        assert entries[0].canonical_id == "message-1"
+        assert entries[0].operation_type == "EditMessageOperation"
+
+
+def test_sqlite_repository_query_reports_deletion_metadata(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+
+    from archive_sync_engine.executor.result import DeletedEntityType
+
+    with SQLiteStateRepository(path) as repository:
+        repository.record_execution(
+            EditMessageOperation(message=_message()),
+            ExecutionResult(
+                canonical_id="message-1",
+                deleted=True,
+                deleted_entity=DeletedEntityType.MESSAGE,
+            ),
+            SynchronizationState(),
+        )
+
+        entry = repository.query_execution_log()[0]
+
+        assert entry.deleted is True
+        assert entry.deleted_entity is DeletedEntityType.MESSAGE
+
+
+def test_sqlite_repository_query_rejects_negative_limit(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+
+    with SQLiteStateRepository(path) as repository:
+        try:
+            repository.query_execution_log(limit=-1)
+        except ValueError as exc:
+            assert "limit" in str(exc)
+        else:
+            raise AssertionError("Expected negative limit to be rejected.")

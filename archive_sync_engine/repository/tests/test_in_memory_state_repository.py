@@ -106,3 +106,41 @@ def test_load_import_session_returns_none_initially() -> None:
     repository = InMemoryStateRepository()
 
     assert repository.load_import_session() is None
+
+def test_query_execution_log_returns_newest_first_and_supports_filters() -> None:
+    repository = InMemoryStateRepository()
+
+    repository.record_execution(
+        operation=Mock(spec=SyncOperation),
+        result=ExecutionResult(canonical_id="message-001"),
+        synchronization_state=SynchronizationState(),
+    )
+    repository.record_execution(
+        operation=Mock(spec=SyncOperation),
+        result=ExecutionResult(canonical_id="message-002"),
+        synchronization_state=SynchronizationState(),
+    )
+
+    entries = repository.query_execution_log()
+
+    assert [entry.canonical_id for entry in entries] == [
+        "message-002",
+        "message-001",
+    ]
+    assert [entry.id for entry in entries] == [2, 1]
+
+    assert [
+        entry.canonical_id
+        for entry in repository.query_execution_log(canonical_id="message-001")
+    ] == ["message-001"]
+
+
+def test_query_execution_log_rejects_negative_limit() -> None:
+    repository = InMemoryStateRepository()
+
+    try:
+        repository.query_execution_log(limit=-1)
+    except ValueError as exc:
+        assert "limit" in str(exc)
+    else:
+        raise AssertionError("Expected negative limit to be rejected.")

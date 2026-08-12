@@ -17,6 +17,8 @@ from archive_sync_engine.importer import ImportSession
 from archive_sync_engine.operations import SyncOperation
 from archive_sync_engine.sync import SynchronizationState
 
+from .execution_log import ExecutionLogEntry
+
 
 class StateRepository(ABC):
     """
@@ -78,3 +80,20 @@ class StateRepository(ABC):
         the execution metadata.
         """
         raise NotImplementedError
+    @abstractmethod
+    def query_execution_log(
+        self,
+        *,
+        canonical_id: str | None = None,
+        operation_type: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[ExecutionLogEntry, ...]:
+        """
+        Return successfully checkpointed execution records.
+
+        Results are ordered newest first. Optional filters restrict the
+        returned records without inspecting canonical Archive state or
+        making synchronization decisions.
+        """
+        raise NotImplementedError
+
