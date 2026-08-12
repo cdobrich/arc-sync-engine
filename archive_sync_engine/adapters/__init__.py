@@ -36,6 +36,7 @@ from .exceptions import (
 )
 
 from .source import SourceAdapter
+from .discord import DiscordSourceAdapter
 from .references import (
     DestinationAttachmentRef,
     DestinationConversationRef,
@@ -53,6 +54,7 @@ __all__ = [
     "DestinationAttachmentRef",
     "DestinationCapabilities",
     "DestinationConversationRef",
+    "DiscordSourceAdapter",
     "DestinationIdentityRef",
     "DestinationMessageRef",
     "NotFoundError",

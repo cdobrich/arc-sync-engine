@@ -4,8 +4,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 
-import pytest
-
 from archive_sync_engine.adapters.references import (
     DestinationConversationRef,
     DestinationIdentityRef,
@@ -204,25 +202,6 @@ def test_sqlite_repository_rolls_back_state_and_execution_log_together(
         assert [row[0] for row in rows] == ["message-1"]
 
 
-def test_sqlite_repository_rejects_dangling_reply_baseline(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "state.sqlite3"
-    state = SynchronizationState(
-        messages={"message-1": DestinationMessageRef("destination-1")},
-        message_content_fingerprints={"message-1": "content"},
-        message_reply_to={"message-1": MessageId("missing-message")},
-    )
-
-    with SQLiteStateRepository(path) as repository:
-        with pytest.raises(ValueError, match="dangling message reply"):
-            repository.record_execution(
-                EditMessageOperation(message=_message()),
-                ExecutionResult(canonical_id="message-1"),
-                state,
-            )
-
-
 def test_sqlite_repository_persists_import_session(tmp_path: Path) -> None:
     path = tmp_path / "state.sqlite3"
     now = datetime.now(timezone.utc)
@@ -354,6 +333,30 @@ def test_sqlite_repository_rejects_full_message_without_all_baselines(
             assert "required component baselines" in str(exc)
         else:
             raise AssertionError("Expected invalid synchronization state.")
+
+
+def test_sqlite_repository_rejects_dangling_reply_baseline(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = SynchronizationState(
+        messages={"message-1": DestinationMessageRef("destination-1")},
+        message_content_fingerprints={"message-1": "content"},
+        message_reply_to={"message-1": MessageId("missing")},
+    )
+
+    with SQLiteStateRepository(path) as repository:
+        try:
+            repository.record_execution(
+                EditMessageOperation(message=_message()),
+                ExecutionResult(canonical_id="message-1"),
+                state,
+            )
+        except ValueError as exc:
+            assert "dangling message reply baselines" in str(exc)
+        else:
+            raise AssertionError("Expected invalid synchronization state.")
+
 
 def test_sqlite_repository_rejects_invalid_persisted_state_on_load(
     tmp_path: Path,
