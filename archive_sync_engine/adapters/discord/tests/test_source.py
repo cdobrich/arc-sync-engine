@@ -124,16 +124,6 @@ def test_iter_conversations_maps_channels_and_threads() -> None:
     )
 
 
-def test_iter_messages_is_explicitly_deferred_to_message_slice() -> None:
-    adapter = DiscordSourceAdapter(
-        FakeClient(FakeGuild()),
-        [123],
-    )
-
-    conversation = next(adapter.iter_conversations())
-
-    with pytest.raises(NotImplementedError):
-        list(adapter.iter_messages(conversation))
 
 
 def test_source_adapter_rejects_sync_calls_inside_running_event_loop() -> None:
@@ -152,3 +142,184 @@ def test_source_adapter_rejects_sync_calls_inside_running_event_loop() -> None:
 
     import asyncio
     asyncio.run(run())
+
+
+class FakeAttachment:
+    def __init__(
+        self,
+        attachment_id: int,
+        filename: str,
+        data: bytes,
+        content_type: str = "text/plain",
+    ) -> None:
+        self.id = attachment_id
+        self.filename = filename
+        self.content_type = content_type
+        self._data = data
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+class FakeReaction:
+    def __init__(self, emoji, users) -> None:
+        self.emoji = emoji
+        self._users = users
+
+    async def _users_iter(self, limit=None):
+        for user in self._users:
+            yield user
+
+    def users(self, limit=None):
+        return self._users_iter(limit=limit)
+
+
+class FakeEmoji:
+    def __init__(self, emoji_id: int, name: str) -> None:
+        self.id = emoji_id
+        self.name = name
+
+
+class FakeReference:
+    def __init__(self, message_id: int | None) -> None:
+        self.message_id = message_id
+
+
+class FakeMessage:
+    def __init__(
+        self,
+        message_id: int,
+        channel: FakeChannel,
+        author: FakeUser,
+        created_at: datetime,
+        content: str,
+        *,
+        edited_at: datetime | None = None,
+        reference: FakeReference | None = None,
+        attachments=(),
+        reactions=(),
+    ) -> None:
+        self.id = message_id
+        self.channel = channel
+        self.author = author
+        self.created_at = created_at
+        self.edited_at = edited_at
+        self.content = content
+        self.reference = reference
+        self.attachments = attachments
+        self.reactions = reactions
+
+
+class MessageChannel(FakeChannel):
+    def __init__(self, *args, messages=(), pinned=(), **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._messages = tuple(messages)
+        self._pinned = tuple(pinned)
+
+    def history(self, *, limit=None, oldest_first=True):
+        async def iterator():
+            messages = self._messages if oldest_first else tuple(reversed(self._messages))
+            for message in messages:
+                yield message
+
+        return iterator()
+
+    async def pins(self):
+        return list(self._pinned)
+
+
+def test_iter_messages_maps_content_reply_attachment_reaction_and_pin_state() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(
+        10,
+        "first",
+        1,
+        created,
+    )
+    attachment = FakeAttachment(
+        50,
+        "document.txt",
+        b"hello attachment",
+    )
+    reaction = FakeReaction(
+        FakeEmoji(99, "custom-heart"),
+        [user],
+    )
+    message = FakeMessage(
+        100,
+        channel,
+        user,
+        created,
+        "hello",
+        reference=FakeReference(90),
+        attachments=(attachment,),
+        reactions=(reaction,),
+    )
+    channel._messages = (message,)
+    channel._pinned = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    adapter = DiscordSourceAdapter(
+        FakeClient(guild),
+        [123],
+    )
+
+    conversation = next(
+        item
+        for item in adapter.iter_conversations()
+        if str(item.id).endswith("channel:10")
+    )
+
+    messages = list(adapter.iter_messages(conversation))
+
+    assert len(messages) == 1
+    canonical = messages[0]
+    assert canonical.id == "discord:message:100"
+    assert canonical.conversation_id == conversation.id
+    assert canonical.identity_key == "discord:user:1"
+    assert canonical.content == "hello"
+    assert canonical.reply_to == "discord:message:90"
+    assert canonical.pinned is True
+    assert canonical.attachments[0].filename == "document.txt"
+    assert canonical.attachments[0].size == len(b"hello attachment")
+    assert canonical.reactions[0].identity_key == "discord:user:1"
+    assert canonical.reactions[0].emoji_id == "99"
+    assert canonical.reactions[0].is_custom is True
+
+    assert adapter.attachment_bytes(canonical.attachments[0]) == b"hello attachment"
+
+
+def test_iter_messages_preserves_chronological_order() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(
+        10,
+        "first",
+        1,
+        created,
+    )
+    messages = (
+        FakeMessage(100, channel, user, created, "first"),
+        FakeMessage(
+            101,
+            channel,
+            user,
+            created.replace(second=1),
+            "second",
+        ),
+    )
+    channel._messages = messages
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    result = list(adapter.iter_messages(conversation))
+
+    assert [str(message.id) for message in result] == [
+        "discord:message:100",
+        "discord:message:101",
+    ]

@@ -742,46 +742,6 @@ def test_execute_all_forgets_deleted_message_reference() -> None:
         context.require_message(message.id)
 
 
-def test_execute_all_removes_deleted_conversation_reference_from_context() -> None:
-    destination = _destination()
-    conversation = _conversation()
-    destination.create_conversation.return_value = DestinationConversationRef(
-        "destination-conversation-001",
-    )
-
-    context, results = OperationExecutor().execute_all(
-        (
-            CreateConversationOperation(conversation=conversation),
-            DeleteConversationOperation(conversation_id=conversation.id),
-        ),
-        destination,
-    )
-
-    assert conversation.id not in context.conversations
-    assert len(results) == 2
-    assert results[-1].deleted is True
-
-
-def test_execute_all_removes_deleted_identity_reference_from_context() -> None:
-    destination = _destination()
-    identity = _identity()
-    destination.create_identity.return_value = DestinationIdentityRef(
-        "destination-identity-001",
-    )
-
-    context, results = OperationExecutor().execute_all(
-        (
-            CreateIdentityOperation(identity=identity),
-            DeleteIdentityOperation(identity_key=identity.identity_key),
-        ),
-        destination,
-    )
-
-    assert identity.identity_key not in context.identities
-    assert len(results) == 2
-    assert results[-1].deleted is True
-
-
 def test_set_message_reply_uses_execution_local_destination_references() -> None:
     destination = _destination()
     context = ExecutionContext()
@@ -958,3 +918,43 @@ def test_create_message_strips_decomposed_components_from_destination_creation()
     assert result.message_reactions is None
     assert result.message_pinned is None
     assert not result.message_reply_to_synchronized
+
+def test_execute_all_removes_deleted_conversation_reference_from_context() -> None:
+    destination = _destination()
+    conversation = _conversation()
+    destination.create_conversation.return_value = DestinationConversationRef(
+        "destination-conversation-001",
+    )
+
+    context, results = OperationExecutor().execute_all(
+        (
+            CreateConversationOperation(conversation=conversation),
+            DeleteConversationOperation(conversation_id=conversation.id),
+        ),
+        destination,
+    )
+
+    assert conversation.id not in context.conversations
+    assert len(results) == 2
+    assert results[-1].deleted is True
+
+
+def test_execute_all_removes_deleted_identity_reference_from_context() -> None:
+    destination = _destination()
+    identity = _identity()
+    destination.create_identity.return_value = DestinationIdentityRef(
+        "destination-identity-001",
+    )
+
+    context, results = OperationExecutor().execute_all(
+        (
+            CreateIdentityOperation(identity=identity),
+            DeleteIdentityOperation(identity_key=identity.identity_key),
+        ),
+        destination,
+    )
+
+    assert identity.identity_key not in context.identities
+    assert len(results) == 2
+    assert results[-1].deleted is True
+
