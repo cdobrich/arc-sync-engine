@@ -375,12 +375,40 @@ class DiscordSourceAdapter(SourceAdapter):
 
     @staticmethod
     def _message_bearing_channels(guild: Any) -> Iterable[Any]:
+        """Return message-bearing channels and discovered active threads.
+
+        Discord exposes active threads separately from the guild channel
+        collection in some client/library versions.  Treat both collections
+        as source input and deduplicate by Discord channel ID so the canonical
+        archive sees each conversation exactly once.
+        """
+
         channels = getattr(guild, "channels", ())
-        return (
-            channel
-            for channel in channels
-            if DiscordSourceAdapter._is_message_bearing_channel(channel)
+        threads = getattr(guild, "threads", ())
+
+        candidates = (
+            *channels,
+            *threads,
         )
+
+        seen_ids: set[str] = set()
+
+        for channel in candidates:
+            if not DiscordSourceAdapter._is_message_bearing_channel(
+                channel,
+            ):
+                continue
+
+            channel_id = getattr(channel, "id", None)
+            if channel_id is None:
+                continue
+
+            key = str(channel_id)
+            if key in seen_ids:
+                continue
+
+            seen_ids.add(key)
+            yield channel
 
     @staticmethod
     def _is_message_bearing_channel(channel: Any) -> bool:

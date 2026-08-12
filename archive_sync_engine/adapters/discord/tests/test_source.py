@@ -128,6 +128,34 @@ def test_iter_conversations_maps_channels_and_threads() -> None:
 
 
 
+def test_iter_conversations_includes_active_guild_threads_without_duplicates() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    guild = FakeGuild()
+    guild.channels = [
+        FakeChannel(10, "first", 1, created),
+    ]
+    guild.threads = [
+        FakeThread(30, "thread", 10, 30, created),
+        FakeThread(30, "thread-duplicate", 10, 31, created),
+    ]
+
+    adapter = DiscordSourceAdapter(
+        FakeClient(guild),
+        [123],
+    )
+
+    conversations = list(adapter.iter_conversations())
+
+    assert [str(item.id) for item in conversations] == [
+        "discord:guild:123:channel:10",
+        "discord:guild:123:channel:30",
+    ]
+    assert conversations[1].conversation_type is ConversationType.THREAD
+    assert conversations[1].parent_id == (
+        "discord:guild:123:channel:10"
+    )
+
+
 def test_source_adapter_rejects_sync_calls_inside_running_event_loop() -> None:
     async def run() -> None:
         adapter = DiscordSourceAdapter(
