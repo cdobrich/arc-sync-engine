@@ -140,6 +140,14 @@ class AssetStore:
         Store attachment bytes and verify their canonical SHA-256 digest.
         """
 
+        if len(content) != attachment.size:
+            raise ValueError(
+                "Attachment content size does not match "
+                f"canonical attachment {attachment.id}: "
+                f"expected {attachment.size}, "
+                f"got {len(content)}."
+            )
+
         actual_sha256 = hashlib.sha256(
             content,
         ).hexdigest()

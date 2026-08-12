@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from archive_sync_engine.adapters import DiscordSourceAdapter
-from archive_sync_engine.adapters.exceptions import AdapterError
-from archive_sync_engine.models import ConversationType
+from archive_sync_engine.adapters.exceptions import AdapterError, NotFoundError
+from archive_sync_engine.models import CanonicalAttachment, ConversationType
+from archive_sync_engine.models.ids import AttachmentId
 
 
 class FakeUser:
@@ -284,6 +286,9 @@ def test_iter_messages_maps_content_reply_attachment_reaction_and_pin_state() ->
     assert canonical.pinned is True
     assert canonical.attachments[0].filename == "document.txt"
     assert canonical.attachments[0].size == len(b"hello attachment")
+    assert canonical.attachments[0].sha256 == hashlib.sha256(
+        b"hello attachment",
+    ).hexdigest()
     assert canonical.reactions[0].identity_key == "discord:user:1"
     assert canonical.reactions[0].emoji_id == "99"
     assert canonical.reactions[0].is_custom is True
@@ -323,3 +328,56 @@ def test_iter_messages_preserves_chronological_order() -> None:
         "discord:message:100",
         "discord:message:101",
     ]
+
+def test_attachment_bytes_returns_cached_content() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(
+        10,
+        "first",
+        1,
+        created,
+    )
+    attachment = FakeAttachment(
+        50,
+        "document.txt",
+        b"hello attachment",
+    )
+    message = FakeMessage(
+        100,
+        channel,
+        user,
+        created,
+        "hello",
+        attachments=(attachment,),
+    )
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+    canonical = next(adapter.iter_messages(conversation))
+
+    assert adapter.attachment_bytes(canonical.attachments[0]) == (
+        b"hello attachment"
+    )
+
+
+def test_attachment_bytes_raises_for_unknown_attachment() -> None:
+    adapter = DiscordSourceAdapter(
+        FakeClient(FakeGuild()),
+        [123],
+    )
+    content = b"never downloaded"
+    attachment = CanonicalAttachment(
+        id=AttachmentId("attachment-unknown"),
+        filename="unknown.txt",
+        content_type="text/plain",
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    with pytest.raises(NotFoundError, match="attachment-unknown"):
+        adapter.attachment_bytes(attachment)
+

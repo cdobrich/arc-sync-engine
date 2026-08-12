@@ -146,7 +146,7 @@ def test_asset_store_rejects_digest_mismatch(
     ):
         store.put_attachment(
             attachment,
-            b"actual",
+            b"actual!",
         )
 
 
@@ -164,3 +164,56 @@ def test_asset_store_rejects_invalid_sha256(
         store.path_for_sha256(
             "invalid",
         )
+
+def test_asset_store_rejects_attachment_size_mismatch(
+    tmp_path: Path,
+) -> None:
+    store = AssetStore(
+        tmp_path,
+    )
+
+    content = b"actual"
+
+    attachment = CanonicalAttachment(
+        id=AttachmentId(
+            "attachment-001",
+        ),
+        filename="example.txt",
+        content_type="text/plain",
+        size=len(content) + 1,
+        sha256=hashlib.sha256(
+            content,
+        ).hexdigest(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="content size does not match",
+    ):
+        store.put_attachment(
+            attachment,
+            content,
+        )
+
+    assert not store.exists(
+        attachment.sha256,
+    )
+
+def test_asset_store_put_attachment_reuses_existing_sha256_content(
+    tmp_path: Path,
+) -> None:
+    store = AssetStore(tmp_path)
+    content = b"duplicate attachment content"
+    attachment = CanonicalAttachment(
+        id=AttachmentId("attachment-001"),
+        filename="example.txt",
+        content_type="text/plain",
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+    store.put_attachment(attachment, content)
+    store.put_attachment(attachment, content)
+
+    assert store.get(attachment.sha256) == content
+
