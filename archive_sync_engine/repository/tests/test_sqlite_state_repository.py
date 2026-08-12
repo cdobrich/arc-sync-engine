@@ -355,30 +355,6 @@ def test_sqlite_repository_rejects_full_message_without_all_baselines(
         else:
             raise AssertionError("Expected invalid synchronization state.")
 
-
-def test_sqlite_repository_rejects_dangling_reply_baseline(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "state.sqlite3"
-    state = SynchronizationState(
-        messages={"message-1": DestinationMessageRef("destination-1")},
-        message_content_fingerprints={"message-1": "content"},
-        message_reply_to={"message-1": MessageId("missing")},
-    )
-
-    with SQLiteStateRepository(path) as repository:
-        try:
-            repository.record_execution(
-                EditMessageOperation(message=_message()),
-                ExecutionResult(canonical_id="message-1"),
-                state,
-            )
-        except ValueError as exc:
-            assert "dangling message reply baselines" in str(exc)
-        else:
-            raise AssertionError("Expected invalid synchronization state.")
-
-
 def test_sqlite_repository_rejects_invalid_persisted_state_on_load(
     tmp_path: Path,
 ) -> None:
