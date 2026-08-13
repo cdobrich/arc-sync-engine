@@ -401,6 +401,13 @@ def test_capabilities_advertise_standard_reaction_synchronization_only_with_mapp
     assert adapter.capabilities.supports_custom_emoji is False
 
 
+
+
+def test_identity_mapping_rejects_empty_auth_key() -> None:
+    with pytest.raises(ValueError, match="auth key"):
+        FluxerIdentityMapping("identity-1", "")
+
+
 def test_standard_reaction_requires_identity_mapping() -> None:
     adapter = FluxerDestinationAdapter(FakeFluxerClient())
 
@@ -461,6 +468,30 @@ def test_standard_reaction_is_forwarded() -> None:
         "emoji": "👍",
         "auth_key": "auth-key",
     }
+
+
+
+
+def test_standard_reaction_can_use_the_default_bot_account() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1"),
+        ),
+    )
+
+    adapter.add_reaction(
+        _message_ref(),
+        CanonicalReaction(
+            identity_key=IdentityKey("identity-1"),
+            emoji="👍",
+            emoji_id=None,
+            is_custom=False,
+        ),
+    )
+
+    assert client.calls[-1][2]["auth_key"] is None
 
 
 def test_standard_reaction_uses_masquerade_auth_key() -> None:

@@ -1,4 +1,3 @@
-
 """Fluxer destination adapter.
 
 This adapter translates canonical Archive-Sync Engine operations into calls to
@@ -34,10 +33,23 @@ from archive_sync_engine.models import (
 
 @dataclass(frozen=True, slots=True)
 class FluxerIdentityMapping:
-    """Optional Fluxer masquerade mapping for a canonical identity."""
+    """Fluxer actor mapping for a canonical identity.
+
+    ``fluxer_auth_key`` is ``None`` for the adapter's default Fluxer bot
+    account. A non-``None`` value requests a masqueraded user account.
+    """
 
     username: str
-    fluxer_auth_key: str
+    fluxer_auth_key: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.username:
+            raise ValueError("Fluxer identity mapping username must not be empty.")
+        if self.fluxer_auth_key == "":
+            raise ValueError(
+                "Fluxer identity mapping auth key must be None for the bot "
+                "account or a non-empty value for a masqueraded user."
+            )
 
 
 class FluxerClientProtocol(Protocol):
