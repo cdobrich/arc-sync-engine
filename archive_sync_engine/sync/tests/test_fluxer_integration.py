@@ -319,6 +319,89 @@ def test_fluxer_stale_message_is_deleted_before_stale_conversation(
         assert repository.load_synchronization_state().conversations == {}
 
 
+def test_fluxer_initial_pinned_message_is_synchronized(tmp_path: Path) -> None:
+    conversation = _conversation()
+    message = _message("hello")
+    message = message.__class__(
+        id=message.id,
+        conversation_id=message.conversation_id,
+        identity_key=message.identity_key,
+        content=message.content,
+        created_at=message.created_at,
+        pinned=True,
+    )
+    client = FakeFluxerClient()
+    path = tmp_path / "state.sqlite3"
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            _archive(conversation, message),
+            client,
+            repository,
+        ).synchronize()
+
+    assert [call[0] for call in client.calls] == [
+        "create_conversation",
+        "send_message",
+        "pin_message",
+    ]
+
+    with SQLiteStateRepository(path) as repository:
+        state = repository.load_synchronization_state()
+
+    assert state.message_pinned["message-1"] is True
+    assert state.message_fingerprints["message-1"]
+
+
+def test_fluxer_pinned_message_can_be_unpinned_incrementally(tmp_path: Path) -> None:
+    conversation = _conversation()
+    pinned_message = _message("hello")
+    pinned_message = pinned_message.__class__(
+        id=pinned_message.id,
+        conversation_id=pinned_message.conversation_id,
+        identity_key=pinned_message.identity_key,
+        content=pinned_message.content,
+        created_at=pinned_message.created_at,
+        pinned=True,
+    )
+    path = tmp_path / "state.sqlite3"
+    client = FakeFluxerClient()
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            _archive(conversation, pinned_message),
+            client,
+            repository,
+        ).synchronize()
+
+    client.calls.clear()
+    unpinned_message = _message("hello")
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            _archive(conversation, unpinned_message),
+            client,
+            repository,
+        ).synchronize()
+
+    assert client.calls == [
+        (
+            "unpin_message",
+            (),
+            {
+                "channel_id": "fluxer-channel-1",
+                "message_id": "fluxer-message-1",
+            },
+        ),
+    ]
+
+    with SQLiteStateRepository(path) as repository:
+        state = repository.load_synchronization_state()
+
+    assert state.message_pinned["message-1"] is False
+    assert state.message_fingerprints["message-1"]
+
+
 def test_fluxer_initial_message_attachment_is_synchronized_in_create(tmp_path: Path) -> None:
     conversation = _conversation()
     content = b"hello"
