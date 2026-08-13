@@ -9,6 +9,7 @@ silently discarded.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -84,6 +85,7 @@ class FluxerClientProtocol(Protocol):
         channel_id: str,
         message_id: str,
         emoji: str,
+        auth_key: str | None = None,
     ) -> bool:
         ...
 
@@ -93,6 +95,7 @@ class FluxerClientProtocol(Protocol):
         message_id: str,
         emoji_id_or_name: str,
         user_id: str = "@me",
+        auth_key: str | None = None,
     ) -> bool:
         ...
 
@@ -143,7 +146,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
             supports_message_deletion=True,
             supports_conversation_deletion=True,
             supports_message_pinning=True,
-            supports_reactions=False,
+            supports_reactions=True,
             supports_custom_emoji=False,
             supports_attachments=False,
             supports_initial_message_attachments=True,
@@ -385,10 +388,12 @@ class FluxerDestinationAdapter(DestinationAdapter):
         conversation_id = self._require_message_conversation(message)
         self._require_success(
             self._run(
-                self._client.apply_reaction(
+                self._invoke_reaction_method(
+                    self._client.apply_reaction,
                     channel_id=conversation_id,
                     message_id=message.id,
                     emoji=reaction.emoji,
+                    auth_key=self._auth_key_for_reaction(reaction),
                 )
             ),
             f"add reaction to Fluxer message {message.id}",
@@ -413,10 +418,13 @@ class FluxerDestinationAdapter(DestinationAdapter):
         )
         self._require_success(
             self._run(
-                self._client.remove_reaction(
+                self._invoke_reaction_method(
+                    self._client.remove_reaction,
                     channel_id=conversation_id,
                     message_id=message.id,
                     emoji_id_or_name=emoji,
+                    user_id="@me",
+                    auth_key=self._auth_key_for_reaction(reaction),
                 )
             ),
             f"remove reaction from Fluxer message {message.id}",
@@ -428,6 +436,56 @@ class FluxerDestinationAdapter(DestinationAdapter):
     ) -> str | None:
         mapping = self._identity_mappings.get(str(message.identity_key))
         return None if mapping is None else mapping.username
+
+    def _auth_key_for_reaction(
+        self,
+        reaction: CanonicalReaction,
+    ) -> str | None:
+        """Return the configured Fluxer auth key for a reaction actor.
+
+        A missing mapping deliberately means "use the client's normal
+        account", which is the bot/default actor. Canonical reaction
+        identity keys never become destination identifiers.
+        """
+        mapping = self._identity_mappings.get(str(reaction.identity_key))
+        return None if mapping is None else mapping.fluxer_auth_key
+
+    @staticmethod
+    def _invoke_reaction_method(
+        method: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Invoke a reaction client method with optional masquerade support.
+
+        Older Fluxer clients accept the bot/default-account call shape only.
+        Preserve that path when no auth key is requested. If a user mapping is
+        configured, require the client to expose an ``auth_key`` parameter
+        rather than silently applying the reaction as the bot.
+        """
+        auth_key = kwargs.get("auth_key")
+        if auth_key is None:
+            kwargs.pop("auth_key", None)
+            return method(**kwargs)
+
+        try:
+            signature = inspect.signature(method)
+        except (TypeError, ValueError) as exc:
+            raise AdapterError(
+                "Fluxer reaction masquerading requires a client reaction "
+                "method that accepts auth_key."
+            ) from exc
+
+        accepts_auth_key = "auth_key" in signature.parameters or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+        if not accepts_auth_key:
+            raise AdapterError(
+                "Fluxer reaction masquerading is configured, but the client "
+                "reaction method does not accept auth_key."
+            )
+
+        return method(**kwargs)
 
     @staticmethod
     def _fluxer_channel_type(

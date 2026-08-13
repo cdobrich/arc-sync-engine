@@ -100,12 +100,23 @@ class FakeFluxerClient:
         self.calls.append(("delete_channel", (channel_id,), {}))
         return True
 
-    async def apply_reaction(self, channel_id, message_id, emoji):
+    async def apply_reaction(
+        self,
+        channel_id,
+        message_id,
+        emoji,
+        auth_key=None,
+    ):
         self.calls.append(
             (
                 "apply_reaction",
                 (),
-                {"channel_id": channel_id, "message_id": message_id, "emoji": emoji},
+                {
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "emoji": emoji,
+                    "auth_key": auth_key,
+                },
             )
         )
         return True
@@ -116,6 +127,7 @@ class FakeFluxerClient:
         message_id,
         emoji_id_or_name,
         user_id="@me",
+        auth_key=None,
     ):
         self.calls.append(
             (
@@ -125,6 +137,8 @@ class FakeFluxerClient:
                     "channel_id": channel_id,
                     "message_id": message_id,
                     "emoji_id_or_name": emoji_id_or_name,
+                    "user_id": user_id,
+                    "auth_key": auth_key,
                 },
             )
         )
@@ -188,7 +202,7 @@ def test_fluxer_adapter_reports_current_capabilities() -> None:
     assert capabilities.supports_message_deletion is True
     assert capabilities.supports_conversation_deletion is True
     assert capabilities.supports_message_pinning is True
-    assert capabilities.supports_reactions is False
+    assert capabilities.supports_reactions is True
     assert capabilities.supports_custom_emoji is False
     assert capabilities.supports_attachments is False
     assert capabilities.supports_initial_message_attachments is True
@@ -321,10 +335,11 @@ def test_pin_and_unpin_use_persisted_conversation_id() -> None:
     ]
 
 
-def test_capabilities_do_not_advertise_reaction_synchronization() -> None:
+def test_capabilities_advertise_standard_reaction_synchronization() -> None:
     adapter = FluxerDestinationAdapter(FakeFluxerClient())
 
-    assert adapter.capabilities.supports_reactions is False
+    assert adapter.capabilities.supports_reactions is True
+    assert adapter.capabilities.supports_custom_emoji is False
 
 
 def test_standard_reaction_is_forwarded() -> None:
@@ -341,7 +356,56 @@ def test_standard_reaction_is_forwarded() -> None:
         ),
     )
 
-    assert client.calls[-1][2]["emoji"] == "👍"
+    assert client.calls[-1][2] == {
+        "channel_id": "fluxer-channel-1",
+        "message_id": "fluxer-message-1",
+        "emoji": "👍",
+        "auth_key": None,
+    }
+
+
+def test_standard_reaction_uses_masquerade_auth_key() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", "user-auth-key"),
+        ),
+    )
+
+    adapter.add_reaction(
+        _message_ref(),
+        CanonicalReaction(
+            identity_key=IdentityKey("identity-1"),
+            emoji="👍",
+            emoji_id=None,
+            is_custom=False,
+        ),
+    )
+
+    assert client.calls[-1][2]["auth_key"] == "user-auth-key"
+
+
+def test_reaction_removal_uses_masquerade_auth_key() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", "user-auth-key"),
+        ),
+    )
+
+    adapter.remove_reaction(
+        _message_ref(),
+        CanonicalReaction(
+            identity_key=IdentityKey("identity-1"),
+            emoji="👍",
+            emoji_id=None,
+            is_custom=False,
+        ),
+    )
+
+    assert client.calls[-1][2]["auth_key"] == "user-auth-key"
 
 
 def test_custom_reaction_is_rejected() -> None:

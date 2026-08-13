@@ -28,7 +28,7 @@ from archive_sync_engine.models.ids import (
     AttachmentId,
     ConversationId,
     IdentityKey,
-    MessageId,
+    MessageId, EmojiId,
 )
 from archive_sync_engine.operations import (
     AddAttachmentOperation,
@@ -1590,6 +1590,63 @@ def test_plan_rejects_unsupported_reactions() -> None:
             ),
         )
 
+def test_fluxer_capabilities_still_reject_custom_reactions_before_execution() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    reaction = replace(
+        _reaction(),
+        emoji="custom",
+        emoji_id=EmojiId("emoji-001"),
+        is_custom=True,
+    )
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=conversation.id,
+        identity_key=IdentityKey("identity-001"),
+        content="hello",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        reactions=(reaction,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock()},
+        message_fingerprints={
+            "message-001": canonical_fingerprint(
+                replace(message, reactions=()),
+            ),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
+        message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
+    )
+
+    from archive_sync_engine.adapters.fluxer import FluxerDestinationAdapter
+    from archive_sync_engine.adapters.tests.test_fluxer import FakeFluxerClient
+
+    capabilities = FluxerDestinationAdapter(FakeFluxerClient()).capabilities
+
+    with pytest.raises(CapabilityError, match="supports_custom_emoji"):
+        list(
+            Planner().plan(
+                archive=archive,
+                synchronization_state=state,
+                capabilities=capabilities,
+            ),
+        )
+
 
 def test_plan_rejects_unsupported_message_pinning() -> None:
     archive = _archive()
@@ -2594,7 +2651,7 @@ def test_plan_rejects_attachments_when_neither_initial_nor_incremental_supported
         )
 
 
-def test_fluxer_capabilities_reject_canonical_reactions_before_execution() -> None:
+def test_fluxer_capabilities_plan_standard_reaction_before_execution() -> None:
     archive = _archive()
     conversation = _conversation("conversation-001")
     reaction = _reaction()
@@ -2637,15 +2694,22 @@ def test_fluxer_capabilities_reject_canonical_reactions_before_execution() -> No
 
     capabilities = FluxerDestinationAdapter(FakeFluxerClient()).capabilities
 
-    with pytest.raises(CapabilityError, match="supports_reactions"):
-        list(
-            Planner().plan(
-                archive=archive,
-                synchronization_state=state,
-                capabilities=capabilities,
-            ),
-        )
+    operations = list(
+        Planner().plan(
+            archive=archive,
+            synchronization_state=state,
+            capabilities=capabilities,
+        ),
+    )
 
+    assert operations == [
+        AddReactionOperation(
+            message_id=message.id,
+            reaction=reaction,
+            resulting_reactions=(reaction,),
+                canonical_fingerprint=canonical_fingerprint(message)
+        ),
+    ]
 
 def test_plan_uses_initial_message_reply_capability_for_existing_target() -> None:
     archive = _archive()
