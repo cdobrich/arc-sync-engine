@@ -128,8 +128,12 @@ class OperationExecutor:
             case UpdateConversationOperation(
                 conversation=conversation,
             ):
+                destination_ref = context.require_conversation(
+                    conversation.id,
+                )
                 destination.update_conversation(
                     conversation,
+                    destination_ref,
                 )
 
                 return ExecutionResult(
@@ -149,8 +153,11 @@ class OperationExecutor:
             case DeleteConversationOperation(
                 conversation_id=conversation_id,
             ):
-                destination.delete_conversation(
+                destination_ref = context.require_conversation(
                     conversation_id,
+                )
+                destination.delete_conversation(
+                    destination_ref,
                 )
 
                 context.forget_conversation(
@@ -192,8 +199,12 @@ class OperationExecutor:
             case UpdateIdentityOperation(
                 identity=identity,
             ):
+                destination_ref = context.require_identity(
+                    identity.identity_key,
+                )
                 destination.update_identity(
                     identity,
+                    destination_ref,
                 )
 
                 return ExecutionResult(
@@ -208,8 +219,11 @@ class OperationExecutor:
             case DeleteIdentityOperation(
                 identity_key=identity_key,
             ):
-                destination.delete_identity(
+                destination_ref = context.require_identity(
                     identity_key,
+                )
+                destination.delete_identity(
+                    destination_ref,
                 )
 
                 context.forget_identity(
@@ -238,9 +252,14 @@ class OperationExecutor:
                     reply_to=None,
                 )
 
+                conversation_ref = context.require_conversation(
+                    message.conversation_id,
+                )
+
                 destination_ref = (
                     destination.create_message(
                         message_for_creation,
+                        conversation_ref,
                     )
                 )
 
@@ -300,8 +319,12 @@ class OperationExecutor:
                 message=message,
                 canonical_fingerprint=operation_fingerprint,
             ):
+                destination_ref = context.require_message(
+                    message.id,
+                )
                 destination.edit_message(
                     message,
+                    destination_ref,
                 )
 
                 return ExecutionResult(
@@ -319,8 +342,12 @@ class OperationExecutor:
             case DeleteMessageOperation(
                 message_id=message_id,
             ):
-                destination.delete_message(
+                destination_ref = context.require_message(
                     message_id,
+                )
+
+                destination.delete_message(
+                    destination_ref,
                 )
 
                 context.forget_message(
@@ -350,8 +377,12 @@ class OperationExecutor:
                     attachment.sha256,
                 )
 
-                destination.add_attachment(
+                destination_ref = context.require_message(
                     message_id,
+                )
+
+                destination.add_attachment(
+                    destination_ref,
                     attachment,
                     data,
                 )
@@ -368,8 +399,12 @@ class OperationExecutor:
                 resulting_attachments=resulting_attachments,
                 canonical_fingerprint=operation_fingerprint,
             ):
-                destination.remove_attachment(
+                destination_ref = context.require_message(
                     message_id,
+                )
+
+                destination.remove_attachment(
+                    destination_ref,
                     attachment,
                 )
 
@@ -384,8 +419,12 @@ class OperationExecutor:
                 attachments=attachments,
                 canonical_fingerprint=operation_fingerprint,
             ):
-                destination.reorder_attachments(
+                destination_ref = context.require_message(
                     message_id,
+                )
+
+                destination.reorder_attachments(
+                    destination_ref,
                     attachments,
                 )
 
@@ -426,8 +465,12 @@ class OperationExecutor:
                 message_id=message_id,
                 canonical_fingerprint=operation_fingerprint,
             ):
-                destination.pin_message(
+                destination_ref = context.require_message(
                     message_id,
+                )
+
+                destination.pin_message(
+                    destination_ref,
                 )
 
                 return ExecutionResult(
@@ -442,8 +485,12 @@ class OperationExecutor:
                 message_id=message_id,
                 canonical_fingerprint=operation_fingerprint,
             ):
-                destination.unpin_message(
+                destination_ref = context.require_message(
                     message_id,
+                )
+
+                destination.unpin_message(
+                    destination_ref,
                 )
 
                 return ExecutionResult(
@@ -460,8 +507,12 @@ class OperationExecutor:
                 resulting_reactions=resulting_reactions,
                 canonical_fingerprint=operation_fingerprint,
             ):
-                destination.add_reaction(
+                destination_ref = context.require_message(
                     message_id,
+                )
+
+                destination.add_reaction(
+                    destination_ref,
                     reaction,
                 )
 
@@ -479,8 +530,12 @@ class OperationExecutor:
                 resulting_reactions=resulting_reactions,
                 canonical_fingerprint=operation_fingerprint,
             ):
-                destination.remove_reaction(
+                destination_ref = context.require_message(
                     message_id,
+                )
+
+                destination.remove_reaction(
+                    destination_ref,
                     reaction,
                 )
 

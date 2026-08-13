@@ -36,9 +36,9 @@ class DestinationMessageRef:
     """
     Opaque reference to a destination message.
 
-    ``conversation_id`` is optional at the generic boundary, but adapters
-    may populate it when the destination API requires the containing
-    conversation to address the message.
+    ``conversation_id`` is optional because some destination APIs can address
+    messages globally, while others require the containing conversation.
+    Destination adapters may populate it when it is known.
     """
 
     id: str

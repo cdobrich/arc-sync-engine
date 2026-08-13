@@ -294,11 +294,8 @@ def _decode_json(value: str) -> dict[str, Any]:
     return decoded
 
 
-def _ref_to_dict(ref: object) -> dict[str, str | None]:
-    payload = {"id": ref.id}
-    if isinstance(ref, DestinationMessageRef):
-        payload["conversation_id"] = ref.conversation_id
-    return payload
+def _ref_to_dict(ref: object) -> dict[str, str]:
+    return {"id": ref.id}
 
 
 def _conversation_ref_from_dict(value: dict[str, Any]) -> DestinationConversationRef:
@@ -310,14 +307,7 @@ def _identity_ref_from_dict(value: dict[str, Any]) -> DestinationIdentityRef:
 
 
 def _message_ref_from_dict(value: dict[str, Any]) -> DestinationMessageRef:
-    return DestinationMessageRef(
-        str(value["id"]),
-        conversation_id=(
-            str(value["conversation_id"])
-            if value.get("conversation_id") is not None
-            else None
-        ),
-    )
+    return DestinationMessageRef(str(value["id"]))
 
 
 def _reaction_to_dict(reaction: CanonicalReaction) -> dict[str, Any]:

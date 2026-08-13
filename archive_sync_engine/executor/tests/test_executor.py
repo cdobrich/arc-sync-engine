@@ -152,6 +152,38 @@ def _reaction() -> CanonicalReaction:
     )
 
 
+
+
+def _conversation_context() -> ExecutionContext:
+    context = ExecutionContext()
+    context.record_conversation(
+        ConversationId("conversation-001"),
+        DestinationConversationRef("destination-conversation-001"),
+    )
+    return context
+
+
+def _identity_context() -> ExecutionContext:
+    context = ExecutionContext()
+    context.record_identity(
+        IdentityKey("identity-001"),
+        DestinationIdentityRef("destination-identity-001"),
+    )
+    return context
+
+
+def _message_context() -> ExecutionContext:
+    context = ExecutionContext()
+    context.record_message(
+        MessageId("message-001"),
+        DestinationMessageRef(
+            "destination-message-001",
+            conversation_id="destination-conversation-001",
+        ),
+    )
+    return context
+
+
 def test_create_conversation_dispatches_and_returns_reference() -> None:
     destination = _destination()
 
@@ -189,13 +221,17 @@ def test_update_conversation_dispatches() -> None:
         conversation=_conversation(),
     )
 
+    context = _conversation_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.update_conversation.assert_called_once_with(
         operation.conversation,
+        context.conversations[operation.conversation.id],
     )
 
     assert result.conversation is None
@@ -214,13 +250,16 @@ def test_delete_conversation_dispatches() -> None:
         ),
     )
 
+    context = _conversation_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.delete_conversation.assert_called_once_with(
-        operation.conversation_id,
+        DestinationConversationRef("destination-conversation-001"),
     )
 
     assert result.conversation is None
@@ -245,7 +284,7 @@ def test_delete_conversation_forgets_execution_context_reference() -> None:
     )
 
     destination.delete_conversation.assert_called_once_with(
-        conversation_id,
+        destination_ref,
     )
     assert result.deleted is True
     with pytest.raises(MissingDestinationReferenceError):
@@ -289,13 +328,17 @@ def test_update_identity_dispatches() -> None:
         identity=_identity(),
     )
 
+    context = _identity_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.update_identity.assert_called_once_with(
         operation.identity,
+        context.identities[operation.identity.identity_key],
     )
 
     assert result.conversation is None
@@ -318,9 +361,12 @@ def test_create_message_dispatches_and_returns_reference() -> None:
         message=_message(),
     )
 
+    context = _conversation_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.create_message.assert_called_once_with(
@@ -331,6 +377,7 @@ def test_create_message_dispatches_and_returns_reference() -> None:
             pinned=False,
             reply_to=None,
         ),
+        context.conversations[operation.message.conversation_id],
     )
 
     assert result.message == destination_ref
@@ -354,9 +401,12 @@ def test_create_message_does_not_mark_pending_attachment_baseline_as_synchronize
         "destination-message-001",
     )
 
+    context = _conversation_context()
+
     result = OperationExecutor().execute(
         CreateMessageOperation(message=message),
         destination,
+        context=context,
     )
 
     assert result.message_attachments is None
@@ -371,13 +421,17 @@ def test_edit_message_dispatches() -> None:
         message=_message(),
     )
 
+    context = _message_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.edit_message.assert_called_once_with(
         operation.message,
+        context.messages[operation.message.id],
     )
 
     assert result.conversation is None
@@ -402,7 +456,7 @@ def test_delete_message_forgets_execution_context_reference() -> None:
     )
 
     destination.delete_message.assert_called_once_with(
-        message_id,
+        destination_ref,
     )
     assert result.deleted is True
     with pytest.raises(MissingDestinationReferenceError):
@@ -417,13 +471,16 @@ def test_delete_message_dispatches() -> None:
         message_id=MessageId("message-001"),
     )
 
+    context = _message_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.delete_message.assert_called_once_with(
-        operation.message_id,
+        DestinationMessageRef("destination-message-001", conversation_id="destination-conversation-001"),
     )
 
     assert result.conversation is None
@@ -448,13 +505,16 @@ def test_add_attachment_dispatches_using_asset_store(tmp_path) -> None:
         canonical_fingerprint="message-fingerprint",
     )
 
+    context = _message_context()
+
     result = OperationExecutor(asset_store=asset_store).execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.add_attachment.assert_called_once_with(
-        operation.message_id,
+        context.messages[operation.message_id],
         attachment,
         content,
     )
@@ -490,10 +550,11 @@ def test_remove_attachment_dispatches() -> None:
         canonical_fingerprint="message-fingerprint",
     )
 
-    result = OperationExecutor().execute(operation, destination)
+    context = _message_context()
+    result = OperationExecutor().execute(operation, destination, context=context)
 
     destination.remove_attachment.assert_called_once_with(
-        operation.message_id,
+        context.messages[operation.message_id],
         attachment,
     )
     assert result.canonical_id == "message-001"
@@ -519,10 +580,11 @@ def test_reorder_attachments_dispatches() -> None:
         canonical_fingerprint="message-fingerprint",
     )
 
-    result = OperationExecutor().execute(operation, destination)
+    context = _message_context()
+    result = OperationExecutor().execute(operation, destination, context=context)
 
     destination.reorder_attachments.assert_called_once_with(
-        operation.message_id,
+        context.messages[operation.message_id],
         operation.attachments,
     )
     assert result.canonical_id == "message-001"
@@ -538,13 +600,16 @@ def test_pin_message_dispatches() -> None:
         message_id=MessageId("message-001"),
     )
 
+    context = _message_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.pin_message.assert_called_once_with(
-        operation.message_id,
+        context.messages[operation.message_id],
     )
 
     assert result.conversation is None
@@ -560,13 +625,16 @@ def test_unpin_message_dispatches() -> None:
         message_id=MessageId("message-001"),
     )
 
+    context = _message_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.unpin_message.assert_called_once_with(
-        operation.message_id,
+        context.messages[operation.message_id],
     )
 
     assert result.conversation is None
@@ -583,13 +651,16 @@ def test_add_reaction_dispatches() -> None:
         reaction=_reaction(),
     )
 
+    context = _message_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.add_reaction.assert_called_once_with(
-        operation.message_id,
+        context.messages[operation.message_id],
         operation.reaction,
     )
 
@@ -607,13 +678,16 @@ def test_remove_reaction_dispatches() -> None:
         reaction=_reaction(),
     )
 
+    context = _message_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.remove_reaction.assert_called_once_with(
-        operation.message_id,
+        context.messages[operation.message_id],
         operation.reaction,
     )
 
@@ -630,9 +704,12 @@ def test_pin_message_returns_component_baseline_and_optional_fingerprint() -> No
         canonical_fingerprint="message-fingerprint",
     )
 
+    context = _message_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     assert result.canonical_id == "message-001"
@@ -651,9 +728,12 @@ def test_add_reaction_returns_resulting_reaction_baseline() -> None:
         canonical_fingerprint="message-fingerprint",
     )
 
+    context = _message_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     assert result.canonical_id == "message-001"
@@ -697,7 +777,13 @@ def test_execute_all_preserves_execution_context_across_operations() -> None:
         second_ref,
     ]
 
+    conversation = _conversation()
+    destination.create_conversation.return_value = (
+        DestinationConversationRef("destination-conversation-001")
+    )
+
     operations = (
+        CreateConversationOperation(conversation=conversation),
         CreateMessageOperation(message=first_message),
         CreateMessageOperation(message=second_message),
         SetMessageReplyOperation(
@@ -717,7 +803,7 @@ def test_execute_all_preserves_execution_context_across_operations() -> None:
     )
     assert context.message(first_message.id) == first_ref
     assert context.message(second_message.id) == second_ref
-    assert len(results) == 3
+    assert len(results) == 4
     assert results[-1].message_reply_to == first_message.id
     assert results[-1].message_reply_to_synchronized is True
 
@@ -729,15 +815,20 @@ def test_execute_all_forgets_deleted_message_reference() -> None:
         "destination-message-001",
     )
 
+    destination.create_conversation.return_value = (
+        DestinationConversationRef("destination-conversation-001")
+    )
+
     context, results = OperationExecutor().execute_all(
         (
+            CreateConversationOperation(conversation=_conversation()),
             CreateMessageOperation(message=message),
             DeleteMessageOperation(message_id=message.id),
         ),
         destination,
     )
 
-    assert len(results) == 2
+    assert len(results) == 3
     with pytest.raises(MissingDestinationReferenceError):
         context.require_message(message.id)
 
@@ -853,7 +944,7 @@ def test_delete_identity_forgets_execution_context_reference() -> None:
     )
 
     destination.delete_identity.assert_called_once_with(
-        identity_key,
+        destination_ref,
     )
     assert result.deleted is True
     with pytest.raises(MissingDestinationReferenceError):
@@ -867,13 +958,16 @@ def test_delete_identity_dispatches() -> None:
         identity_key=IdentityKey("identity-001"),
     )
 
+    context = _identity_context()
+
     result = OperationExecutor().execute(
         operation,
         destination,
+        context=context,
     )
 
     destination.delete_identity.assert_called_once_with(
-        operation.identity_key,
+        DestinationIdentityRef("destination-identity-001"),
     )
 
     assert result.canonical_id == "identity-001"
@@ -896,9 +990,12 @@ def test_create_message_strips_decomposed_components_from_destination_creation()
         "destination-message-001",
     )
 
+    context = _conversation_context()
+
     result = OperationExecutor().execute(
         CreateMessageOperation(message=message),
         destination,
+        context=context,
     )
 
     destination.create_message.assert_called_once_with(
@@ -909,6 +1006,7 @@ def test_create_message_strips_decomposed_components_from_destination_creation()
             pinned=False,
             reply_to=None,
         ),
+        context.conversations[message.conversation_id],
     )
     assert result.canonical_fingerprint is None
     assert result.message_content_fingerprint == (

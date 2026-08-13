@@ -1145,8 +1145,14 @@ def test_synchronize_creates_messages_then_applies_reply_using_execution_context
 
     destination.create_message.assert_has_calls(
         [
-            call(replace(reply, reply_to=None)),
-            call(target),
+            call(
+                replace(reply, reply_to=None),
+                DestinationConversationRef("destination-conversation-001"),
+            ),
+            call(
+                target,
+                DestinationConversationRef("destination-conversation-001"),
+            ),
         ],
     )
     destination.set_message_reply.assert_called_once_with(
@@ -1299,17 +1305,18 @@ def test_synchronize_decomposes_initial_message_components_end_to_end(tmp_path) 
             pinned=False,
             reply_to=None,
         ),
+        DestinationConversationRef("destination-conversation-001"),
     )
     destination.add_attachment.assert_called_once_with(
-        message.id,
+        DestinationMessageRef("destination-message-001"),
         attachment,
         content,
     )
     destination.add_reaction.assert_called_once_with(
-        message.id,
+        DestinationMessageRef("destination-message-001"),
         reaction,
     )
-    destination.pin_message.assert_called_once_with(message.id)
+    destination.pin_message.assert_called_once_with(DestinationMessageRef("destination-message-001"))
 
     state = state_repository.load_synchronization_state()
     assert state.message_fingerprints["message-001"] == canonical_fingerprint(
