@@ -2385,3 +2385,102 @@ def test_plan_reconciles_attachment_and_reaction_changes_together() -> None:
     assert operations[1].reaction == new_reaction
     assert operations[2].attachment == old_attachment
     assert operations[3].attachment == new_attachment
+
+
+def test_plan_rejects_mixed_message_changes_before_exposing_any_operations() -> None:
+    """Capability validation covers a complete decomposed message plan atomically."""
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    reply_target = _message("message-000", "conversation-001")
+    old_attachment = _attachment()
+    new_attachment = replace(
+        old_attachment,
+        id=type(old_attachment.id)("attachment-002"),
+        filename="new.txt",
+        sha256="b" * 64,
+    )
+    old_reaction = _reaction()
+    new_reaction = replace(
+        old_reaction,
+        emoji="🔥",
+    )
+    message = replace(
+        _message("message-001", "conversation-001"),
+        content="changed",
+        reply_to=reply_target.id,
+        attachments=(new_attachment,),
+        reactions=(new_reaction,),
+        pinned=True,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([reply_target, message])
+
+    state = SynchronizationState(
+        conversations={
+            "conversation-001": Mock(),
+        },
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={
+            "conversation-001": None,
+        },
+        messages={
+            "message-001": Mock(),
+            "message-000": Mock(),
+        },
+        message_fingerprints={
+            "message-001": "old-message-fingerprint",
+            "message-000": canonical_fingerprint(reply_target),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(
+                _message("message-001", "conversation-001"),
+            ),
+            "message-000": canonical_message_content_fingerprint(
+                reply_target,
+            ),
+        },
+        message_reactions={
+            "message-001": (old_reaction,),
+            "message-000": (),
+        },
+        message_attachments={
+            "message-001": (old_attachment,),
+            "message-000": (),
+        },
+        message_pinned={
+            "message-001": False,
+            "message-000": False,
+        },
+        message_reply_to={
+            "message-001": None,
+            "message-000": None,
+        },
+    )
+
+    capabilities = DestinationCapabilities(
+        supports_message_editing=True,
+        supports_reactions=False,
+        supports_custom_emoji=True,
+        supports_attachments=True,
+        supports_attachment_reordering=True,
+        supports_message_pinning=True,
+        supports_replying=True,
+        supports_message_deletion=True,
+        supports_conversation_deletion=True,
+        supports_identity_updates=True,
+        supports_identity_deletion=True,
+        supports_threads=True,
+    )
+
+    with pytest.raises(CapabilityError, match="supports_reactions"):
+        list(
+            Planner().plan(
+                archive=archive,
+                synchronization_state=state,
+                capabilities=capabilities,
+            ),
+        )
