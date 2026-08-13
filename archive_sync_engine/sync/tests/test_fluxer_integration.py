@@ -6,7 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+
 from archive_sync_engine.adapters import (
+    AdapterError,
     FluxerDestinationAdapter,
     FluxerIdentityMapping,
 )
@@ -32,6 +35,7 @@ class FakeFluxerClient:
         self.calls: list[tuple[str, tuple, dict]] = []
         self._next_message_id = 1
         self._next_channel_id = 1
+        self.fail_apply_reaction = False
 
     async def _create_fluxer_channel_from_discord(
         self,
@@ -141,7 +145,7 @@ class FakeFluxerClient:
                 },
             ),
         )
-        return True
+        return not self.fail_apply_reaction
 
     async def remove_reaction(
         self,
@@ -596,3 +600,167 @@ def test_fluxer_reaction_masquerading_is_applied_and_removed_through_full_sync(
     assert state.message_fingerprints["message-1"] == (
         canonical_fingerprint(updated_message)
     )
+
+def test_fluxer_reaction_failure_persists_partial_state_and_retries_only_reaction(
+    tmp_path: Path,
+) -> None:
+    conversation = _conversation()
+    target = _message("target")
+    reaction = CanonicalReaction(
+        identity_key=IdentityKey("reactor-1"),
+        emoji="👍",
+        emoji_id=None,
+        is_custom=False,
+    )
+    reply = CanonicalMessage(
+        id=MessageId("message-2"),
+        conversation_id=ConversationId("conversation-1"),
+        identity_key=IdentityKey("identity-1"),
+        content="reply",
+        created_at=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
+        reply_to=target.id,
+        reactions=(reaction,),
+    )
+    path = tmp_path / "state.sqlite3"
+    client = FakeFluxerClient()
+    client.fail_apply_reaction = True
+    mapping = (
+        FluxerIdentityMapping(
+            "reactor-1",
+            "reactor-auth-key",
+        ),
+    )
+
+    initial_archive = Mock(spec=Archive)
+    initial_archive.iter_identities.return_value = iter(())
+    initial_archive.iter_conversations.return_value = iter((conversation,))
+    initial_archive.iter_messages.return_value = iter((target,))
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            initial_archive,
+            client,
+            repository,
+            identity_mappings=mapping,
+        ).synchronize()
+
+    updated_archive = Mock(spec=Archive)
+    updated_archive.iter_identities.return_value = iter(())
+    updated_archive.iter_conversations.return_value = iter((conversation,))
+    updated_archive.iter_messages.return_value = iter((target, reply))
+
+    with SQLiteStateRepository(path) as repository:
+        with pytest.raises(AdapterError):
+            _coordinator(
+                updated_archive,
+                client,
+                repository,
+                identity_mappings=mapping,
+            ).synchronize()
+        state = repository.load_synchronization_state()
+
+    assert state.message_reply_to["message-2"] == target.id
+    assert state.message_content_fingerprints["message-2"]
+    assert "message-2" not in state.message_reactions
+    assert "message-2" not in state.message_fingerprints
+    assert [call[0] for call in client.calls[-2:]] == [
+        "send_message",
+        "apply_reaction",
+    ]
+
+    client.calls.clear()
+    client.fail_apply_reaction = False
+    updated_archive.iter_conversations.return_value = iter((conversation,))
+    updated_archive.iter_messages.return_value = iter((target, reply))
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            updated_archive,
+            client,
+            repository,
+            identity_mappings=mapping,
+        ).synchronize()
+
+    assert [call[0] for call in client.calls] == ["apply_reaction"]
+
+    with SQLiteStateRepository(path) as repository:
+        state = repository.load_synchronization_state()
+
+    assert state.message_reply_to["message-2"] == target.id
+    assert state.message_reactions["message-2"] == (reaction,)
+    assert state.message_fingerprints["message-2"] == canonical_fingerprint(reply)
+
+
+def test_fluxer_initial_reply_and_reaction_complete_together(
+    tmp_path: Path,
+) -> None:
+    conversation = _conversation()
+    target = _message("target")
+    reaction = CanonicalReaction(
+        identity_key=IdentityKey("reactor-1"),
+        emoji="👍",
+        emoji_id=None,
+        is_custom=False,
+    )
+    reply = CanonicalMessage(
+        id=MessageId("message-2"),
+        conversation_id=ConversationId("conversation-1"),
+        identity_key=IdentityKey("identity-1"),
+        content="reply",
+        created_at=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
+        reply_to=target.id,
+        reactions=(reaction,),
+    )
+    path = tmp_path / "state.sqlite3"
+    client = FakeFluxerClient()
+    mapping = (
+        FluxerIdentityMapping(
+            "reactor-1",
+            "reactor-auth-key",
+        ),
+    )
+
+    initial_archive = Mock(spec=Archive)
+    initial_archive.iter_identities.return_value = iter(())
+    initial_archive.iter_conversations.return_value = iter((conversation,))
+    initial_archive.iter_messages.return_value = iter((target,))
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            initial_archive,
+            client,
+            repository,
+            identity_mappings=mapping,
+        ).synchronize()
+
+    client.calls.clear()
+    combined_archive = Mock(spec=Archive)
+    combined_archive.iter_identities.return_value = iter(())
+    combined_archive.iter_conversations.return_value = iter((conversation,))
+    combined_archive.iter_messages.return_value = iter((target, reply))
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            combined_archive,
+            client,
+            repository,
+            identity_mappings=mapping,
+        ).synchronize()
+
+    send_call = next(
+        call for call in client.calls if call[0] == "send_message"
+    )
+    reaction_call = next(
+        call for call in client.calls if call[0] == "apply_reaction"
+    )
+
+    assert send_call[2]["reply_to_id"] == "fluxer-message-1"
+    assert reaction_call[2]["auth_key"] == "reactor-auth-key"
+
+    with SQLiteStateRepository(path) as repository:
+        state = repository.load_synchronization_state()
+
+    assert state.message_reply_to["message-2"] == target.id
+    assert state.message_reactions["message-2"] == (reaction,)
+    assert state.message_fingerprints["message-2"] == canonical_fingerprint(reply)
+
