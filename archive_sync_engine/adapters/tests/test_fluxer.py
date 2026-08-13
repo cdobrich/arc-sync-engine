@@ -708,3 +708,99 @@ def test_create_message_passes_initial_reply_reference_to_fluxer() -> None:
     )
 
     assert client.calls[-1][2]["reply_to_id"] == "fluxer-parent-message"
+
+
+def test_reaction_add_failure_is_reported_as_adapter_error() -> None:
+    client = FakeFluxerClient()
+
+    async def failing_apply_reaction(*args, **kwargs):
+        client.calls.append(("apply_reaction", args, kwargs))
+        return False
+
+    client.apply_reaction = failing_apply_reaction
+
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", None),
+        ),
+    )
+
+    with pytest.raises(AdapterError, match="add reaction"):
+        adapter.add_reaction(
+            _message_ref(),
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-1"),
+                emoji="👍",
+                emoji_id=None,
+                is_custom=False,
+            ),
+        )
+
+
+def test_reaction_removal_failure_is_reported_as_adapter_error() -> None:
+    client = FakeFluxerClient()
+
+    async def failing_remove_reaction(*args, **kwargs):
+        client.calls.append(("remove_reaction", args, kwargs))
+        return False
+
+    client.remove_reaction = failing_remove_reaction
+
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", "auth-key"),
+        ),
+    )
+
+    with pytest.raises(AdapterError, match="remove reaction"):
+        adapter.remove_reaction(
+            _message_ref(),
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-1"),
+                emoji="👍",
+                emoji_id=None,
+                is_custom=False,
+            ),
+        )
+
+
+def test_reaction_add_requires_destination_conversation_reference() -> None:
+    adapter = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", None),
+        ),
+    )
+
+    with pytest.raises(AdapterError, match="missing conversation_id"):
+        adapter.add_reaction(
+            DestinationMessageRef("fluxer-message-1"),
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-1"),
+                emoji="👍",
+                emoji_id=None,
+                is_custom=False,
+            ),
+        )
+
+
+def test_reaction_removal_requires_destination_conversation_reference() -> None:
+    adapter = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", None),
+        ),
+    )
+
+    with pytest.raises(AdapterError, match="missing conversation_id"):
+        adapter.remove_reaction(
+            DestinationMessageRef("fluxer-message-1"),
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-1"),
+                emoji="👍",
+                emoji_id=None,
+                is_custom=False,
+            ),
+        )
