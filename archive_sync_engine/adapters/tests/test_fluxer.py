@@ -408,6 +408,22 @@ def test_identity_mapping_rejects_empty_auth_key() -> None:
         FluxerIdentityMapping("identity-1", "")
 
 
+def test_identity_mapping_rejects_empty_username() -> None:
+    with pytest.raises(ValueError, match="username"):
+        FluxerIdentityMapping("", "auth-key")
+
+
+def test_duplicate_identity_mappings_are_rejected() -> None:
+    with pytest.raises(ValueError, match="duplicate.*username"):
+        FluxerDestinationAdapter(
+            FakeFluxerClient(),
+            identity_mappings=(
+                FluxerIdentityMapping("identity-1", "auth-key-1"),
+                FluxerIdentityMapping("identity-1", "auth-key-2"),
+            ),
+        )
+
+
 def test_standard_reaction_requires_identity_mapping() -> None:
     adapter = FluxerDestinationAdapter(FakeFluxerClient())
 

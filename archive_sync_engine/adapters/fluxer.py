@@ -141,10 +141,17 @@ class FluxerDestinationAdapter(DestinationAdapter):
         identity_mappings: tuple[FluxerIdentityMapping, ...] = (),
     ) -> None:
         self._client = client
-        self._identity_mappings = {
-            mapping.username: mapping
-            for mapping in identity_mappings
-        }
+
+        mappings: dict[str, FluxerIdentityMapping] = {}
+        for mapping in identity_mappings:
+            if mapping.username in mappings:
+                raise ValueError(
+                    "Fluxer identity mappings must not contain duplicate "
+                    f"usernames: {mapping.username!r}."
+                )
+            mappings[mapping.username] = mapping
+
+        self._identity_mappings = mappings
 
     @property
     def name(self) -> str:
