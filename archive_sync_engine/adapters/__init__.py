@@ -25,6 +25,7 @@ of the Archive Engine.
 
 from .capabilities import DestinationCapabilities
 from .destination import DestinationAdapter
+from .fluxer import FluxerDestinationAdapter, FluxerIdentityMapping
 from .exceptions import (
     AdapterError,
     AuthenticationError,
@@ -57,6 +58,8 @@ __all__ = [
     "DiscordSourceAdapter",
     "DestinationIdentityRef",
     "DestinationMessageRef",
+    "FluxerDestinationAdapter",
+    "FluxerIdentityMapping",
     "NotFoundError",
     "RateLimitError",
     "SourceAdapter",

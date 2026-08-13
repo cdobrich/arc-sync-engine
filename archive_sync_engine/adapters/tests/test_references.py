@@ -28,6 +28,13 @@ def test_destination_message_ref_stores_identifier() -> None:
     )
 
     assert reference.id == "destination-message-123"
+    assert reference.conversation_id is None
+
+    channel_reference = DestinationMessageRef(
+        id="destination-message-456",
+        conversation_id="destination-conversation-123",
+    )
+    assert channel_reference.conversation_id == "destination-conversation-123"
 
 
 def test_destination_attachment_ref_stores_identifier() -> None:

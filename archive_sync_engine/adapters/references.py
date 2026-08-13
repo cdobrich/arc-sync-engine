@@ -35,9 +35,14 @@ class DestinationIdentityRef:
 class DestinationMessageRef:
     """
     Opaque reference to a destination message.
+
+    ``conversation_id`` is optional at the generic boundary, but adapters
+    may populate it when the destination API requires the containing
+    conversation to address the message.
     """
 
     id: str
+    conversation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

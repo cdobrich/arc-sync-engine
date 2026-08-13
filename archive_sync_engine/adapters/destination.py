@@ -65,6 +65,7 @@ class DestinationAdapter(ABC):
     def update_conversation(
         self,
         conversation: CanonicalConversation,
+        destination: DestinationConversationRef,
     ) -> None:
         """
         Update an existing conversation.
@@ -74,7 +75,7 @@ class DestinationAdapter(ABC):
     @abstractmethod
     def delete_conversation(
         self,
-        conversation_id: ConversationId,
+        destination: DestinationConversationRef,
     ) -> None:
         """
         Delete an existing conversation.
@@ -96,6 +97,7 @@ class DestinationAdapter(ABC):
     def update_identity(
         self,
         identity: CanonicalIdentity,
+        destination: DestinationIdentityRef,
     ) -> None:
         """
         Update an existing destination identity.
@@ -105,7 +107,7 @@ class DestinationAdapter(ABC):
     @abstractmethod
     def delete_identity(
         self,
-        identity_key: IdentityKey,
+        destination: DestinationIdentityRef,
     ) -> None:
         """
         Delete an existing destination identity.
@@ -129,7 +131,7 @@ class DestinationAdapter(ABC):
     @abstractmethod
     def add_attachment(
         self,
-        message_id: MessageId,
+        message: DestinationMessageRef,
         attachment: CanonicalAttachment,
         data: bytes,
     ) -> DestinationAttachmentRef:
@@ -144,7 +146,7 @@ class DestinationAdapter(ABC):
     @abstractmethod
     def remove_attachment(
         self,
-        message_id: MessageId,
+        message: DestinationMessageRef,
         attachment: CanonicalAttachment,
     ) -> None:
         """
@@ -155,7 +157,7 @@ class DestinationAdapter(ABC):
     @abstractmethod
     def reorder_attachments(
         self,
-        message_id: MessageId,
+        message: DestinationMessageRef,
         attachments: tuple[CanonicalAttachment, ...],
     ) -> None:
         """Set the complete canonical attachment order for a message."""
@@ -165,6 +167,8 @@ class DestinationAdapter(ABC):
     def create_message(
         self,
         message: CanonicalMessage,
+        destination: DestinationConversationRef,
+        attachments: tuple[tuple[CanonicalAttachment, bytes], ...] = (),
     ) -> DestinationMessageRef:
         """
         Create a message on the destination platform.
@@ -175,6 +179,7 @@ class DestinationAdapter(ABC):
     def edit_message(
         self,
         message: CanonicalMessage,
+        destination: DestinationMessageRef,
     ) -> None:
         """
         Update an existing destination message.
@@ -184,7 +189,7 @@ class DestinationAdapter(ABC):
     @abstractmethod
     def delete_message(
         self,
-        message_id: MessageId,
+        destination: DestinationMessageRef,
     ) -> None:
         """
         Delete an existing destination message.
@@ -208,7 +213,7 @@ class DestinationAdapter(ABC):
     @abstractmethod
     def pin_message(
         self,
-        message_id: MessageId,
+        message: DestinationMessageRef,
     ) -> None:
         """
         Pin a destination message.
@@ -218,7 +223,7 @@ class DestinationAdapter(ABC):
     @abstractmethod
     def unpin_message(
         self,
-        message_id: MessageId,
+        message: DestinationMessageRef,
     ) -> None:
         """
         Unpin a destination message.
@@ -228,7 +233,7 @@ class DestinationAdapter(ABC):
     @abstractmethod
     def add_reaction(
         self,
-        message_id: MessageId,
+        message: DestinationMessageRef,
         reaction: CanonicalReaction,
     ) -> None:
         """
@@ -239,7 +244,7 @@ class DestinationAdapter(ABC):
     @abstractmethod
     def remove_reaction(
         self,
-        message_id: MessageId,
+        message: DestinationMessageRef,
         reaction: CanonicalReaction,
     ) -> None:
         """
