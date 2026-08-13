@@ -1,4 +1,3 @@
-
 """
 Tests for the synchronization planner.
 """
@@ -1592,12 +1591,12 @@ def test_plan_rejects_unsupported_reactions() -> None:
             ),
         )
 
-def test_fluxer_capabilities_still_reject_custom_reactions_before_execution() -> None:
+def test_fluxer_capabilities_plan_custom_reaction_before_execution() -> None:
     archive = _archive()
     conversation = _conversation("conversation-001")
     reaction = replace(
         _reaction(),
-        emoji="custom",
+        emoji="party_parrot",
         emoji_id=EmojiId("emoji-001"),
         is_custom=True,
     )
@@ -1645,14 +1644,22 @@ def test_fluxer_capabilities_still_reject_custom_reactions_before_execution() ->
         ),
     ).capabilities
 
-    with pytest.raises(CapabilityError, match="supports_custom_emoji"):
-        list(
-            Planner().plan(
-                archive=archive,
-                synchronization_state=state,
-                capabilities=capabilities,
-            ),
-        )
+    operations = list(
+        Planner().plan(
+            archive=archive,
+            synchronization_state=state,
+            capabilities=capabilities,
+        ),
+    )
+
+    reaction_operations = [
+        operation
+        for operation in operations
+        if isinstance(operation, AddReactionOperation)
+    ]
+
+    assert len(reaction_operations) == 1
+    assert reaction_operations[0].reaction == reaction
 
 
 def test_plan_rejects_unsupported_message_pinning() -> None:
@@ -2785,4 +2792,3 @@ def test_plan_rejects_initial_reply_when_target_is_not_already_synchronized() ->
 
     with pytest.raises(CapabilityError, match="supports_replying"):
         _planned_operations(Planner(), archive, SynchronizationState(), capabilities)
-

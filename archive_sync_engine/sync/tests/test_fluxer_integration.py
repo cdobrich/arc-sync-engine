@@ -766,3 +766,49 @@ def test_fluxer_initial_reply_and_reaction_complete_together(
     assert state.message_fingerprints["message-2"] == canonical_fingerprint(reply)
 
 
+
+
+
+def test_fluxer_custom_reaction_is_synchronized_through_full_sync(
+    tmp_path: Path,
+) -> None:
+    conversation = _conversation()
+    reaction = CanonicalReaction(
+        identity_key=IdentityKey("reactor-1"),
+        emoji="party_parrot",
+        emoji_id="1234567890",
+        is_custom=True,
+    )
+    message = _message("hello", reactions=(reaction,))
+    path = tmp_path / "state.sqlite3"
+    client = FakeFluxerClient()
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            _archive(conversation, message),
+            client,
+            repository,
+            identity_mappings=(
+                FluxerIdentityMapping(
+                    "reactor-1",
+                    "reactor-auth-key",
+                ),
+            ),
+        ).synchronize()
+
+    reaction_calls = [
+        call for call in client.calls if call[0] == "apply_reaction"
+    ]
+    assert len(reaction_calls) == 1
+    assert reaction_calls[0][2] == {
+        "channel_id": "fluxer-channel-1",
+        "message_id": "fluxer-message-1",
+        "emoji": "party_parrot:1234567890",
+        "auth_key": "reactor-auth-key",
+    }
+
+    with SQLiteStateRepository(path) as repository:
+        state = repository.load_synchronization_state()
+
+    assert state.message_reactions["message-1"] == (reaction,)
+    assert state.message_fingerprints["message-1"]

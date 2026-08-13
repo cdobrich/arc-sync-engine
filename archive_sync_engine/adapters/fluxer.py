@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from archive_sync_engine.adapters.capabilities import DestinationCapabilities
 from archive_sync_engine.adapters.destination import DestinationAdapter
@@ -50,6 +50,13 @@ class FluxerIdentityMapping:
                 "Fluxer identity mapping auth key must be None for the bot "
                 "account or a non-empty value for a masqueraded user."
             )
+
+
+class FluxerReactionClientFactory(Protocol):
+    """Factory for creating a Fluxer client authenticated as an actor."""
+
+    def __call__(self, auth_key: str) -> "FluxerClientProtocol":
+        ...
 
 
 class FluxerClientProtocol(Protocol):
@@ -139,8 +146,10 @@ class FluxerDestinationAdapter(DestinationAdapter):
         client: FluxerClientProtocol,
         *,
         identity_mappings: tuple[FluxerIdentityMapping, ...] = (),
+        reaction_client_factory: FluxerReactionClientFactory | None = None,
     ) -> None:
         self._client = client
+        self._reaction_client_factory = reaction_client_factory
 
         mappings: dict[str, FluxerIdentityMapping] = {}
         for mapping in identity_mappings:
@@ -169,7 +178,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
             # Canonical reactions are per-identity. Fluxer can only preserve
             # that identity when a masquerade mapping is configured.
             supports_reactions=bool(self._identity_mappings),
-            supports_custom_emoji=False,
+            supports_custom_emoji=bool(self._identity_mappings),
             supports_attachments=False,
             supports_initial_message_attachments=True,
             supports_initial_message_replying=True,
@@ -401,21 +410,17 @@ class FluxerDestinationAdapter(DestinationAdapter):
         message: DestinationMessageRef,
         reaction: CanonicalReaction,
     ) -> None:
-        if reaction.is_custom:
-            raise CapabilityError(
-                "Fluxer custom emoji reactions are not supported by the "
-                "current adapter."
-            )
-
         conversation_id = self._require_message_conversation(message)
+        client, auth_key = self._reaction_client_for(reaction)
+        emoji = self._reaction_emoji(reaction)
         self._require_success(
             self._run(
                 self._invoke_reaction_method(
-                    self._client.apply_reaction,
+                    client.apply_reaction,
                     channel_id=conversation_id,
                     message_id=message.id,
-                    emoji=reaction.emoji,
-                    auth_key=self._auth_key_for_reaction(reaction),
+                    emoji=emoji,
+                    auth_key=auth_key,
                 )
             ),
             f"add reaction to Fluxer message {message.id}",
@@ -426,27 +431,18 @@ class FluxerDestinationAdapter(DestinationAdapter):
         message: DestinationMessageRef,
         reaction: CanonicalReaction,
     ) -> None:
-        if reaction.is_custom:
-            raise CapabilityError(
-                "Fluxer custom emoji reactions are not supported by the "
-                "current adapter."
-            )
-
         conversation_id = self._require_message_conversation(message)
-        emoji = (
-            str(reaction.emoji_id)
-            if reaction.emoji_id is not None
-            else reaction.emoji
-        )
+        client, auth_key = self._reaction_client_for(reaction)
+        emoji = self._reaction_emoji(reaction)
         self._require_success(
             self._run(
                 self._invoke_reaction_method(
-                    self._client.remove_reaction,
+                    client.remove_reaction,
                     channel_id=conversation_id,
                     message_id=message.id,
                     emoji_id_or_name=emoji,
                     user_id="@me",
-                    auth_key=self._auth_key_for_reaction(reaction),
+                    auth_key=auth_key,
                 )
             ),
             f"remove reaction from Fluxer message {message.id}",
@@ -459,24 +455,51 @@ class FluxerDestinationAdapter(DestinationAdapter):
         mapping = self._identity_mappings.get(str(message.identity_key))
         return None if mapping is None else mapping.username
 
-    def _auth_key_for_reaction(
+    def _reaction_client_for(
         self,
         reaction: CanonicalReaction,
-    ) -> str:
-        """Return the configured Fluxer auth key for a reaction actor.
-
-        Canonical reactions identify their actor explicitly. Applying an
-        unmapped reaction as the adapter's default account would silently
-        change canonical state, so reaction synchronization requires an
-        explicit identity mapping.
-        """
+    ) -> tuple[FluxerClientProtocol, str | None]:
+        """Resolve the client/auth mode for a canonical reaction actor."""
         mapping = self._identity_mappings.get(str(reaction.identity_key))
         if mapping is None:
             raise CapabilityError(
                 "Fluxer reaction synchronization requires an identity "
                 f"mapping for reaction actor {reaction.identity_key}."
             )
-        return mapping.fluxer_auth_key
+
+        if mapping.fluxer_auth_key is None or self._reaction_client_factory is None:
+            return self._client, mapping.fluxer_auth_key
+
+        try:
+            client = self._reaction_client_factory(mapping.fluxer_auth_key)
+        except Exception as exc:
+            raise AdapterError(
+                "Fluxer reaction actor client could not be created for "
+                f"identity {reaction.identity_key}."
+            ) from exc
+
+        if client is None:
+            raise AdapterError(
+                "Fluxer reaction actor client factory returned no client for "
+                f"identity {reaction.identity_key}."
+            )
+
+        return client, None
+
+    @staticmethod
+    def _reaction_emoji(reaction: CanonicalReaction) -> str:
+        """Translate canonical reaction data to Fluxer's reaction identifier."""
+        if reaction.is_custom:
+            if reaction.emoji_id is None:
+                raise CapabilityError(
+                    "Fluxer custom emoji reactions require a canonical emoji ID."
+                )
+            if not reaction.emoji:
+                raise CapabilityError(
+                    "Fluxer custom emoji reactions require a canonical emoji name."
+                )
+            return f"{reaction.emoji}:{reaction.emoji_id}"
+        return reaction.emoji
 
     @staticmethod
     def _invoke_reaction_method(
@@ -574,4 +597,5 @@ def _required_id(value: Any, description: str) -> str:
 
 def _optional_id(value: Any) -> str | None:
     return None if value is None else str(value)
+
 
