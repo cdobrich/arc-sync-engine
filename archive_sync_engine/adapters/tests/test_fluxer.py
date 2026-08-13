@@ -193,7 +193,12 @@ def _message_ref() -> DestinationMessageRef:
 
 
 def test_fluxer_adapter_reports_current_capabilities() -> None:
-    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+    adapter = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", "auth-key"),
+        ),
+    )
     capabilities = adapter.capabilities
 
     assert capabilities.supports_threads is False
@@ -335,16 +340,68 @@ def test_pin_and_unpin_use_persisted_conversation_id() -> None:
     ]
 
 
-def test_capabilities_advertise_standard_reaction_synchronization() -> None:
-    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+def test_capabilities_advertise_standard_reaction_synchronization_only_with_mappings() -> None:
+    assert (
+        FluxerDestinationAdapter(FakeFluxerClient())
+        .capabilities
+        .supports_reactions
+        is False
+    )
+
+    adapter = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", "auth-key"),
+        ),
+    )
 
     assert adapter.capabilities.supports_reactions is True
     assert adapter.capabilities.supports_custom_emoji is False
 
 
+def test_standard_reaction_requires_identity_mapping() -> None:
+    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+
+    with pytest.raises(CapabilityError, match="identity mapping"):
+        adapter.add_reaction(
+            _message_ref(),
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-1"),
+                emoji="👍",
+                emoji_id=None,
+                is_custom=False,
+            ),
+        )
+
+
+def test_standard_reaction_rejects_unmapped_actor_even_when_other_mappings_exist() -> None:
+    adapter = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("other-identity", "other-auth-key"),
+        ),
+    )
+
+    with pytest.raises(CapabilityError, match="identity mapping"):
+        adapter.add_reaction(
+            _message_ref(),
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-1"),
+                emoji="👍",
+                emoji_id=None,
+                is_custom=False,
+            ),
+        )
+
+
 def test_standard_reaction_is_forwarded() -> None:
     client = FakeFluxerClient()
-    adapter = FluxerDestinationAdapter(client)
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", "auth-key"),
+        ),
+    )
 
     adapter.add_reaction(
         _message_ref(),
@@ -360,7 +417,7 @@ def test_standard_reaction_is_forwarded() -> None:
         "channel_id": "fluxer-channel-1",
         "message_id": "fluxer-message-1",
         "emoji": "👍",
-        "auth_key": None,
+        "auth_key": "auth-key",
     }
 
 

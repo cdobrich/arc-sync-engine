@@ -14,6 +14,7 @@ import pytest
 from archive_sync_engine.adapters import (
     CapabilityError,
     DestinationCapabilities,
+    FluxerIdentityMapping,
 )
 from archive_sync_engine.archive import Archive
 from archive_sync_engine.models import (
@@ -1636,7 +1637,12 @@ def test_fluxer_capabilities_still_reject_custom_reactions_before_execution() ->
     from archive_sync_engine.adapters.fluxer import FluxerDestinationAdapter
     from archive_sync_engine.adapters.tests.test_fluxer import FakeFluxerClient
 
-    capabilities = FluxerDestinationAdapter(FakeFluxerClient()).capabilities
+    capabilities = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("identity-001", "auth-key"),
+        ),
+    ).capabilities
 
     with pytest.raises(CapabilityError, match="supports_custom_emoji"):
         list(
@@ -2692,7 +2698,12 @@ def test_fluxer_capabilities_plan_standard_reaction_before_execution() -> None:
     from archive_sync_engine.adapters.fluxer import FluxerDestinationAdapter
     from archive_sync_engine.adapters.tests.test_fluxer import FakeFluxerClient
 
-    capabilities = FluxerDestinationAdapter(FakeFluxerClient()).capabilities
+    capabilities = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("identity-001", "auth-key"),
+        ),
+    ).capabilities
 
     operations = list(
         Planner().plan(

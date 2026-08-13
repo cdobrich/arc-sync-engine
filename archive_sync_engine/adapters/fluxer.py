@@ -146,7 +146,9 @@ class FluxerDestinationAdapter(DestinationAdapter):
             supports_message_deletion=True,
             supports_conversation_deletion=True,
             supports_message_pinning=True,
-            supports_reactions=True,
+            # Canonical reactions are per-identity. Fluxer can only preserve
+            # that identity when a masquerade mapping is configured.
+            supports_reactions=bool(self._identity_mappings),
             supports_custom_emoji=False,
             supports_attachments=False,
             supports_initial_message_attachments=True,
@@ -440,15 +442,21 @@ class FluxerDestinationAdapter(DestinationAdapter):
     def _auth_key_for_reaction(
         self,
         reaction: CanonicalReaction,
-    ) -> str | None:
+    ) -> str:
         """Return the configured Fluxer auth key for a reaction actor.
 
-        A missing mapping deliberately means "use the client's normal
-        account", which is the bot/default actor. Canonical reaction
-        identity keys never become destination identifiers.
+        Canonical reactions identify their actor explicitly. Applying an
+        unmapped reaction as the adapter's default account would silently
+        change canonical state, so reaction synchronization requires an
+        explicit identity mapping.
         """
         mapping = self._identity_mappings.get(str(reaction.identity_key))
-        return None if mapping is None else mapping.fluxer_auth_key
+        if mapping is None:
+            raise CapabilityError(
+                "Fluxer reaction synchronization requires an identity "
+                f"mapping for reaction actor {reaction.identity_key}."
+            )
+        return mapping.fluxer_auth_key
 
     @staticmethod
     def _invoke_reaction_method(
