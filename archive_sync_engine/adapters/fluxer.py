@@ -147,9 +147,11 @@ class FluxerDestinationAdapter(DestinationAdapter):
         *,
         identity_mappings: tuple[FluxerIdentityMapping, ...] = (),
         reaction_client_factory: FluxerReactionClientFactory | None = None,
+        identity_client_factory: FluxerReactionClientFactory | None = None,
     ) -> None:
         self._client = client
         self._reaction_client_factory = reaction_client_factory
+        self._identity_client_factory = identity_client_factory
 
         mappings: dict[str, FluxerIdentityMapping] = {}
         for mapping in identity_mappings:
@@ -311,8 +313,9 @@ class FluxerDestinationAdapter(DestinationAdapter):
             for attachment, data in attachments
         ]
 
+        client = self._message_client_for(message)
         result = self._run(
-            self._client.send_message(
+            client.send_message(
                 channel_id=destination.id,
                 content=message.content,
                 attachments=attachment_payloads or None,
@@ -454,6 +457,34 @@ class FluxerDestinationAdapter(DestinationAdapter):
     ) -> str | None:
         mapping = self._identity_mappings.get(str(message.identity_key))
         return None if mapping is None else mapping.username
+
+    def _message_client_for(self, message: CanonicalMessage) -> FluxerClientProtocol:
+        """Select the Fluxer client for a newly-created canonical message."""
+        mapping = self._identity_mappings.get(str(message.identity_key))
+        if mapping is None or mapping.fluxer_auth_key is None:
+            return self._client
+
+        if self._identity_client_factory is None:
+            # Preserve the existing/default-client behavior when no actor-client
+            # factory is configured. The factory is the explicit opt-in needed
+            # to authenticate the request as the mapped user.
+            return self._client
+
+        try:
+            client = self._identity_client_factory(mapping.fluxer_auth_key)
+        except Exception as exc:
+            raise AdapterError(
+                "Fluxer message actor client could not be created for identity "
+                f"{message.identity_key}."
+            ) from exc
+
+        if client is None:
+            raise AdapterError(
+                "Fluxer message actor client factory returned no client for identity "
+                f"{message.identity_key}."
+            )
+
+        return client
 
     def _reaction_client_for(
         self,

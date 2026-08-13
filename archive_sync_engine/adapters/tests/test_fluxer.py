@@ -959,3 +959,53 @@ def test_reaction_removal_requires_destination_conversation_reference() -> None:
             ),
         )
 
+
+
+def test_create_message_uses_masqueraded_identity_client_when_configured() -> None:
+    client = FakeFluxerClient()
+    actor_client = FakeFluxerClient()
+    selected_keys: list[str] = []
+
+    def factory(auth_key: str) -> FakeFluxerClient:
+        selected_keys.append(auth_key)
+        return actor_client
+
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", "user-auth-key"),
+        ),
+        identity_client_factory=factory,
+    )
+
+    result = adapter.create_message(
+        _message(),
+        DestinationConversationRef("fluxer-channel-1"),
+    )
+
+    assert result == DestinationMessageRef(
+        "fluxer-message-1",
+        conversation_id="fluxer-channel-1",
+    )
+    assert selected_keys == ["user-auth-key"]
+    assert [call[0] for call in client.calls] == []
+    assert [call[0] for call in actor_client.calls] == ["send_message"]
+
+
+def test_create_message_actor_client_factory_failure_is_reported() -> None:
+    def factory(_auth_key: str) -> FakeFluxerClient:
+        raise RuntimeError("factory failed")
+
+    adapter = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", "user-auth-key"),
+        ),
+        identity_client_factory=factory,
+    )
+
+    with pytest.raises(AdapterError, match="actor client could not be created"):
+        adapter.create_message(
+            _message(),
+            DestinationConversationRef("fluxer-channel-1"),
+        )
