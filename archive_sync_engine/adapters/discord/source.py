@@ -69,6 +69,7 @@ class DiscordSourceAdapter(SourceAdapter):
             sorted({int(guild_id) for guild_id in guild_ids})
         )
         self._conversation_channels: dict[str, Any] = {}
+        self._message_cache: dict[str, tuple[Any, ...]] = {}
         self._attachment_bytes: dict[str, bytes] = {}
 
     @property
@@ -76,30 +77,69 @@ class DiscordSourceAdapter(SourceAdapter):
         return "Discord"
 
     def iter_identities(self) -> Iterable[CanonicalIdentity]:
-        """Yield unique Discord users represented by the configured guilds."""
+        """Yield every identity referenced by the configured Discord scope.
+
+        Guild membership is not sufficient for historical archives: a user
+        may have authored or reacted to an archived message without still
+        appearing in ``guild.members``.  Discover message identities before
+        the importer writes identities so the SourceAdapter contract remains
+        complete without moving platform-specific logic into the importer.
+
+        The historical message scan is cached as raw Discord messages.
+        ``iter_messages()`` reuses that scan rather than making a second
+        history request during the same adapter instance's import.
+        """
         identities: dict[str, CanonicalIdentity] = {}
 
         for guild in self._iter_guilds():
             for member in self._guild_members(guild):
                 identity = self._canonical_identity(member)
-                identities.setdefault(
-                    str(identity.identity_key),
-                    identity,
-                )
+                identities.setdefault(str(identity.identity_key), identity)
 
-        yield from (
-            identities[key]
-            for key in sorted(identities)
-        )
+        for conversation in self._discover_conversations():
+            channel = self._conversation_channels[str(conversation.id)]
+            if getattr(channel, "history", None) is None:
+                continue
+            messages = self._run(
+                self._collect_raw_messages(channel),
+            )
+            self._message_cache[str(conversation.id)] = tuple(messages)
+
+            for message in messages:
+                author = getattr(message, "author", None)
+                if author is not None:
+                    identity = self._canonical_identity(author)
+                    identities.setdefault(
+                        str(identity.identity_key),
+                        identity,
+                    )
+
+                for reaction_group in getattr(message, "reactions", ()):
+                    users = getattr(reaction_group, "users", None)
+                    if users is None:
+                        raise AdapterError(
+                            "Discord reaction does not expose reacting users."
+                        )
+                    async_identities = self._run(
+                        self._collect_reaction_identities(users),
+                    )
+                    for identity in async_identities:
+                        identities.setdefault(
+                            str(identity.identity_key),
+                            identity,
+                        )
+
+        yield from (identities[key] for key in sorted(identities))
 
     def iter_conversations(self) -> Iterable[CanonicalConversation]:
         """Yield message-bearing Discord channels and threads deterministically."""
+        yield from self._discover_conversations()
+
+    def _discover_conversations(self) -> list[CanonicalConversation]:
         conversations: dict[str, CanonicalConversation] = {}
 
         for guild in self._iter_guilds():
-            channels = list(
-                self._message_bearing_channels(guild),
-            )
+            channels = list(self._message_bearing_channels(guild))
             archived_threads = self._run(
                 self._collect_archived_threads(guild),
             )
@@ -107,23 +147,14 @@ class DiscordSourceAdapter(SourceAdapter):
             channels.sort(key=self._channel_sort_key)
 
             for channel in channels:
-                conversation = self._canonical_conversation(
-                    guild,
-                    channel,
-                )
-                conversations.setdefault(
-                    str(conversation.id),
-                    conversation,
-                )
+                conversation = self._canonical_conversation(guild, channel)
+                conversations.setdefault(str(conversation.id), conversation)
                 self._conversation_channels.setdefault(
                     str(conversation.id),
                     channel,
                 )
 
-        yield from (
-            conversations[key]
-            for key in sorted(conversations)
-        )
+        return [conversations[key] for key in sorted(conversations)]
 
     def iter_messages(
         self,
@@ -136,9 +167,18 @@ class DiscordSourceAdapter(SourceAdapter):
                 f"Discord conversation {conversation.id} is not available."
             )
 
-        messages = self._run(
-            self._collect_messages(channel),
-        )
+        cached_messages = self._message_cache.get(str(conversation.id))
+        if cached_messages is not None:
+            messages = self._run(
+                self._canonicalize_cached_messages(
+                    cached_messages,
+                    channel,
+                ),
+            )
+        else:
+            messages = self._run(
+                self._collect_messages(channel),
+            )
 
         yield from messages
 
@@ -154,27 +194,50 @@ class DiscordSourceAdapter(SourceAdapter):
                 f"Discord attachment {attachment.id} is not available."
             ) from exc
 
-    async def _collect_messages(
-        self,
+    @staticmethod
+    async def _collect_raw_messages(
         channel: Any,
-    ) -> list[CanonicalMessage]:
+    ) -> list[Any]:
         history = channel.history(
             limit=None,
             oldest_first=True,
         )
+        return [message async for message in history]
 
+    async def _canonicalize_cached_messages(
+        self,
+        messages: tuple[Any, ...],
+        channel: Any,
+    ) -> list[CanonicalMessage]:
         pinned_ids = await self._collect_pinned_ids(channel)
-        messages: list[CanonicalMessage] = []
-
-        async for message in history:
-            messages.append(
-                await self._canonical_message(
-                    message,
-                    pinned_ids=pinned_ids,
-                )
+        return [
+            await self._canonical_message(
+                message,
+                pinned_ids=pinned_ids,
             )
+            for message in messages
+        ]
 
-        return messages
+    async def _collect_messages(
+        self,
+        channel: Any,
+    ) -> list[CanonicalMessage]:
+        messages = await self._collect_raw_messages(channel)
+        return await self._canonicalize_cached_messages(
+            tuple(messages),
+            channel,
+        )
+
+    @staticmethod
+    async def _collect_reaction_identities(
+        users: Any,
+    ) -> list[CanonicalIdentity]:
+        identities: list[CanonicalIdentity] = []
+        async for user in users(limit=None):
+            identities.append(
+                DiscordSourceAdapter._canonical_identity(user),
+            )
+        return identities
 
     @staticmethod
     async def _collect_pinned_ids(channel: Any) -> set[str]:

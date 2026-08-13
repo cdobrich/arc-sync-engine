@@ -288,8 +288,11 @@ class MessageChannel(FakeChannel):
         super().__init__(*args, **kwargs)
         self._messages = tuple(messages)
         self._pinned = tuple(pinned)
+        self.history_calls = 0
 
     def history(self, *, limit=None, oldest_first=True):
+        self.history_calls += 1
+
         async def iterator():
             messages = self._messages if oldest_first else tuple(reversed(self._messages))
             for message in messages:
@@ -501,3 +504,67 @@ def test_iter_messages_collects_all_pins_from_paginated_discord_api() -> None:
     assert len(result) == 75
     assert all(message.pinned for message in result)
     assert channel.requested_pin_limit is None
+
+
+def test_iter_identities_includes_historical_message_authors_and_reactors() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    guild = FakeGuild()
+    author = FakeUser(99, "HistoricalAuthor")
+    reactor = FakeUser(100, "HistoricalReactor")
+    channel = MessageChannel(
+        10,
+        "history",
+        1,
+        created,
+        messages=(
+            FakeMessage(
+                1,
+                None,
+                author,
+                created,
+                "historical",
+                reactions=(
+                    FakeReaction("👍", (reactor,)),
+                ),
+            ),
+        ),
+    )
+    channel._messages[0].channel = channel
+    guild.channels = [channel]
+    guild.threads = []
+
+    adapter = DiscordSourceAdapter(
+        FakeClient(guild),
+        [123],
+    )
+
+    identities = list(adapter.iter_identities())
+
+    assert [str(identity.identity_key) for identity in identities] == [
+        "discord:user:1",
+        "discord:user:100",
+        "discord:user:2",
+        "discord:user:99",
+    ]
+
+
+def test_iter_identities_reuses_historical_message_scan_for_message_import() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(99, "HistoricalAuthor")
+    channel = MessageChannel(10, "history", 1, created)
+    message = FakeMessage(1, channel, user, created, "historical")
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    identities = list(adapter.iter_identities())
+    conversation = next(adapter.iter_conversations())
+    messages = list(adapter.iter_messages(conversation))
+
+    assert "discord:user:99" in {str(item.identity_key) for item in identities}
+    assert len(messages) == 1
+    assert channel.history_calls == 1
