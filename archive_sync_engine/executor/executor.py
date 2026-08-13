@@ -20,7 +20,6 @@ Operations are executed exactly in the order received.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import replace
 
 from archive_sync_engine.adapters import DestinationAdapter
@@ -31,7 +30,6 @@ from archive_sync_engine.executor.result import (
     DeletedEntityType,
     ExecutionResult,
 )
-from archive_sync_engine.models import CanonicalAttachment
 from archive_sync_engine.operations import (
     AddAttachmentOperation,
     AddReactionOperation,
@@ -259,6 +257,12 @@ class OperationExecutor:
                         for attachment in message.attachments
                     )
 
+                reply_ref = (
+                    context.require_message(message.reply_to)
+                    if include_reply_to and message.reply_to is not None
+                    else None
+                )
+
                 message_for_creation = replace(
                     message,
                     attachments=(message.attachments if include_attachments else ()),
@@ -270,25 +274,21 @@ class OperationExecutor:
                 conversation_ref = context.require_conversation(
                     message.conversation_id,
                 )
-                reply_ref = (
-                    context.require_message(message.reply_to)
-                    if include_reply_to and message.reply_to is not None
-                    else None
-                )
 
-                if include_attachments and include_reply_to:
-                    destination_ref = destination.create_message(
-                        message_for_creation,
-                        conversation_ref,
-                        attachment_payloads,
-                        reply_ref,
-                    )
-                elif include_attachments:
-                    destination_ref = destination.create_message(
-                        message_for_creation,
-                        conversation_ref,
-                        attachment_payloads,
-                    )
+                if include_attachments:
+                    if include_reply_to:
+                        destination_ref = destination.create_message(
+                            message_for_creation,
+                            conversation_ref,
+                            attachment_payloads,
+                            reply_to=reply_ref,
+                        )
+                    else:
+                        destination_ref = destination.create_message(
+                            message_for_creation,
+                            conversation_ref,
+                            attachment_payloads,
+                        )
                 elif include_reply_to:
                     destination_ref = destination.create_message(
                         message_for_creation,
@@ -343,7 +343,9 @@ class OperationExecutor:
                         else None
                     ),
                     message_reply_to=(
-                        message.reply_to if include_reply_to else None
+                        message.reply_to
+                        if include_reply_to
+                        else None
                     ),
                     message_reply_to_synchronized=(
                         message.reply_to is None or include_reply_to

@@ -8,9 +8,10 @@ from unittest.mock import Mock
 
 from archive_sync_engine.adapters import (
     FluxerDestinationAdapter,
+    FluxerIdentityMapping,
 )
 from archive_sync_engine.asset_store import AssetStore
-from archive_sync_engine.models import CanonicalAttachment
+from archive_sync_engine.models import CanonicalAttachment, CanonicalReaction
 from archive_sync_engine.models.ids import AttachmentId
 import hashlib
 from archive_sync_engine.archive import Archive
@@ -21,6 +22,7 @@ from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageI
 from archive_sync_engine.planner import Planner
 from archive_sync_engine.repository import SQLiteStateRepository
 from archive_sync_engine.sync.coordinator import SyncCoordinator
+from archive_sync_engine.sync.fingerprint import canonical_fingerprint
 
 
 class FakeFluxerClient:
@@ -120,7 +122,13 @@ class FakeFluxerClient:
         )
         return True
 
-    async def apply_reaction(self, channel_id: str, message_id: str, emoji: str) -> bool:
+    async def apply_reaction(
+        self,
+        channel_id: str,
+        message_id: str,
+        emoji: str,
+        auth_key: str | None = None,
+    ) -> bool:
         self.calls.append(
             (
                 "apply_reaction",
@@ -129,6 +137,7 @@ class FakeFluxerClient:
                     "channel_id": channel_id,
                     "message_id": message_id,
                     "emoji": emoji,
+                    "auth_key": auth_key,
                 },
             ),
         )
@@ -140,6 +149,7 @@ class FakeFluxerClient:
         message_id: str,
         emoji_id_or_name: str,
         user_id: str = "@me",
+        auth_key: str | None = None,
     ) -> bool:
         self.calls.append(
             (
@@ -149,6 +159,8 @@ class FakeFluxerClient:
                     "channel_id": channel_id,
                     "message_id": message_id,
                     "emoji_id_or_name": emoji_id_or_name,
+                    "user_id": user_id,
+                    "auth_key": auth_key,
                 },
             ),
         )
@@ -196,13 +208,18 @@ def _conversation() -> CanonicalConversation:
     )
 
 
-def _message(content: str) -> CanonicalMessage:
+def _message(
+    content: str,
+    *,
+    reactions: tuple[CanonicalReaction, ...] = (),
+) -> CanonicalMessage:
     return CanonicalMessage(
         id=MessageId("message-1"),
         conversation_id=ConversationId("conversation-1"),
         identity_key=IdentityKey("identity-1"),
         content=content,
         created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        reactions=reactions,
     )
 
 
@@ -212,8 +229,12 @@ def _coordinator(
     repository: SQLiteStateRepository,
     *,
     asset_store: AssetStore | None = None,
+    identity_mappings=(),
 ) -> SyncCoordinator:
-    destination = FluxerDestinationAdapter(client)
+    destination = FluxerDestinationAdapter(
+        client,
+        identity_mappings=identity_mappings,
+    )
     return SyncCoordinator(
         archive=archive,
         planner=Planner(),
@@ -352,7 +373,6 @@ def test_fluxer_initial_pinned_message_is_synchronized(tmp_path: Path) -> None:
     assert state.message_pinned["message-1"] is True
     assert state.message_fingerprints["message-1"]
 
-
 def test_fluxer_pinned_message_can_be_unpinned_incrementally(tmp_path: Path) -> None:
     conversation = _conversation()
     pinned_message = _message("hello")
@@ -400,52 +420,6 @@ def test_fluxer_pinned_message_can_be_unpinned_incrementally(tmp_path: Path) -> 
 
     assert state.message_pinned["message-1"] is False
     assert state.message_fingerprints["message-1"]
-
-
-def test_fluxer_initial_message_attachment_is_synchronized_in_create(tmp_path: Path) -> None:
-    conversation = _conversation()
-    content = b"hello"
-    attachment = CanonicalAttachment(
-        id=AttachmentId("attachment-1"),
-        filename="hello.txt",
-        content_type="text/plain",
-        size=len(content),
-        sha256=hashlib.sha256(content).hexdigest(),
-    )
-    message = _message("hello")
-    message = message.__class__(
-        id=message.id,
-        conversation_id=message.conversation_id,
-        identity_key=message.identity_key,
-        content=message.content,
-        created_at=message.created_at,
-        attachments=(attachment,),
-    )
-    archive = _archive(conversation, message)
-    client = FakeFluxerClient()
-    path = tmp_path / "state.sqlite3"
-    asset_store = AssetStore(tmp_path / "assets")
-    asset_store.put_attachment(attachment, content)
-
-    with SQLiteStateRepository(path) as repository:
-        _coordinator(
-            archive,
-            client,
-            repository,
-            asset_store=asset_store,
-        ).synchronize()
-
-    send_call = next(call for call in client.calls if call[0] == "send_message")
-    assert send_call[2]["attachments"] == [
-        {"filename": "hello.txt", "data": content},
-    ]
-
-    with SQLiteStateRepository(path) as repository:
-        state = repository.load_synchronization_state()
-
-    assert state.message_attachments["message-1"] == (attachment,)
-    assert state.message_fingerprints["message-1"]
-
 
 def test_fluxer_initial_reply_uses_existing_destination_reference(
     tmp_path: Path,
@@ -500,3 +474,125 @@ def test_fluxer_initial_reply_uses_existing_destination_reference(
 
     assert state.message_reply_to["message-2"] == target.id
     assert state.message_fingerprints["message-2"]
+
+def test_fluxer_initial_message_attachment_is_synchronized_in_create(tmp_path: Path) -> None:
+    conversation = _conversation()
+    content = b"hello"
+    attachment = CanonicalAttachment(
+        id=AttachmentId("attachment-1"),
+        filename="hello.txt",
+        content_type="text/plain",
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+    message = _message("hello")
+    message = message.__class__(
+        id=message.id,
+        conversation_id=message.conversation_id,
+        identity_key=message.identity_key,
+        content=message.content,
+        created_at=message.created_at,
+        attachments=(attachment,),
+    )
+    archive = _archive(conversation, message)
+    client = FakeFluxerClient()
+    path = tmp_path / "state.sqlite3"
+    asset_store = AssetStore(tmp_path / "assets")
+    asset_store.put_attachment(attachment, content)
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            archive,
+            client,
+            repository,
+            asset_store=asset_store,
+        ).synchronize()
+
+    send_call = next(call for call in client.calls if call[0] == "send_message")
+    assert send_call[2]["attachments"] == [
+        {"filename": "hello.txt", "data": content},
+    ]
+
+    with SQLiteStateRepository(path) as repository:
+        state = repository.load_synchronization_state()
+
+    assert state.message_attachments["message-1"] == (attachment,)
+    assert state.message_fingerprints["message-1"]
+
+
+def test_fluxer_reaction_masquerading_is_applied_and_removed_through_full_sync(
+    tmp_path: Path,
+) -> None:
+    conversation = _conversation()
+    reaction = CanonicalReaction(
+        identity_key=IdentityKey("reactor-1"),
+        emoji="👍",
+        emoji_id=None,
+        is_custom=False,
+    )
+    initial_message = _message("hello", reactions=(reaction,))
+    path = tmp_path / "state.sqlite3"
+    client = FakeFluxerClient()
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            _archive(conversation, initial_message),
+            client,
+            repository,
+            identity_mappings=(
+                FluxerIdentityMapping(
+                    "reactor-1",
+                    "reactor-auth-key",
+                ),
+            ),
+        ).synchronize()
+
+    assert [call[0] for call in client.calls] == [
+        "create_conversation",
+        "send_message",
+        "apply_reaction",
+    ]
+    assert client.calls[-1][2] == {
+        "channel_id": "fluxer-channel-1",
+        "message_id": "fluxer-message-1",
+        "emoji": "👍",
+        "auth_key": "reactor-auth-key",
+    }
+
+    client.calls.clear()
+    updated_message = _message("hello")
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            _archive(conversation, updated_message),
+            client,
+            repository,
+            identity_mappings=(
+                FluxerIdentityMapping(
+                    "reactor-1",
+                    "reactor-auth-key",
+                ),
+            ),
+        ).synchronize()
+
+    assert client.calls == [
+        (
+            "remove_reaction",
+            (),
+            {
+                "channel_id": "fluxer-channel-1",
+                "message_id": "fluxer-message-1",
+                "emoji_id_or_name": "👍",
+                "user_id": "@me",
+                "auth_key": "reactor-auth-key",
+            },
+        ),
+    ]
+
+    with SQLiteStateRepository(path) as repository:
+        state = repository.load_synchronization_state()
+
+    assert state.message_reactions["message-1"] == ()
+    assert state.message_fingerprints["message-1"] == (
+        canonical_fingerprint(updated_message)
+    )
