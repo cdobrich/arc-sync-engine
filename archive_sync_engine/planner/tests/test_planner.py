@@ -78,6 +78,7 @@ def _capabilities(**overrides: bool) -> DestinationCapabilities:
         "supports_reactions": True,
         "supports_custom_emoji": True,
         "supports_attachments": True,
+        "supports_initial_message_attachments": False,
         "supports_attachment_reordering": True,
         "supports_replying": True,
         "supports_identity_updates": True,
@@ -2528,5 +2529,65 @@ def test_plan_rejects_unsupported_identity_creation() -> None:
                 archive,
                 SynchronizationState(),
                 _capabilities(supports_identity_creation=False),
+            )
+        )
+
+
+def test_plan_uses_initial_message_attachment_capability() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    attachment = _attachment()
+    message = replace(
+        _message("message-001", "conversation-001"),
+        attachments=(attachment,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    capabilities = _capabilities(
+        supports_attachments=False,
+        supports_initial_message_attachments=True,
+    )
+
+    operations = _planned_operations(
+        Planner(),
+        archive,
+        capabilities=capabilities,
+    )
+
+    assert operations == [
+        CreateConversationOperation(conversation=conversation),
+        CreateMessageOperation(
+            message=message,
+            include_attachments=True,
+        ),
+    ]
+
+
+def test_plan_rejects_attachments_when_neither_initial_nor_incremental_supported() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    message = replace(
+        _message("message-001", "conversation-001"),
+        attachments=(_attachment(),),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    capabilities = _capabilities(
+        supports_attachments=False,
+        supports_initial_message_attachments=False,
+    )
+
+    with pytest.raises(CapabilityError):
+        list(
+            Planner().plan(
+                archive,
+                SynchronizationState(),
+                capabilities,
             )
         )

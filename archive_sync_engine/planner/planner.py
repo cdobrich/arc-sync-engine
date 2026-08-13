@@ -399,31 +399,36 @@ class Planner:
                 # through the same dedicated operations used for existing
                 # messages so AssetStore-backed attachments, reactions, pins,
                 # and replies cannot be marked synchronized prematurely.
-                yield CreateMessageOperation(
-                    message=message,
-                )
-
+                include_initial_attachments = False
                 component_operations: list[SyncOperation] = []
 
                 if message.attachments:
-                    self._require_capability(
-                        capabilities.supports_attachments,
-                        "supports_attachments",
-                        "reconcile message attachments",
-                    )
-
-                    working_attachments: list = []
-                    for attachment in message.attachments:
-                        working_attachments.append(attachment)
-                        component_operations.append(
-                            AddAttachmentOperation(
-                                message_id=message.id,
-                                attachment=attachment,
-                                resulting_attachments=(
-                                    tuple(working_attachments)
-                                ),
-                            ),
+                    if capabilities.supports_initial_message_attachments:
+                        include_initial_attachments = True
+                    else:
+                        self._require_capability(
+                            capabilities.supports_attachments,
+                            "supports_attachments",
+                            "reconcile message attachments",
                         )
+
+                        working_attachments: list = []
+                        for attachment in message.attachments:
+                            working_attachments.append(attachment)
+                            component_operations.append(
+                                AddAttachmentOperation(
+                                    message_id=message.id,
+                                    attachment=attachment,
+                                    resulting_attachments=(
+                                        tuple(working_attachments)
+                                    ),
+                                ),
+                            )
+
+                yield CreateMessageOperation(
+                    message=message,
+                    include_attachments=include_initial_attachments,
+                )
 
                 if message.reactions:
                     self._require_capability(

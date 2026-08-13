@@ -9,6 +9,10 @@ from unittest.mock import Mock
 from archive_sync_engine.adapters import (
     FluxerDestinationAdapter,
 )
+from archive_sync_engine.asset_store import AssetStore
+from archive_sync_engine.models import CanonicalAttachment
+from archive_sync_engine.models.ids import AttachmentId
+import hashlib
 from archive_sync_engine.archive import Archive
 from archive_sync_engine.executor import OperationExecutor
 from archive_sync_engine.models import CanonicalConversation, CanonicalMessage
@@ -206,12 +210,14 @@ def _coordinator(
     archive: Archive,
     client: FakeFluxerClient,
     repository: SQLiteStateRepository,
+    *,
+    asset_store: AssetStore | None = None,
 ) -> SyncCoordinator:
     destination = FluxerDestinationAdapter(client)
     return SyncCoordinator(
         archive=archive,
         planner=Planner(),
-        executor=OperationExecutor(),
+        executor=OperationExecutor(asset_store=asset_store),
         destination=destination,
         capabilities=destination.capabilities,
         state_repository=repository,
@@ -311,3 +317,48 @@ def test_fluxer_stale_message_is_deleted_before_stale_conversation(
     with SQLiteStateRepository(path) as repository:
         assert repository.load_synchronization_state().messages == {}
         assert repository.load_synchronization_state().conversations == {}
+
+
+def test_fluxer_initial_message_attachment_is_synchronized_in_create(tmp_path: Path) -> None:
+    conversation = _conversation()
+    content = b"hello"
+    attachment = CanonicalAttachment(
+        id=AttachmentId("attachment-1"),
+        filename="hello.txt",
+        content_type="text/plain",
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
+    message = _message("hello")
+    message = message.__class__(
+        id=message.id,
+        conversation_id=message.conversation_id,
+        identity_key=message.identity_key,
+        content=message.content,
+        created_at=message.created_at,
+        attachments=(attachment,),
+    )
+    archive = _archive(conversation, message)
+    client = FakeFluxerClient()
+    path = tmp_path / "state.sqlite3"
+    asset_store = AssetStore(tmp_path / "assets")
+    asset_store.put_attachment(attachment, content)
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            archive,
+            client,
+            repository,
+            asset_store=asset_store,
+        ).synchronize()
+
+    send_call = next(call for call in client.calls if call[0] == "send_message")
+    assert send_call[2]["attachments"] == [
+        {"filename": "hello.txt", "data": content},
+    ]
+
+    with SQLiteStateRepository(path) as repository:
+        state = repository.load_synchronization_state()
+
+    assert state.message_attachments["message-1"] == (attachment,)
+    assert state.message_fingerprints["message-1"]

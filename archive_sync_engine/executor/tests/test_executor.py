@@ -1056,3 +1056,45 @@ def test_execute_all_removes_deleted_identity_reference_from_context() -> None:
     assert len(results) == 2
     assert results[-1].deleted is True
 
+
+
+def test_create_message_with_initial_attachments_uses_asset_store(tmp_path) -> None:
+    content = b"hello"
+    attachment = _attachment(content)
+    message = replace(
+        _message(),
+        attachments=(attachment,),
+    )
+    asset_store = AssetStore(tmp_path)
+    asset_store.put_attachment(attachment, content)
+
+    destination = _destination()
+    destination.create_message.return_value = DestinationMessageRef(
+        "destination-message-001",
+        conversation_id="destination-conversation-001",
+    )
+
+    context = ExecutionContext(
+        conversations={
+            str(message.conversation_id): DestinationConversationRef(
+                "destination-conversation-001",
+            ),
+        },
+    )
+
+    result = OperationExecutor(asset_store=asset_store).execute(
+        CreateMessageOperation(
+            message=message,
+            include_attachments=True,
+        ),
+        destination,
+        context=context,
+    )
+
+    destination.create_message.assert_called_once_with(
+        message,
+        DestinationConversationRef("destination-conversation-001"),
+        ((attachment, content),),
+    )
+    assert result.message_attachments == (attachment,)
+    assert result.canonical_fingerprint == canonical_fingerprint(message)

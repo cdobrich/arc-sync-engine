@@ -191,6 +191,7 @@ def test_fluxer_adapter_reports_current_capabilities() -> None:
     assert capabilities.supports_reactions is True
     assert capabilities.supports_custom_emoji is False
     assert capabilities.supports_attachments is False
+    assert capabilities.supports_initial_message_attachments is True
     assert capabilities.supports_replying is False
     assert capabilities.supports_identity_creation is False
     assert capabilities.supports_identity_updates is False
@@ -418,3 +419,24 @@ def test_adapter_rejects_use_inside_running_event_loop() -> None:
             )
 
     asyncio.run(invoke())
+
+
+def test_create_message_passes_initial_attachment_payload_to_fluxer() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(client)
+    attachment = _attachment()
+    content = b"hello"
+
+    adapter.create_message(
+        _message(),
+        DestinationConversationRef("fluxer-channel-1"),
+        ((attachment, content),),
+    )
+
+    assert client.calls[-1][0] == "send_message"
+    assert client.calls[-1][2]["attachments"] == [
+        {
+            "filename": "hello.txt",
+            "data": content,
+        },
+    ]

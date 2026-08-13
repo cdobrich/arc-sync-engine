@@ -18,6 +18,7 @@ class CreateMessageOperation(SyncOperation):
     """
 
     message: CanonicalMessage
+    include_attachments: bool = False
 
 
 @dataclass(frozen=True, slots=True)

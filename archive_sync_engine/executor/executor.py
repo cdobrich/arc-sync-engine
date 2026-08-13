@@ -20,6 +20,7 @@ Operations are executed exactly in the order received.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
 
 from archive_sync_engine.adapters import DestinationAdapter
@@ -30,6 +31,7 @@ from archive_sync_engine.executor.result import (
     DeletedEntityType,
     ExecutionResult,
 )
+from archive_sync_engine.models import CanonicalAttachment
 from archive_sync_engine.operations import (
     AddAttachmentOperation,
     AddReactionOperation,
@@ -238,15 +240,27 @@ class OperationExecutor:
 
             case CreateMessageOperation(
                 message=message,
+                include_attachments=include_attachments,
             ):
-                # Initial message creation establishes only the destination
-                # message object and its content. Attachments, reactions, pin
-                # state, and replies are deliberately reconciled by their
-                # dedicated operations so each component has an explicit
-                # successful state transition.
+                attachment_payloads: tuple[tuple[CanonicalAttachment, bytes], ...] = ()
+                if include_attachments and message.attachments:
+                    if self._asset_store is None:
+                        raise RuntimeError(
+                            "CreateMessageOperation with initial attachments "
+                            "requires an AssetStore."
+                        )
+
+                    attachment_payloads = tuple(
+                        (
+                            attachment,
+                            self._asset_store.get(attachment.sha256),
+                        )
+                        for attachment in message.attachments
+                    )
+
                 message_for_creation = replace(
                     message,
-                    attachments=(),
+                    attachments=(message.attachments if include_attachments else ()),
                     reactions=(),
                     pinned=False,
                     reply_to=None,
@@ -256,12 +270,17 @@ class OperationExecutor:
                     message.conversation_id,
                 )
 
-                destination_ref = (
-                    destination.create_message(
+                if include_attachments:
+                    destination_ref = destination.create_message(
+                        message_for_creation,
+                        conversation_ref,
+                        attachment_payloads,
+                    )
+                else:
+                    destination_ref = destination.create_message(
                         message_for_creation,
                         conversation_ref,
                     )
-                )
 
                 context.record_message(
                     message.id,
@@ -269,7 +288,7 @@ class OperationExecutor:
                 )
 
                 components_pending = bool(
-                    message.attachments
+                    (message.attachments and not include_attachments)
                     or message.reactions
                     or message.pinned
                     or message.reply_to is not None
@@ -295,9 +314,9 @@ class OperationExecutor:
                         else None
                     ),
                     message_attachments=(
-                        ()
-                        if not message.attachments
-                        else None
+                        tuple(message.attachments)
+                        if include_attachments
+                        else (() if not message.attachments else None)
                     ),
                     message_pinned=(
                         False

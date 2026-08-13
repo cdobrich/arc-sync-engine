@@ -146,6 +146,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
             supports_reactions=True,
             supports_custom_emoji=False,
             supports_attachments=False,
+            supports_initial_message_attachments=True,
             supports_attachment_reordering=False,
             supports_replying=False,
             supports_identity_creation=False,

@@ -32,6 +32,7 @@ class DestinationCapabilities:
     supports_reactions: bool = True
     supports_custom_emoji: bool = True
     supports_attachments: bool = True
+    supports_initial_message_attachments: bool = False
     supports_attachment_reordering: bool = False
     supports_replying: bool = True
     supports_identity_creation: bool = True
