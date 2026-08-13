@@ -295,7 +295,11 @@ def _decode_json(value: str) -> dict[str, Any]:
 
 
 def _ref_to_dict(ref: object) -> dict[str, str]:
-    return {"id": ref.id}
+    value = {"id": ref.id}
+    conversation_id = getattr(ref, "conversation_id", None)
+    if conversation_id is not None:
+        value["conversation_id"] = conversation_id
+    return value
 
 
 def _conversation_ref_from_dict(value: dict[str, Any]) -> DestinationConversationRef:
@@ -307,7 +311,14 @@ def _identity_ref_from_dict(value: dict[str, Any]) -> DestinationIdentityRef:
 
 
 def _message_ref_from_dict(value: dict[str, Any]) -> DestinationMessageRef:
-    return DestinationMessageRef(str(value["id"]))
+    return DestinationMessageRef(
+        str(value["id"]),
+        conversation_id=(
+            str(value["conversation_id"])
+            if value.get("conversation_id") is not None
+            else None
+        ),
+    )
 
 
 def _reaction_to_dict(reaction: CanonicalReaction) -> dict[str, Any]:

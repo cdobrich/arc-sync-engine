@@ -473,3 +473,34 @@ def test_sqlite_repository_query_rejects_negative_limit(
             assert "limit" in str(exc)
         else:
             raise AssertionError("Expected negative limit to be rejected.")
+
+
+def test_sqlite_repository_round_trips_message_conversation_reference(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = SynchronizationState(
+        messages={
+            "message-1": DestinationMessageRef(
+                "destination-message-1",
+                conversation_id="destination-conversation-1",
+            ),
+        },
+    )
+
+    operation = EditMessageOperation(
+        message=_message(),
+    )
+    result = ExecutionResult(canonical_id="message-1")
+
+    with SQLiteStateRepository(path) as repository:
+        repository.record_execution(
+            operation=operation,
+            result=result,
+            synchronization_state=state,
+        )
+
+    with SQLiteStateRepository(path) as repository:
+        restored = repository.load_synchronization_state()
+
+    assert restored.messages == state.messages
