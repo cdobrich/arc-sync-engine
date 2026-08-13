@@ -1,13 +1,13 @@
 """
-Canonical export pipeline.
+Canonical export facade.
 
-CanonicalExporter reads canonical information from an Archive and
-reproduces it through a DestinationAdapter.
+CanonicalExporter exposes a convenient initial-export API while keeping the
+actual synchronization lifecycle in the existing Planner/Executor/Coordinator
+architecture.
 
-The exporter does not perform planning or reconciliation decisions.
-Those responsibilities belong to the synchronization layer.
-
-This performs initial archive reproduction only.
+The exporter does not perform destination calls directly. It supplies an
+empty synchronization state and delegates the complete Archive -> Planner ->
+Executor -> StateRepository flow to SyncCoordinator.
 """
 
 from __future__ import annotations
@@ -15,11 +15,19 @@ from __future__ import annotations
 from archive_sync_engine.adapters import DestinationAdapter
 from archive_sync_engine.archive import Archive
 from archive_sync_engine.asset_store import AssetStore
+from archive_sync_engine.executor import OperationExecutor
+from archive_sync_engine.planner import Planner
+from archive_sync_engine.repository import InMemoryStateRepository
+from archive_sync_engine.sync.coordinator import SyncCoordinator
 
 
 class CanonicalExporter:
     """
-    Export canonical archive contents to a destination adapter.
+    Export canonical archive contents through the synchronization engine.
+
+    This is intentionally a thin public facade for callers that want a
+    one-shot initial export rather than directly coordinating Planner,
+    Executor, and StateRepository themselves.
     """
 
     def export(
@@ -29,93 +37,30 @@ class CanonicalExporter:
         asset_store: AssetStore,
     ) -> None:
         """
-        Reproduce the canonical archive at the destination.
+        Reproduce the canonical Archive at the destination.
 
-        Export order is:
+        The export starts from an empty synchronization snapshot and lets the
+        existing Planner and OperationExecutor establish destination
+        references, component baselines, and dependency-safe ordering.
 
-            identities
-                ↓
-            conversations
-                ↓
-            attachments
-                ↓
-            messages
-
-        The destination adapter is responsible for translating
-        canonical models into platform-specific operations.
+        A fresh in-memory StateRepository is sufficient because this facade
+        represents one-shot initial export. Callers that need resumable or
+        incremental synchronization should use SyncCoordinator directly with
+        a durable StateRepository.
         """
+        capabilities = destination.capabilities
+        state_repository = InMemoryStateRepository()
+        executor = OperationExecutor(
+            asset_store=asset_store,
+        )
 
-        #
-        # Identities
-        #
+        coordinator = SyncCoordinator(
+            archive=archive,
+            planner=Planner(),
+            executor=executor,
+            destination=destination,
+            capabilities=capabilities,
+            state_repository=state_repository,
+        )
 
-        for identity in archive.iter_identities():
-
-            destination.create_identity(
-                identity,
-            )
-
-        #
-        # Conversations
-        #
-
-        for conversation in archive.iter_conversations():
-
-            destination.create_conversation(
-                conversation,
-            )
-
-            #
-            # Messages
-            #
-
-            for message in archive.iter_messages_for_conversation(
-                conversation.id,
-            ):
-
-                #
-                # Attachments
-                #
-                # Attachment metadata belongs to the canonical message,
-                # while the actual bytes are owned by AssetStore.
-                #
-
-                for attachment in message.attachments:
-
-                    data = asset_store.get(
-                        attachment.sha256,
-                    )
-
-                    destination.upload_attachment(
-                        attachment,
-                        data,
-                    )
-
-                #
-                # Message
-                #
-
-                destination.create_message(
-                    message,
-                )
-
-                #
-                # Pin state
-                #
-
-                if message.pinned:
-
-                    destination.pin_message(
-                        message.id,
-                    )
-
-                #
-                # Reactions
-                #
-
-                for reaction in message.reactions:
-
-                    destination.add_reaction(
-                        message.id,
-                        reaction,
-                    )
+        coordinator.synchronize()
