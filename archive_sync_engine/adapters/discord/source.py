@@ -14,6 +14,9 @@ reactions, pins, and attachment metadata/bytes required by the canonical
 message import contract.
 Vertical Slice 19 adds active-thread discovery.
 Vertical Slice 20 adds archived-thread discovery.
+Vertical Slice 24 makes unresolved Discord reply references explicit: the
+canonical reply target is preserved by message ID even when Discord does not
+provide the referenced message object.
 """
 
 from __future__ import annotations
@@ -316,8 +319,7 @@ class DiscordSourceAdapter(SourceAdapter):
             )
         reactions = tuple(reactions_list)
 
-        reference = getattr(message, "reference", None)
-        reply_message_id = getattr(reference, "message_id", None)
+        reply_to = self._canonical_reply_to(message)
 
         return CanonicalMessage(
             id=MessageId(
@@ -332,14 +334,32 @@ class DiscordSourceAdapter(SourceAdapter):
             content=str(getattr(message, "content", "") or ""),
             created_at=created_at,
             edited_at=getattr(message, "edited_at", None),
-            reply_to=(
-                MessageId(self._message_key(reply_message_id))
-                if reply_message_id is not None
-                else None
-            ),
+            reply_to=reply_to,
             pinned=str(message_id) in pinned_ids,
             attachments=attachments,
             reactions=reactions,
+        )
+
+    def _canonical_reply_to(
+        self,
+        message: Any,
+    ) -> MessageId | None:
+        """Translate a Discord message reference without resolving its target.
+
+        The canonical model stores the logical identity of the reply target,
+        not a copied target message. Discord may expose the reference ID even
+        when ``referenced_message`` is unavailable or the target was deleted.
+        That distinction is important for archival fidelity: an unresolved
+        reference is still canonical source data and must not be silently
+        converted to ``None``.
+        """
+        reference = getattr(message, "reference", None)
+        reply_message_id = getattr(reference, "message_id", None)
+        if reply_message_id is None:
+            return None
+
+        return MessageId(
+            self._message_key(reply_message_id),
         )
 
     async def _canonical_attachment(

@@ -305,8 +305,13 @@ class FakeEmoji:
 
 
 class FakeReference:
-    def __init__(self, message_id: int | None) -> None:
+    def __init__(
+        self,
+        message_id: int | None,
+        resolved=None,
+    ) -> None:
         self.message_id = message_id
+        self.resolved = resolved
 
 
 class FakeMessage:
@@ -419,6 +424,44 @@ def test_iter_messages_maps_content_reply_attachment_reaction_and_pin_state() ->
     assert canonical.reactions[0].is_custom is True
 
     assert adapter.attachment_bytes(canonical.attachments[0]) == b"hello attachment"
+
+
+def test_iter_messages_preserves_unresolved_reply_reference() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(
+        10,
+        "first",
+        1,
+        created,
+    )
+    message = FakeMessage(
+        100,
+        channel,
+        user,
+        created,
+        "reply whose target is unavailable",
+        reference=FakeReference(90, resolved=None),
+    )
+    channel._messages = (message,)
+
+    adapter = DiscordSourceAdapter(
+        FakeClient(FakeGuild()),
+        [123],
+    )
+    adapter._conversation_channels[
+        "discord:guild:123:channel:10"
+    ] = channel
+
+    conversation = next(
+        item
+        for item in adapter.iter_conversations()
+        if str(item.id).endswith("channel:10")
+    )
+
+    canonical = list(adapter.iter_messages(conversation))[0]
+
+    assert canonical.reply_to == "discord:message:90"
 
 
 def test_iter_messages_preserves_chronological_order() -> None:
