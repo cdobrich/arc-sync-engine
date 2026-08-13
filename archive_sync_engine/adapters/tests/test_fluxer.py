@@ -304,6 +304,48 @@ def test_create_message_passes_initial_attachment_payload() -> None:
     ]
 
 
+def test_create_message_combines_initial_attachment_reply_and_masqueraded_author() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", "auth-key"),
+        ),
+    )
+    attachment = _attachment()
+
+    result = adapter.create_message(
+        _message(),
+        DestinationConversationRef("fluxer-channel-1"),
+        ((attachment, b"hello"),),
+        reply_to=DestinationMessageRef(
+            "fluxer-parent-message",
+            conversation_id="fluxer-channel-1",
+        ),
+    )
+
+    assert result == DestinationMessageRef(
+        "fluxer-message-1",
+        conversation_id="fluxer-channel-1",
+    )
+    assert client.calls[-1] == (
+        "send_message",
+        (),
+        {
+            "channel_id": "fluxer-channel-1",
+            "content": "hello",
+            "attachments": [
+                {
+                    "filename": "hello.txt",
+                    "data": b"hello",
+                },
+            ],
+            "author_name": "identity-1",
+            "reply_to_id": "fluxer-parent-message",
+        },
+    )
+
+
 def test_edit_message_uses_persisted_conversation_id() -> None:
     client = FakeFluxerClient()
     adapter = FluxerDestinationAdapter(client)
@@ -494,7 +536,6 @@ def test_custom_reaction_removal_is_rejected() -> None:
             ),
         )
 
-
 def test_custom_reaction_requires_emoji_id() -> None:
     adapter = FluxerDestinationAdapter(
         FakeFluxerClient(),
@@ -513,6 +554,7 @@ def test_custom_reaction_requires_emoji_id() -> None:
                 is_custom=True,
             ),
         )
+
 
 def test_unsupported_attachment_mutation_is_rejected() -> None:
     adapter = FluxerDestinationAdapter(FakeFluxerClient())
@@ -619,4 +661,3 @@ def test_create_message_passes_initial_reply_reference_to_fluxer() -> None:
     )
 
     assert client.calls[-1][2]["reply_to_id"] == "fluxer-parent-message"
-
