@@ -1,3 +1,4 @@
+
 """End-to-end synchronization tests using the Fluxer destination adapter."""
 
 from __future__ import annotations
@@ -763,4 +764,5 @@ def test_fluxer_initial_reply_and_reaction_complete_together(
     assert state.message_reply_to["message-2"] == target.id
     assert state.message_reactions["message-2"] == (reaction,)
     assert state.message_fingerprints["message-2"] == canonical_fingerprint(reply)
+
 

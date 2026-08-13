@@ -1,3 +1,4 @@
+
 """
 Tests for the synchronization planner.
 """
@@ -2784,3 +2785,4 @@ def test_plan_rejects_initial_reply_when_target_is_not_already_synchronized() ->
 
     with pytest.raises(CapabilityError, match="supports_replying"):
         _planned_operations(Planner(), archive, SynchronizationState(), capabilities)
+

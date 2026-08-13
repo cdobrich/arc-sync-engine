@@ -1,3 +1,4 @@
+
 """Fluxer destination adapter.
 
 This adapter translates canonical Archive-Sync Engine operations into calls to
@@ -554,3 +555,4 @@ def _required_id(value: Any, description: str) -> str:
 
 def _optional_id(value: Any) -> str | None:
     return None if value is None else str(value)
+

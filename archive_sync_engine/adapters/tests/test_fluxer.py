@@ -480,6 +480,40 @@ def test_custom_reaction_is_rejected() -> None:
         )
 
 
+def test_custom_reaction_removal_is_rejected() -> None:
+    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+
+    with pytest.raises(CapabilityError):
+        adapter.remove_reaction(
+            _message_ref(),
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-1"),
+                emoji="custom",
+                emoji_id=EmojiId("emoji-1"),
+                is_custom=True,
+            ),
+        )
+
+
+def test_custom_reaction_requires_emoji_id() -> None:
+    adapter = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", "auth-key"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="emoji_id"):
+        adapter.add_reaction(
+            _message_ref(),
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-1"),
+                emoji="custom",
+                emoji_id=None,
+                is_custom=True,
+            ),
+        )
+
 def test_unsupported_attachment_mutation_is_rejected() -> None:
     adapter = FluxerDestinationAdapter(FakeFluxerClient())
 
@@ -585,3 +619,4 @@ def test_create_message_passes_initial_reply_reference_to_fluxer() -> None:
     )
 
     assert client.calls[-1][2]["reply_to_id"] == "fluxer-parent-message"
+
