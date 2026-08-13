@@ -2484,3 +2484,49 @@ def test_plan_rejects_mixed_message_changes_before_exposing_any_operations() -> 
                 capabilities=capabilities,
             ),
         )
+
+
+def test_plan_rejects_unsupported_conversation_updates() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": "old-fingerprint",
+        },
+        conversation_parent_ids={
+            "conversation-001": None,
+        },
+    )
+
+    with pytest.raises(CapabilityError, match="supports_conversation_updates"):
+        list(
+            Planner().plan(
+                archive,
+                state,
+                _capabilities(supports_conversation_updates=False),
+            )
+        )
+
+
+def test_plan_rejects_unsupported_identity_creation() -> None:
+    archive = _archive()
+    identity = _identity("identity-001")
+
+    archive.iter_identities.return_value = iter([identity])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.return_value = iter([])
+
+    with pytest.raises(CapabilityError, match="supports_identity_creation"):
+        list(
+            Planner().plan(
+                archive,
+                SynchronizationState(),
+                _capabilities(supports_identity_creation=False),
+            )
+        )

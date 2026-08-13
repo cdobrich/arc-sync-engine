@@ -291,6 +291,12 @@ class Planner:
             )
 
         if previous_fingerprint != fingerprint:
+            self._require_capability(
+                capabilities.supports_conversation_updates,
+                "supports_conversation_updates",
+                "update conversations",
+            )
+
             if conversation.conversation_type == ConversationType.THREAD:
                 self._require_capability(
                     capabilities.supports_threads,
@@ -318,6 +324,11 @@ class Planner:
             fingerprint = canonical_fingerprint(identity)
 
             if identity_key not in synchronization_state.identities:
+                self._require_capability(
+                    capabilities.supports_identity_creation,
+                    "supports_identity_creation",
+                    "create identities",
+                )
                 yield CreateIdentityOperation(
                     identity=identity,
                 )

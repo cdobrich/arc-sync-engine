@@ -1,25 +1,25 @@
-# archive_sync_engine/adapters/tests/test_fluxer.py
-
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
 import pytest
 
-from archive_sync_engine.adapters.fluxer import FluxerDestinationAdapter
-from archive_sync_engine.adapters.exceptions import (
+from archive_sync_engine.adapters import (
     AdapterError,
     CapabilityError,
-)
-from archive_sync_engine.adapters.references import (
     DestinationConversationRef,
     DestinationMessageRef,
+    FluxerDestinationAdapter,
+    FluxerIdentityMapping,
 )
 from archive_sync_engine.models import (
     CanonicalAttachment,
+    CanonicalConversation,
     CanonicalMessage,
     CanonicalReaction,
 )
+from archive_sync_engine.models.enums import ConversationType
 from archive_sync_engine.models.ids import (
     AttachmentId,
     ConversationId,
@@ -37,22 +37,16 @@ class FakeFluxerClient:
             "channel_id": "fluxer-channel-1",
         }
 
-    async def create_conversation(
-        self,
-        name: str,
-        channel_type: int,
-    ):
-        self.calls.append(
-            ("create_conversation", (name, channel_type), {}),
-        )
+    async def _create_fluxer_channel_from_discord(self, channel_data):
+        self.calls.append(("create_conversation", (), channel_data))
         return {"id": "fluxer-channel-1"}
 
     async def send_message(
         self,
-        channel_id: str,
-        content: str,
+        channel_id,
+        content,
         attachments=None,
-        max_retries: int = 3,
+        max_retries=3,
         author_name=None,
         reply_to_id=None,
     ):
@@ -67,17 +61,17 @@ class FakeFluxerClient:
                     "author_name": author_name,
                     "reply_to_id": reply_to_id,
                 },
-            ),
+            )
         )
         return self.send_result
 
     async def edit_message(
         self,
-        channel_id: str,
-        message_id: str,
-        new_content: str,
+        channel_id,
+        message_id,
+        new_content,
         new_attachments=None,
-        max_retries: int = 3,
+        max_retries=3,
     ):
         self.calls.append(
             (
@@ -88,95 +82,40 @@ class FakeFluxerClient:
                     "message_id": message_id,
                     "content": new_content,
                 },
-            ),
+            )
         )
         return True
 
-    async def delete_message(
-        self,
-        channel_id: str,
-        message_id: str,
-        max_retries: int = 3,
-    ):
+    async def delete_message(self, channel_id, message_id, max_retries=3):
         self.calls.append(
             (
                 "delete_message",
                 (),
-                {
-                    "channel_id": channel_id,
-                    "message_id": message_id,
-                },
-            ),
+                {"channel_id": channel_id, "message_id": message_id},
+            )
         )
         return True
 
-    async def delete_channel(self, channel_id: str):
-        self.calls.append(
-            ("delete_channel", (channel_id,), {}),
-        )
+    async def delete_channel(self, channel_id):
+        self.calls.append(("delete_channel", (channel_id,), {}))
         return True
 
-    async def pin_message(
-        self,
-        channel_id: str,
-        message_id: str,
-        max_retries: int = 3,
-    ):
-        self.calls.append(
-            (
-                "pin_message",
-                (),
-                {
-                    "channel_id": channel_id,
-                    "message_id": message_id,
-                },
-            ),
-        )
-        return True
-
-    async def unpin_message(
-        self,
-        channel_id: str,
-        message_id: str,
-        max_retries: int = 3,
-    ):
-        self.calls.append(
-            (
-                "unpin_message",
-                (),
-                {
-                    "channel_id": channel_id,
-                    "message_id": message_id,
-                },
-            ),
-        )
-        return True
-
-    async def apply_reaction(
-        self,
-        channel_id: str,
-        message_id: str,
-        emoji: str,
-    ):
+    async def apply_reaction(self, channel_id, message_id, emoji):
         self.calls.append(
             (
                 "apply_reaction",
                 (),
-                {
-                    "channel_id": channel_id,
-                    "message_id": message_id,
-                    "emoji": emoji,
-                },
-            ),
+                {"channel_id": channel_id, "message_id": message_id, "emoji": emoji},
+            )
         )
         return True
 
     async def remove_reaction(
         self,
-        channel_id: str,
-        message_id: str,
-        emoji_id_or_name: str,
-        user_id: str = "@me",
+        channel_id,
+        message_id,
+        emoji_id_or_name,
+        user_id="@me",
     ):
         self.calls.append(
             (
@@ -187,32 +126,133 @@ class FakeFluxerClient:
                     "message_id": message_id,
                     "emoji_id_or_name": emoji_id_or_name,
                 },
-            ),
+            )
+        )
+        return True
+
+    async def pin_message(self, channel_id, message_id, max_retries=3):
+        self.calls.append(
+            (
+                "pin_message",
+                (),
+                {"channel_id": channel_id, "message_id": message_id},
+            )
+        )
+        return True
+
+    async def unpin_message(self, channel_id, message_id, max_retries=3):
+        self.calls.append(
+            (
+                "unpin_message",
+                (),
+                {"channel_id": channel_id, "message_id": message_id},
+            )
         )
         return True
 
 
-def _message(
-    *,
-    content: str = "hello",
-) -> CanonicalMessage:
+def _message(*, content: str = "hello") -> CanonicalMessage:
     return CanonicalMessage(
         id=MessageId("message-1"),
         conversation_id=ConversationId("conversation-1"),
         identity_key=IdentityKey("identity-1"),
         content=content,
-        created_at=datetime(
-            2026,
-            1,
-            1,
-            tzinfo=timezone.utc,
-        ),
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
 
-def test_create_message_returns_fluxer_message_reference_with_channel() -> None:
+def _attachment() -> CanonicalAttachment:
+    return CanonicalAttachment(
+        id=AttachmentId("attachment-1"),
+        filename="hello.txt",
+        content_type="text/plain",
+        size=5,
+        sha256="a" * 64,
+    )
+
+
+def _message_ref() -> DestinationMessageRef:
+    return DestinationMessageRef(
+        "fluxer-message-1",
+        conversation_id="fluxer-channel-1",
+    )
+
+
+def test_fluxer_adapter_reports_current_capabilities() -> None:
+    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+    capabilities = adapter.capabilities
+
+    assert capabilities.supports_threads is False
+    assert capabilities.supports_message_editing is True
+    assert capabilities.supports_conversation_updates is False
+    assert capabilities.supports_message_deletion is True
+    assert capabilities.supports_conversation_deletion is True
+    assert capabilities.supports_message_pinning is True
+    assert capabilities.supports_reactions is True
+    assert capabilities.supports_custom_emoji is False
+    assert capabilities.supports_attachments is False
+    assert capabilities.supports_replying is False
+    assert capabilities.supports_identity_creation is False
+    assert capabilities.supports_identity_updates is False
+    assert capabilities.supports_identity_deletion is False
+
+
+def test_create_conversation_maps_canonical_channel() -> None:
     client = FakeFluxerClient()
     adapter = FluxerDestinationAdapter(client)
+
+    conversation = CanonicalConversation(
+        id=ConversationId("conversation-1"),
+        conversation_type=ConversationType.CHANNEL,
+        title="general",
+    )
+
+    result = adapter.create_conversation(conversation)
+
+    assert result == DestinationConversationRef("fluxer-channel-1")
+    assert client.calls == [
+        (
+            "create_conversation",
+            (),
+            {"name": "general", "type": 0},
+        ),
+    ]
+
+
+def test_create_thread_is_rejected() -> None:
+    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+    conversation = CanonicalConversation(
+        id=ConversationId("thread-1"),
+        conversation_type=ConversationType.THREAD,
+        title="thread",
+        parent_id=ConversationId("conversation-1"),
+    )
+
+    with pytest.raises(CapabilityError):
+        adapter.create_conversation(conversation)
+
+
+def test_delete_conversation_uses_destination_reference() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(client)
+
+    adapter.delete_conversation(DestinationConversationRef("fluxer-channel-1"))
+
+    assert client.calls[-1] == (
+        "delete_channel",
+        ("fluxer-channel-1",),
+        {},
+    )
+
+
+def test_create_message_returns_reference_with_conversation() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", "auth-key"),
+        ),
+    )
 
     result = adapter.create_message(
         _message(),
@@ -223,33 +263,14 @@ def test_create_message_returns_fluxer_message_reference_with_channel() -> None:
         "fluxer-message-1",
         conversation_id="fluxer-channel-1",
     )
-
-    assert client.calls == [
-        (
-            "send_message",
-            (),
-            {
-                "channel_id": "fluxer-channel-1",
-                "content": "hello",
-                "attachments": None,
-                "author_name": None,
-                "reply_to_id": None,
-            },
-        ),
-    ]
+    assert client.calls[-1][2]["author_name"] == "identity-1"
+    assert client.calls[-1][2]["reply_to_id"] is None
 
 
-def test_create_message_passes_attachment_bytes_to_fluxer() -> None:
+def test_create_message_passes_initial_attachment_payload() -> None:
     client = FakeFluxerClient()
     adapter = FluxerDestinationAdapter(client)
-
-    attachment = CanonicalAttachment(
-        id=AttachmentId("attachment-1"),
-        filename="hello.txt",
-        content_type="text/plain",
-        size=5,
-        sha256="a" * 64,
-    )
+    attachment = _attachment()
 
     adapter.create_message(
         _message(),
@@ -257,11 +278,8 @@ def test_create_message_passes_attachment_bytes_to_fluxer() -> None:
         ((attachment, b"hello"),),
     )
 
-    assert client.calls[0][2]["attachments"] == [
-        {
-            "filename": "hello.txt",
-            "data": b"hello",
-        },
+    assert client.calls[-1][2]["attachments"] == [
+        {"filename": "hello.txt", "data": b"hello"},
     ]
 
 
@@ -269,35 +287,20 @@ def test_edit_message_uses_persisted_conversation_id() -> None:
     client = FakeFluxerClient()
     adapter = FluxerDestinationAdapter(client)
 
-    adapter.edit_message(
-        _message(content="updated"),
-        DestinationMessageRef(
-            "fluxer-message-1",
-            conversation_id="fluxer-channel-1",
-        ),
-    )
+    adapter.edit_message(_message(content="updated"), _message_ref())
 
-    assert client.calls[-1] == (
-        "edit_message",
-        (),
-        {
-            "channel_id": "fluxer-channel-1",
-            "message_id": "fluxer-message-1",
-            "content": "updated",
-        },
-    )
+    assert client.calls[-1][2] == {
+        "channel_id": "fluxer-channel-1",
+        "message_id": "fluxer-message-1",
+        "content": "updated",
+    }
 
 
 def test_delete_message_uses_persisted_conversation_id() -> None:
     client = FakeFluxerClient()
     adapter = FluxerDestinationAdapter(client)
 
-    adapter.delete_message(
-        DestinationMessageRef(
-            "fluxer-message-1",
-            conversation_id="fluxer-channel-1",
-        ),
-    )
+    adapter.delete_message(_message_ref())
 
     assert client.calls[-1][0] == "delete_message"
     assert client.calls[-1][2]["channel_id"] == "fluxer-channel-1"
@@ -307,13 +310,8 @@ def test_pin_and_unpin_use_persisted_conversation_id() -> None:
     client = FakeFluxerClient()
     adapter = FluxerDestinationAdapter(client)
 
-    message = DestinationMessageRef(
-        "fluxer-message-1",
-        conversation_id="fluxer-channel-1",
-    )
-
-    adapter.pin_message(message)
-    adapter.unpin_message(message)
+    adapter.pin_message(_message_ref())
+    adapter.unpin_message(_message_ref())
 
     assert [call[0] for call in client.calls] == [
         "pin_message",
@@ -326,10 +324,7 @@ def test_standard_reaction_is_forwarded() -> None:
     adapter = FluxerDestinationAdapter(client)
 
     adapter.add_reaction(
-        DestinationMessageRef(
-            "fluxer-message-1",
-            conversation_id="fluxer-channel-1",
-        ),
+        _message_ref(),
         CanonicalReaction(
             identity_key=IdentityKey("identity-1"),
             emoji="👍",
@@ -342,15 +337,11 @@ def test_standard_reaction_is_forwarded() -> None:
 
 
 def test_custom_reaction_is_rejected() -> None:
-    client = FakeFluxerClient()
-    adapter = FluxerDestinationAdapter(client)
+    adapter = FluxerDestinationAdapter(FakeFluxerClient())
 
     with pytest.raises(CapabilityError):
         adapter.add_reaction(
-            DestinationMessageRef(
-                "fluxer-message-1",
-                conversation_id="fluxer-channel-1",
-            ),
+            _message_ref(),
             CanonicalReaction(
                 identity_key=IdentityKey("identity-1"),
                 emoji="custom",
@@ -360,50 +351,52 @@ def test_custom_reaction_is_rejected() -> None:
         )
 
 
-def test_attachment_mutation_is_rejected() -> None:
-    client = FakeFluxerClient()
-    adapter = FluxerDestinationAdapter(client)
+def test_unsupported_attachment_mutation_is_rejected() -> None:
+    adapter = FluxerDestinationAdapter(FakeFluxerClient())
 
-    attachment = CanonicalAttachment(
-        id=AttachmentId("attachment-1"),
-        filename="hello.txt",
-        content_type="text/plain",
-        size=5,
-        sha256="a" * 64,
+    with pytest.raises(CapabilityError):
+        adapter.add_attachment(_message_ref(), _attachment(), b"hello")
+
+
+def test_unsupported_reply_is_rejected() -> None:
+    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+
+    with pytest.raises(CapabilityError):
+        adapter.set_message_reply(_message_ref(), _message_ref())
+
+
+def test_identity_creation_is_rejected() -> None:
+    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+
+    from archive_sync_engine.models import CanonicalIdentity
+
+    with pytest.raises(CapabilityError):
+        adapter.create_identity(
+            CanonicalIdentity(
+                identity_key=IdentityKey("identity-1"),
+                display_name="identity-1",
+            )
+        )
+
+
+def test_conversation_update_is_rejected() -> None:
+    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+    conversation = CanonicalConversation(
+        id=ConversationId("conversation-1"),
+        conversation_type=ConversationType.CHANNEL,
+        title="general",
     )
 
     with pytest.raises(CapabilityError):
-        adapter.add_attachment(
-            DestinationMessageRef(
-                "fluxer-message-1",
-                conversation_id="fluxer-channel-1",
-            ),
-            attachment,
-            b"hello",
+        adapter.update_conversation(
+            conversation,
+            DestinationConversationRef("fluxer-channel-1"),
         )
 
 
-def test_reply_is_rejected_until_fluxer_reply_slice_exists() -> None:
-    client = FakeFluxerClient()
-    adapter = FluxerDestinationAdapter(client)
-
-    with pytest.raises(CapabilityError):
-        adapter.set_message_reply(
-            DestinationMessageRef(
-                "fluxer-message-1",
-                conversation_id="fluxer-channel-1",
-            ),
-            DestinationMessageRef(
-                "fluxer-message-2",
-                conversation_id="fluxer-channel-1",
-            ),
-        )
-
-
-def test_fluxer_failure_does_not_return_success() -> None:
+def test_failed_message_creation_raises_adapter_error() -> None:
     client = FakeFluxerClient()
     client.send_result = None
-
     adapter = FluxerDestinationAdapter(client)
 
     with pytest.raises(AdapterError):
@@ -411,3 +404,17 @@ def test_fluxer_failure_does_not_return_success() -> None:
             _message(),
             DestinationConversationRef("fluxer-channel-1"),
         )
+
+
+def test_adapter_rejects_use_inside_running_event_loop() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(client)
+
+    async def invoke() -> None:
+        with pytest.raises(RuntimeError):
+            adapter.create_message(
+                _message(),
+                DestinationConversationRef("fluxer-channel-1"),
+            )
+
+    asyncio.run(invoke())

@@ -37,6 +37,7 @@ from .exceptions import (
 
 from .source import SourceAdapter
 from .discord import DiscordSourceAdapter
+from .fluxer import FluxerDestinationAdapter, FluxerIdentityMapping
 from .references import (
     DestinationAttachmentRef,
     DestinationConversationRef,
@@ -55,6 +56,8 @@ __all__ = [
     "DestinationCapabilities",
     "DestinationConversationRef",
     "DiscordSourceAdapter",
+    "FluxerDestinationAdapter",
+    "FluxerIdentityMapping",
     "DestinationIdentityRef",
     "DestinationMessageRef",
     "NotFoundError",

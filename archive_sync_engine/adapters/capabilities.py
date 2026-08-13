@@ -25,6 +25,7 @@ class DestinationCapabilities:
 
     supports_threads: bool = False
     supports_message_editing: bool = True
+    supports_conversation_updates: bool = True
     supports_message_deletion: bool = True
     supports_conversation_deletion: bool = True
     supports_message_pinning: bool = True
@@ -33,5 +34,6 @@ class DestinationCapabilities:
     supports_attachments: bool = True
     supports_attachment_reordering: bool = False
     supports_replying: bool = True
+    supports_identity_creation: bool = True
     supports_identity_updates: bool = False
     supports_identity_deletion: bool = False
