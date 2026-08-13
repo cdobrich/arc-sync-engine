@@ -49,9 +49,14 @@ class ArchiveWriter:
         self._paths = paths
         self._paths.ensure_exists()
 
-        self._store = ArchiveStore.create(
-            paths,
-        )
+        if paths.database.exists():
+            self._store = ArchiveStore.open(
+                paths,
+            )
+        else:
+            self._store = ArchiveStore.create(
+                paths,
+            )
 
         self._package = ArchivePackage(
             paths,

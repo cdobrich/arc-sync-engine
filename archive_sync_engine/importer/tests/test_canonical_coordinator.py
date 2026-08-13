@@ -350,3 +350,111 @@ def test_canonical_import_coordinator_has_no_session_before_run(
         FileNotFoundError,
     ):
         coordinator.load_session()
+class ResumableSourceAdapter(SourceAdapter):
+    def __init__(self) -> None:
+        self.fail_second_message = True
+        self.message_visits: list[str] = []
+        self._identity = CanonicalIdentity(
+            identity_key=IdentityKey("identity-001"),
+            display_name="Alice",
+        )
+        self._conversation = CanonicalConversation(
+            id=ConversationId("conversation-001"),
+            conversation_type=ConversationType.CHANNEL,
+            title="General",
+        )
+        self._messages = (
+            CanonicalMessage(
+                id=MessageId("message-001"),
+                conversation_id=self._conversation.id,
+                identity_key=self._identity.identity_key,
+                content="first",
+                created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            ),
+            CanonicalMessage(
+                id=MessageId("message-002"),
+                conversation_id=self._conversation.id,
+                identity_key=self._identity.identity_key,
+                content="second",
+                created_at=datetime(2026, 8, 1, 0, 1, tzinfo=timezone.utc),
+            ),
+        )
+
+    @property
+    def name(self) -> str:
+        return "Resumable"
+
+    def iter_identities(self):
+        yield self._identity
+
+    def iter_conversations(self):
+        yield self._conversation
+
+    def iter_messages(self, conversation):
+        for message in self._messages:
+            self.message_visits.append(str(message.id))
+            if message.id == MessageId("message-002") and self.fail_second_message:
+                raise RuntimeError("second message failed")
+            yield message
+
+    def attachment_bytes(self, attachment):
+        raise AssertionError("No attachments are used in this test.")
+
+
+def test_canonical_import_coordinator_commits_completed_messages_before_failure(
+    tmp_path: Path,
+) -> None:
+    paths = ArchivePaths(root=tmp_path)
+    source = ResumableSourceAdapter()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    with pytest.raises(RuntimeError, match="second message failed"):
+        coordinator.run(source)
+
+    with Archive(paths) as archive:
+        assert tuple(message.id for message in archive.iter_messages()) == (
+            MessageId("message-001"),
+        )
+
+    state = coordinator.load_import_state()
+    assert state.payload == {
+        "conversation_id": "conversation-001",
+        "message_id": "message-001",
+    }
+
+
+def test_canonical_import_coordinator_resumes_from_last_committed_message(
+    tmp_path: Path,
+) -> None:
+    paths = ArchivePaths(root=tmp_path)
+    source = ResumableSourceAdapter()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    with pytest.raises(RuntimeError, match="second message failed"):
+        coordinator.run(source)
+
+    source.fail_second_message = False
+    source.message_visits.clear()
+
+    coordinator.run(source, resume=True)
+
+    assert source.message_visits == [
+        "message-001",
+        "message-002",
+    ]
+
+    with Archive(paths) as archive:
+        assert tuple(message.id for message in archive.iter_messages()) == (
+            MessageId("message-001"),
+            MessageId("message-002"),
+        )
+
+    state = coordinator.load_import_state()
+    assert state.payload == {
+        "conversation_id": "conversation-001",
+        "message_id": "message-002",
+    }
+
+    session = coordinator.load_session()
+    assert session.completed is True
+    assert session.error is None

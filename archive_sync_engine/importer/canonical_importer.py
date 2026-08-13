@@ -53,6 +53,7 @@ class CanonicalImporter:
             [ImportState],
             None,
         ] | None = None,
+        resume_state: ImportState | None = None,
     ) -> None:
         """
         Import all canonical information available from a source.
@@ -75,15 +76,15 @@ class CanonicalImporter:
         #
         # Identities
         #
-        # Import identities before conversations and messages so the
-        # archive contains the logical identities referenced by messages.
+        # A resumed import already has all identities from the original
+        # import pass because identities are traversed before messages.
+        # Skip them during resume so we do not reinsert already-persisted
+        # records.
         #
 
-        for identity in source.iter_identities():
-
-            writer.add_identity(
-                identity,
-            )
+        if resume_state is None:
+            for identity in source.iter_identities():
+                writer.add_identity(identity)
 
         #
         # Conversations and messages
@@ -92,15 +93,48 @@ class CanonicalImporter:
         # messages are requested for a specific canonical conversation.
         #
 
+        resume_conversation_id = None
+        resume_message_id = None
+        if resume_state is not None:
+            resume_conversation_id = resume_state.payload.get(
+                "conversation_id",
+            )
+            resume_message_id = resume_state.payload.get(
+                "message_id",
+            )
+
+        resume_reached = resume_state is None
+
         for conversation in source.iter_conversations():
 
-            writer.add_conversation(
-                conversation,
+            conversation_id = str(conversation.id)
+
+            resume_conversation = False
+            if resume_state is not None and not resume_reached:
+                if conversation_id == resume_conversation_id:
+                    resume_reached = True
+                    resume_conversation = True
+                else:
+                    continue
+
+            if not resume_conversation:
+                writer.add_conversation(conversation)
+
+            skipping_messages = (
+                resume_state is not None
+                and conversation_id == resume_conversation_id
+                and resume_message_id is not None
             )
 
             for message in source.iter_messages(
                 conversation,
             ):
+
+                if skipping_messages:
+                    if str(message.id) == str(resume_message_id):
+                        skipping_messages = False
+                        continue
+                    continue
 
                 #
                 # Persist the complete canonical message aggregate.

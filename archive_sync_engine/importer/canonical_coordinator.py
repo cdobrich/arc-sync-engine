@@ -57,6 +57,8 @@ class CanonicalImportCoordinator:
     def run(
         self,
         source: SourceAdapter,
+        *,
+        resume: bool = False,
     ) -> None:
         """
         Execute a complete canonical import.
@@ -88,9 +90,17 @@ class CanonicalImportCoordinator:
         )
 
         try:
+            resume_state = None
+            if resume:
+                resume_state = self.load_import_state()
+
             with ArchiveWriter(
                 self._paths,
             ) as writer:
+
+                def checkpoint(state: ImportState) -> None:
+                    writer.commit()
+                    self.save_import_state(state)
 
                 importer = CanonicalImporter()
 
@@ -98,7 +108,8 @@ class CanonicalImportCoordinator:
                     source=source,
                     writer=writer,
                     asset_store=self._package.asset_store,
-                    on_progress=self.save_import_state,
+                    on_progress=checkpoint,
+                    resume_state=resume_state,
                 )
 
             finished_at = datetime.now(
