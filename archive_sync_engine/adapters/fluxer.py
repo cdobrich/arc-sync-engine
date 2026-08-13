@@ -143,7 +143,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
             supports_message_deletion=True,
             supports_conversation_deletion=True,
             supports_message_pinning=True,
-            supports_reactions=True,
+            supports_reactions=False,
             supports_custom_emoji=False,
             supports_attachments=False,
             supports_initial_message_attachments=True,

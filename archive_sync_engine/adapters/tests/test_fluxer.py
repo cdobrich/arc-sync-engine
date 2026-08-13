@@ -188,7 +188,7 @@ def test_fluxer_adapter_reports_current_capabilities() -> None:
     assert capabilities.supports_message_deletion is True
     assert capabilities.supports_conversation_deletion is True
     assert capabilities.supports_message_pinning is True
-    assert capabilities.supports_reactions is True
+    assert capabilities.supports_reactions is False
     assert capabilities.supports_custom_emoji is False
     assert capabilities.supports_attachments is False
     assert capabilities.supports_initial_message_attachments is True
@@ -318,6 +318,12 @@ def test_pin_and_unpin_use_persisted_conversation_id() -> None:
         "pin_message",
         "unpin_message",
     ]
+
+
+def test_capabilities_do_not_advertise_reaction_synchronization() -> None:
+    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+
+    assert adapter.capabilities.supports_reactions is False
 
 
 def test_standard_reaction_is_forwarded() -> None:

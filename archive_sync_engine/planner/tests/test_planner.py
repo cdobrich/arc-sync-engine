@@ -2591,3 +2591,56 @@ def test_plan_rejects_attachments_when_neither_initial_nor_incremental_supported
                 capabilities,
             )
         )
+
+
+def test_fluxer_capabilities_reject_canonical_reactions_before_execution() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    reaction = _reaction()
+    message = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=conversation.id,
+        identity_key=IdentityKey("identity-001"),
+        content="hello",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        reactions=(reaction,),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock()},
+        message_fingerprints={
+            "message-001": canonical_fingerprint(
+                replace(message, reactions=()),
+            ),
+        },
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_reactions={"message-001": ()},
+        message_attachments={"message-001": ()},
+        message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
+    )
+
+    from archive_sync_engine.adapters.fluxer import FluxerDestinationAdapter
+    from archive_sync_engine.adapters.tests.test_fluxer import FakeFluxerClient
+
+    capabilities = FluxerDestinationAdapter(FakeFluxerClient()).capabilities
+
+    with pytest.raises(CapabilityError, match="supports_reactions"):
+        list(
+            Planner().plan(
+                archive=archive,
+                synchronization_state=state,
+                capabilities=capabilities,
+            ),
+        )
