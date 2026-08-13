@@ -12,6 +12,8 @@ Vertical Slice 16 covers Discord identity and conversation discovery.
 Vertical Slice 17 adds chronological message translation, including replies,
 reactions, pins, and attachment metadata/bytes required by the canonical
 message import contract.
+Vertical Slice 19 adds active-thread discovery.
+Vertical Slice 20 adds archived-thread discovery.
 """
 
 from __future__ import annotations
@@ -95,10 +97,14 @@ class DiscordSourceAdapter(SourceAdapter):
         conversations: dict[str, CanonicalConversation] = {}
 
         for guild in self._iter_guilds():
-            channels = sorted(
+            channels = list(
                 self._message_bearing_channels(guild),
-                key=self._channel_sort_key,
             )
+            archived_threads = self._run(
+                self._collect_archived_threads(guild),
+            )
+            channels.extend(archived_threads)
+            channels.sort(key=self._channel_sort_key)
 
             for channel in channels:
                 conversation = self._canonical_conversation(
@@ -409,6 +415,48 @@ class DiscordSourceAdapter(SourceAdapter):
 
             seen_ids.add(key)
             yield channel
+
+    @staticmethod
+    async def _collect_archived_threads(
+        guild: Any,
+    ) -> list[Any]:
+        """Collect public and private archived threads from message channels.
+
+        ``discord.py`` exposes archived threads through the parent channel's
+        ``archived_threads`` async iterator rather than ``Guild.threads``.
+        Passing ``limit=None`` requests the complete available archive.
+        Private archived threads require the permissions enforced by
+        ``discord.py``; permission failures therefore propagate instead of
+        silently producing an incomplete canonical archive.
+        """
+        archived: dict[str, Any] = {}
+
+        for channel in getattr(guild, "channels", ()):
+            if DiscordSourceAdapter._is_thread(channel):
+                continue
+
+            archived_threads = getattr(channel, "archived_threads", None)
+            if archived_threads is None:
+                continue
+
+            for private in (False, True):
+                iterator = archived_threads(
+                    private=private,
+                    joined=False,
+                    limit=None,
+                )
+                async for thread in iterator:
+                    thread_id = getattr(thread, "id", None)
+                    if thread_id is None:
+                        raise AdapterError(
+                            "Discord archived thread has no ID."
+                        )
+                    archived.setdefault(str(thread_id), thread)
+
+        return sorted(
+            archived.values(),
+            key=DiscordSourceAdapter._channel_sort_key,
+        )
 
     @staticmethod
     def _is_message_bearing_channel(channel: Any) -> bool:

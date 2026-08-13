@@ -42,6 +42,17 @@ class FakeChannel:
         self.position = position
         self.created_at = created_at
         self.type = SimpleNamespace(name="text")
+        self._archived_threads: dict[bool, tuple[FakeThread, ...]] = {
+            False: (),
+            True: (),
+        }
+
+    def archived_threads(self, *, private=False, joined=False, limit=None):
+        async def iterator():
+            for thread in self._archived_threads[private]:
+                yield thread
+
+        return iterator()
 
 
 class FakeThread:
@@ -154,6 +165,38 @@ def test_iter_conversations_includes_active_guild_threads_without_duplicates() -
     assert conversations[1].parent_id == (
         "discord:guild:123:channel:10"
     )
+
+
+def test_iter_conversations_includes_archived_public_and_private_threads() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    guild = FakeGuild()
+    parent = FakeChannel(10, "first", 1, created)
+    public_thread = FakeThread(40, "archived-public", 10, 40, created)
+    private_thread = FakeThread(50, "archived-private", 10, 50, created)
+    duplicate_thread = FakeThread(40, "duplicate", 10, 41, created)
+    parent._archived_threads = {
+        False: (public_thread, duplicate_thread),
+        True: (private_thread,),
+    }
+    guild.channels = [parent]
+    guild.threads = []
+
+    adapter = DiscordSourceAdapter(
+        FakeClient(guild),
+        [123],
+    )
+
+    conversations = list(adapter.iter_conversations())
+
+    assert [str(item.id) for item in conversations] == [
+        "discord:guild:123:channel:10",
+        "discord:guild:123:channel:40",
+        "discord:guild:123:channel:50",
+    ]
+    assert conversations[1].conversation_type is ConversationType.THREAD
+    assert conversations[2].conversation_type is ConversationType.THREAD
+    assert conversations[1].parent_id == conversations[0].id
+    assert conversations[2].parent_id == conversations[0].id
 
 
 def test_source_adapter_rejects_sync_calls_inside_running_event_loop() -> None:
