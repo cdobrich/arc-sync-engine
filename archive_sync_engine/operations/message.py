@@ -19,6 +19,7 @@ class CreateMessageOperation(SyncOperation):
 
     message: CanonicalMessage
     include_attachments: bool = False
+    include_reply_to: bool = False
 
 
 @dataclass(frozen=True, slots=True)

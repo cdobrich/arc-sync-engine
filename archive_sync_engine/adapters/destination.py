@@ -169,9 +169,14 @@ class DestinationAdapter(ABC):
         message: CanonicalMessage,
         destination: DestinationConversationRef,
         attachments: tuple[tuple[CanonicalAttachment, bytes], ...] = (),
+        reply_to: DestinationMessageRef | None = None,
     ) -> DestinationMessageRef:
         """
         Create a message on the destination platform.
+
+        ``reply_to`` is an execution-local destination reference used only
+        when the destination can establish a reply relationship during
+        message creation.
         """
         raise NotImplementedError
 

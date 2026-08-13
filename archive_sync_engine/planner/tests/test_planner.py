@@ -79,6 +79,7 @@ def _capabilities(**overrides: bool) -> DestinationCapabilities:
         "supports_custom_emoji": True,
         "supports_attachments": True,
         "supports_initial_message_attachments": False,
+        "supports_initial_message_replying": False,
         "supports_attachment_reordering": True,
         "supports_replying": True,
         "supports_identity_updates": True,
@@ -2644,3 +2645,67 @@ def test_fluxer_capabilities_reject_canonical_reactions_before_execution() -> No
                 capabilities=capabilities,
             ),
         )
+
+
+def test_plan_uses_initial_message_reply_capability_for_existing_target() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    target = _message("message-000", "conversation-001")
+    message = replace(
+        _message("message-001", "conversation-001"),
+        reply_to=target.id,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([target, message])
+
+    capabilities = replace(
+        _capabilities(),
+        supports_replying=False,
+        supports_initial_message_replying=True,
+    )
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={"conversation-001": canonical_fingerprint(conversation)},
+        messages={"message-000": Mock()},
+        message_fingerprints={"message-000": canonical_fingerprint(target)},
+        message_content_fingerprints={"message-000": canonical_message_content_fingerprint(target)},
+        message_reactions={"message-000": ()},
+        message_attachments={"message-000": ()},
+        message_pinned={"message-000": False},
+        message_reply_to={"message-000": None},
+    )
+
+    operations = _planned_operations(Planner(), archive, state, capabilities)
+
+    assert operations == [
+        CreateMessageOperation(
+            message=message,
+            include_reply_to=True,
+        ),
+    ]
+
+
+def test_plan_rejects_initial_reply_when_target_is_not_already_synchronized() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    target = _message("message-000", "conversation-001")
+    message = replace(
+        _message("message-001", "conversation-001"),
+        reply_to=target.id,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([target, message])
+
+    capabilities = replace(
+        _capabilities(),
+        supports_replying=False,
+        supports_initial_message_replying=True,
+    )
+
+    with pytest.raises(CapabilityError, match="supports_replying"):
+        _planned_operations(Planner(), archive, SynchronizationState(), capabilities)

@@ -400,6 +400,7 @@ class Planner:
                 # messages so AssetStore-backed attachments, reactions, pins,
                 # and replies cannot be marked synchronized prematurely.
                 include_initial_attachments = False
+                include_initial_reply = False
                 component_operations: list[SyncOperation] = []
 
                 if message.attachments:
@@ -424,11 +425,6 @@ class Planner:
                                     ),
                                 ),
                             )
-
-                yield CreateMessageOperation(
-                    message=message,
-                    include_attachments=include_initial_attachments,
-                )
 
                 if message.reactions:
                     self._require_capability(
@@ -470,26 +466,44 @@ class Planner:
                     )
 
                 if message.reply_to is not None:
-                    self._require_capability(
-                        capabilities.supports_replying,
-                        "supports_replying",
-                        "set message replies",
-                    )
-                    reply_operations.append(
-                        SetMessageReplyOperation(
-                            message_id=message.id,
-                            reply_to=message.reply_to,
-                            canonical_fingerprint=fingerprint,
-                        ),
-                    )
+                    reply_target_id = str(message.reply_to)
+                    if (
+                        capabilities.supports_initial_message_replying
+                        and reply_target_id in synchronization_state.messages
+                    ):
+                        include_initial_reply = True
+                    else:
+                        self._require_capability(
+                            capabilities.supports_replying,
+                            "supports_replying",
+                            "set message replies",
+                        )
+                        reply_operations.append(
+                            SetMessageReplyOperation(
+                                message_id=message.id,
+                                reply_to=message.reply_to,
+                                canonical_fingerprint=fingerprint,
+                            ),
+                        )
 
                 if component_operations:
-                    if message.reply_to is None:
+                    if message.reply_to is None or include_initial_reply:
                         component_operations[-1] = self._mark_message_operation_complete(
                             operation=component_operations[-1],
                             canonical_fingerprint=fingerprint,
                         )
+                    yield CreateMessageOperation(
+                        message=message,
+                        include_attachments=include_initial_attachments,
+                        include_reply_to=include_initial_reply,
+                    )
                     yield from component_operations
+                else:
+                    yield CreateMessageOperation(
+                        message=message,
+                        include_attachments=include_initial_attachments,
+                        include_reply_to=include_initial_reply,
+                    )
 
                 continue
 

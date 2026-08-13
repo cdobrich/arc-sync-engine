@@ -192,6 +192,7 @@ def test_fluxer_adapter_reports_current_capabilities() -> None:
     assert capabilities.supports_custom_emoji is False
     assert capabilities.supports_attachments is False
     assert capabilities.supports_initial_message_attachments is True
+    assert capabilities.supports_initial_message_replying is True
     assert capabilities.supports_replying is False
     assert capabilities.supports_identity_creation is False
     assert capabilities.supports_identity_updates is False
@@ -446,3 +447,20 @@ def test_create_message_passes_initial_attachment_payload_to_fluxer() -> None:
             "data": content,
         },
     ]
+
+
+def test_create_message_passes_initial_reply_reference_to_fluxer() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(client)
+
+    message = _message()
+    adapter.create_message(
+        message,
+        DestinationConversationRef("fluxer-channel-1"),
+        reply_to=DestinationMessageRef(
+            "fluxer-parent-message",
+            conversation_id="fluxer-channel-1",
+        ),
+    )
+
+    assert client.calls[-1][2]["reply_to_id"] == "fluxer-parent-message"

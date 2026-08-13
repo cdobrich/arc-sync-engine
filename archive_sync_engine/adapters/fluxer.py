@@ -147,6 +147,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
             supports_custom_emoji=False,
             supports_attachments=False,
             supports_initial_message_attachments=True,
+            supports_initial_message_replying=True,
             supports_attachment_reordering=False,
             supports_replying=False,
             supports_identity_creation=False,
@@ -269,6 +270,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
         message: CanonicalMessage,
         destination: DestinationConversationRef,
         attachments: tuple[tuple[CanonicalAttachment, bytes], ...] = (),
+        reply_to: DestinationMessageRef | None = None,
     ) -> DestinationMessageRef:
         attachment_payloads = [
             {"filename": attachment.filename, "data": data}
@@ -281,7 +283,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
                 content=message.content,
                 attachments=attachment_payloads or None,
                 author_name=self._author_name_for(message),
-                reply_to_id=None,
+                reply_to_id=(reply_to.id if reply_to is not None else None),
             )
         )
 

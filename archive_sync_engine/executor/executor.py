@@ -241,6 +241,7 @@ class OperationExecutor:
             case CreateMessageOperation(
                 message=message,
                 include_attachments=include_attachments,
+                include_reply_to=include_reply_to,
             ):
                 attachment_payloads: tuple[tuple[CanonicalAttachment, bytes], ...] = ()
                 if include_attachments and message.attachments:
@@ -269,12 +270,30 @@ class OperationExecutor:
                 conversation_ref = context.require_conversation(
                     message.conversation_id,
                 )
+                reply_ref = (
+                    context.require_message(message.reply_to)
+                    if include_reply_to and message.reply_to is not None
+                    else None
+                )
 
-                if include_attachments:
+                if include_attachments and include_reply_to:
                     destination_ref = destination.create_message(
                         message_for_creation,
                         conversation_ref,
                         attachment_payloads,
+                        reply_ref,
+                    )
+                elif include_attachments:
+                    destination_ref = destination.create_message(
+                        message_for_creation,
+                        conversation_ref,
+                        attachment_payloads,
+                    )
+                elif include_reply_to:
+                    destination_ref = destination.create_message(
+                        message_for_creation,
+                        conversation_ref,
+                        reply_to=reply_ref,
                     )
                 else:
                     destination_ref = destination.create_message(
@@ -291,7 +310,7 @@ class OperationExecutor:
                     (message.attachments and not include_attachments)
                     or message.reactions
                     or message.pinned
-                    or message.reply_to is not None
+                    or (message.reply_to is not None and not include_reply_to)
                 )
 
                 return ExecutionResult(
@@ -324,12 +343,10 @@ class OperationExecutor:
                         else None
                     ),
                     message_reply_to=(
-                        None
-                        if message.reply_to is None
-                        else None
+                        message.reply_to if include_reply_to else None
                     ),
                     message_reply_to_synchronized=(
-                        message.reply_to is None
+                        message.reply_to is None or include_reply_to
                     ),
                     message=destination_ref,
                 )
