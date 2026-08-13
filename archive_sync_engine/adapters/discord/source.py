@@ -178,11 +178,33 @@ class DiscordSourceAdapter(SourceAdapter):
 
     @staticmethod
     async def _collect_pinned_ids(channel: Any) -> set[str]:
+        """Collect every pinned message exposed by the Discord channel.
+
+        ``discord.py`` 2.6 changed ``pins()`` from returning a list to
+        returning a paginated asynchronous iterator, and its default page
+        limit is 50.  The archive must not silently truncate pinned-message
+        state, so request the complete collection and support the current
+        iterator contract.
+
+        The awaitable branch is retained for the small adapter test doubles
+        and older discord.py behavior; it does not change the canonical
+        contract or introduce legacy synchronization state.
+        """
         pins = getattr(channel, "pins", None)
         if pins is None:
             return set()
 
-        pinned_messages = await pins()
+        result = pins(limit=None)
+        pinned_ids: set[str] = set()
+
+        if hasattr(result, "__aiter__"):
+            async for message in result:
+                message_id = getattr(message, "id", None)
+                if message_id is not None:
+                    pinned_ids.add(str(message_id))
+            return pinned_ids
+
+        pinned_messages = await result
         return {
             str(message.id)
             for message in pinned_messages

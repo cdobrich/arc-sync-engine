@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -297,7 +297,7 @@ class MessageChannel(FakeChannel):
 
         return iterator()
 
-    async def pins(self):
+    async def pins(self, *, limit=None):
         return list(self._pinned)
 
 
@@ -452,3 +452,52 @@ def test_attachment_bytes_raises_for_unknown_attachment() -> None:
     with pytest.raises(NotFoundError, match="attachment-unknown"):
         adapter.attachment_bytes(attachment)
 
+
+
+class PaginatedPinsChannel(MessageChannel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.requested_pin_limit = None
+
+    def pins(self, *, limit=50, before=None, oldest_first=False):
+        self.requested_pin_limit = limit
+
+        async def iterator():
+            for message in self._pinned:
+                yield message
+
+        return iterator()
+
+
+def test_iter_messages_collects_all_pins_from_paginated_discord_api() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = PaginatedPinsChannel(
+        10,
+        "first",
+        1,
+        created,
+    )
+    messages = tuple(
+        FakeMessage(
+            100 + index,
+            channel,
+            user,
+            created + timedelta(seconds=index),
+            f"message-{index}",
+        )
+        for index in range(75)
+    )
+    channel._messages = messages
+    channel._pinned = messages
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    result = list(adapter.iter_messages(conversation))
+
+    assert len(result) == 75
+    assert all(message.pinned for message in result)
+    assert channel.requested_pin_limit is None
