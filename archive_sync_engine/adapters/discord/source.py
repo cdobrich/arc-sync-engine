@@ -92,7 +92,10 @@ class DiscordSourceAdapter(SourceAdapter):
         identities: dict[str, CanonicalIdentity] = {}
 
         for guild in self._iter_guilds():
-            for member in self._guild_members(guild):
+            members = self._run(
+                self._collect_guild_members(guild),
+            )
+            for member in members:
                 identity = self._canonical_identity(member)
                 identities.setdefault(str(identity.identity_key), identity)
 
@@ -425,14 +428,32 @@ class DiscordSourceAdapter(SourceAdapter):
             yield guild
 
     @staticmethod
-    def _guild_members(guild: Any) -> Iterable[Any]:
-        """Return cached members without making identity discovery destination-specific."""
+    async def _collect_guild_members(guild: Any) -> list[Any]:
+        """Return the complete available guild member set.
+
+        Prefer the populated discord.py member cache.  When the cache is
+        unavailable, use Discord's explicit ``fetch_members(limit=None)``
+        API rather than silently treating the guild as having no members.
+        This keeps identity completeness a source-adapter concern while
+        preserving the canonical importer contract.
+        """
         members = getattr(guild, "members", None)
-        if members is None:
+        if members is not None:
+            return list(members)
+
+        fetch_members = getattr(guild, "fetch_members", None)
+        if fetch_members is None:
             raise AuthorizationError(
                 "Discord guild member data is unavailable."
             )
-        return members
+
+        iterator = fetch_members(limit=None)
+        if not hasattr(iterator, "__aiter__"):
+            raise AdapterError(
+                "Discord guild member fetch does not expose an async iterator."
+            )
+
+        return [member async for member in iterator]
 
     @staticmethod
     def _canonical_identity(member: Any) -> CanonicalIdentity:

@@ -117,6 +117,57 @@ def test_iter_identities_deduplicates_and_orders_users() -> None:
     assert identities[0].avatar_url == "https://cdn.example/1.png"
 
 
+
+def test_iter_identities_fetches_members_when_cache_is_unavailable() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    guild = FakeGuild()
+    guild.members = None
+
+    fetch_limits = []
+
+    async def fetch_members(*, limit=None):
+        fetch_limits.append(limit)
+        for member in (
+            FakeMember(FakeUser(3, "Carol"), "Carol"),
+            FakeMember(FakeUser(4, "Dave"), "Dave"),
+        ):
+            yield member
+
+    guild.fetch_members = fetch_members
+    guild.channels = [
+        FakeChannel(10, "first", 1, created),
+    ]
+
+    adapter = DiscordSourceAdapter(
+        FakeClient(guild),
+        [123],
+    )
+
+    identities = list(adapter.iter_identities())
+
+    assert [str(item.identity_key) for item in identities] == [
+        "discord:user:3",
+        "discord:user:4",
+    ]
+    assert fetch_limits == [None]
+
+
+def test_iter_identities_rejects_missing_member_cache_and_fetch_api() -> None:
+    guild = FakeGuild()
+    guild.members = None
+    guild.fetch_members = None
+
+    adapter = DiscordSourceAdapter(
+        FakeClient(guild),
+        [123],
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        list(adapter.iter_identities())
+
+    assert isinstance(exc_info.value, AdapterError)
+
+
 def test_iter_conversations_maps_channels_and_threads() -> None:
     adapter = DiscordSourceAdapter(
         FakeClient(FakeGuild()),
