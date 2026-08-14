@@ -34,10 +34,10 @@ from .exceptions import (
     NotFoundError,
     RateLimitError,
 )
-
 from .source import SourceAdapter
 from .discord import DiscordSourceAdapter
 from .fluxer import FluxerDestinationAdapter, FluxerIdentityMapping
+from .fluxer_runtime import FluxerClientConfig, FluxerHttpClientFactory
 from .references import (
     DestinationAttachmentRef,
     DestinationConversationRef,
@@ -56,7 +56,9 @@ __all__ = [
     "DestinationCapabilities",
     "DestinationConversationRef",
     "DiscordSourceAdapter",
+    "FluxerClientConfig",
     "FluxerDestinationAdapter",
+    "FluxerHttpClientFactory",
     "FluxerIdentityMapping",
     "DestinationIdentityRef",
     "DestinationMessageRef",

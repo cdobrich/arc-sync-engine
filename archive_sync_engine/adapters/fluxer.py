@@ -52,13 +52,6 @@ class FluxerIdentityMapping:
             )
 
 
-class FluxerReactionClientFactory(Protocol):
-    """Factory for creating a Fluxer client authenticated as an actor."""
-
-    def __call__(self, auth_key: str) -> "FluxerClientProtocol":
-        ...
-
-
 class FluxerClientProtocol(Protocol):
     """Minimal async client surface required by the Fluxer adapter."""
 
@@ -146,11 +139,26 @@ class FluxerDestinationAdapter(DestinationAdapter):
         client: FluxerClientProtocol,
         *,
         identity_mappings: tuple[FluxerIdentityMapping, ...] = (),
-        reaction_client_factory: FluxerReactionClientFactory | None = None,
-        identity_client_factory: FluxerReactionClientFactory | None = None,
+        identity_client_factory: Callable[[FluxerIdentityMapping], Any] | None = None,
+        reaction_client_factory: Callable[[str], Any] | None = None,
     ) -> None:
         self._client = client
-        self._reaction_client_factory = reaction_client_factory
+
+        self._legacy_reaction_client_factory = reaction_client_factory is not None and identity_client_factory is None
+
+        if identity_client_factory is not None and reaction_client_factory is not None:
+            raise ValueError(
+                "Specify either identity_client_factory or reaction_client_factory, "
+                "not both."
+            )
+
+        if identity_client_factory is None and reaction_client_factory is not None:
+            identity_client_factory = (
+                lambda mapping: reaction_client_factory(mapping.fluxer_auth_key)
+                if mapping.fluxer_auth_key is not None
+                else client
+            )
+
         self._identity_client_factory = identity_client_factory
 
         mappings: dict[str, FluxerIdentityMapping] = {}
@@ -313,7 +321,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
             for attachment, data in attachments
         ]
 
-        client = self._message_client_for(message)
+        client = self._client_for_identity(message.identity_key)
         result = self._run(
             client.send_message(
                 channel_id=destination.id,
@@ -414,16 +422,18 @@ class FluxerDestinationAdapter(DestinationAdapter):
         reaction: CanonicalReaction,
     ) -> None:
         conversation_id = self._require_message_conversation(message)
-        client, auth_key = self._reaction_client_for(reaction)
-        emoji = self._reaction_emoji(reaction)
+        reaction_client = self._reaction_client(reaction)
+        auth_key = self._auth_key_for_reaction(reaction)
+        emoji = self._reaction_identifier(reaction)
         self._require_success(
             self._run(
                 self._invoke_reaction_method(
-                    client.apply_reaction,
+                    reaction_client.apply_reaction,
                     channel_id=conversation_id,
                     message_id=message.id,
                     emoji=emoji,
                     auth_key=auth_key,
+                    strip_auth_key=reaction_client is not self._client,
                 )
             ),
             f"add reaction to Fluxer message {message.id}",
@@ -435,21 +445,79 @@ class FluxerDestinationAdapter(DestinationAdapter):
         reaction: CanonicalReaction,
     ) -> None:
         conversation_id = self._require_message_conversation(message)
-        client, auth_key = self._reaction_client_for(reaction)
-        emoji = self._reaction_emoji(reaction)
+        emoji = self._reaction_identifier(reaction)
+        reaction_client = self._reaction_client(reaction)
+        auth_key = self._auth_key_for_reaction(reaction)
         self._require_success(
             self._run(
                 self._invoke_reaction_method(
-                    client.remove_reaction,
+                    reaction_client.remove_reaction,
                     channel_id=conversation_id,
                     message_id=message.id,
                     emoji_id_or_name=emoji,
                     user_id="@me",
                     auth_key=auth_key,
+                    strip_auth_key=reaction_client is not self._client,
                 )
             ),
             f"remove reaction from Fluxer message {message.id}",
         )
+
+    def _client_for_identity(self, identity_key: Any) -> Any:
+        mapping = self._identity_mappings.get(str(identity_key))
+        if mapping is None or mapping.fluxer_auth_key is None:
+            return self._client
+
+        if self._identity_client_factory is None:
+            return self._client
+
+        try:
+            client = self._identity_client_factory(mapping)
+        except Exception as exc:
+            if self._legacy_reaction_client_factory:
+                raise AdapterError(
+                    "actor client could not be created for reaction "
+                    f"actor {identity_key}."
+                ) from exc
+            raise AdapterError(
+                f"Failed to create Fluxer client for identity "
+                f"{identity_key}."
+            ) from exc
+
+        if client is None:
+            if self._legacy_reaction_client_factory:
+                raise AdapterError(
+                    "actor client factory returned no client for reaction "
+                    f"actor {identity_key}."
+                )
+            raise AdapterError(
+                f"Fluxer identity_client_factory returned no client for "
+                f"identity {identity_key}."
+            )
+        return client
+
+    def _reaction_client(self, reaction: CanonicalReaction) -> Any:
+        mapping = self._identity_mappings.get(str(reaction.identity_key))
+        if mapping is None:
+            raise CapabilityError(
+                "Fluxer reaction synchronization requires an identity "
+                f"mapping for reaction actor {reaction.identity_key}."
+            )
+        if mapping.fluxer_auth_key is None:
+            return self._client
+        if self._identity_client_factory is not None:
+            return self._client_for_identity(reaction.identity_key)
+        return self._client
+
+    @staticmethod
+    def _reaction_identifier(reaction: CanonicalReaction) -> str:
+        if not reaction.is_custom:
+            return reaction.emoji
+        if reaction.emoji_id is None:
+            raise ValueError(
+                "Custom Fluxer reactions require emoji_id."
+            )
+        return f"{reaction.emoji}:{reaction.emoji_id}"
 
     def _author_name_for(
         self,
@@ -458,83 +526,30 @@ class FluxerDestinationAdapter(DestinationAdapter):
         mapping = self._identity_mappings.get(str(message.identity_key))
         return None if mapping is None else mapping.username
 
-    def _message_client_for(self, message: CanonicalMessage) -> FluxerClientProtocol:
-        """Select the Fluxer client for a newly-created canonical message."""
-        mapping = self._identity_mappings.get(str(message.identity_key))
-        if mapping is None or mapping.fluxer_auth_key is None:
-            return self._client
-
-        if self._identity_client_factory is None:
-            # Preserve the existing/default-client behavior when no actor-client
-            # factory is configured. The factory is the explicit opt-in needed
-            # to authenticate the request as the mapped user.
-            return self._client
-
-        try:
-            client = self._identity_client_factory(mapping.fluxer_auth_key)
-        except Exception as exc:
-            raise AdapterError(
-                "Fluxer message actor client could not be created for identity "
-                f"{message.identity_key}."
-            ) from exc
-
-        if client is None:
-            raise AdapterError(
-                "Fluxer message actor client factory returned no client for identity "
-                f"{message.identity_key}."
-            )
-
-        return client
-
-    def _reaction_client_for(
+    def _auth_key_for_reaction(
         self,
         reaction: CanonicalReaction,
-    ) -> tuple[FluxerClientProtocol, str | None]:
-        """Resolve the client/auth mode for a canonical reaction actor."""
+    ) -> str:
+        """Return the configured Fluxer auth key for a reaction actor.
+
+        Canonical reactions identify their actor explicitly. Applying an
+        unmapped reaction as the adapter's default account would silently
+        change canonical state, so reaction synchronization requires an
+        explicit identity mapping.
+        """
         mapping = self._identity_mappings.get(str(reaction.identity_key))
         if mapping is None:
             raise CapabilityError(
                 "Fluxer reaction synchronization requires an identity "
                 f"mapping for reaction actor {reaction.identity_key}."
             )
-
-        if mapping.fluxer_auth_key is None or self._reaction_client_factory is None:
-            return self._client, mapping.fluxer_auth_key
-
-        try:
-            client = self._reaction_client_factory(mapping.fluxer_auth_key)
-        except Exception as exc:
-            raise AdapterError(
-                "Fluxer reaction actor client could not be created for "
-                f"identity {reaction.identity_key}."
-            ) from exc
-
-        if client is None:
-            raise AdapterError(
-                "Fluxer reaction actor client factory returned no client for "
-                f"identity {reaction.identity_key}."
-            )
-
-        return client, None
-
-    @staticmethod
-    def _reaction_emoji(reaction: CanonicalReaction) -> str:
-        """Translate canonical reaction data to Fluxer's reaction identifier."""
-        if reaction.is_custom:
-            if reaction.emoji_id is None:
-                raise CapabilityError(
-                    "Fluxer custom emoji reactions require a canonical emoji ID."
-                )
-            if not reaction.emoji:
-                raise CapabilityError(
-                    "Fluxer custom emoji reactions require a canonical emoji name."
-                )
-            return f"{reaction.emoji}:{reaction.emoji_id}"
-        return reaction.emoji
+        return mapping.fluxer_auth_key
 
     @staticmethod
     def _invoke_reaction_method(
         method: Any,
+        *,
+        strip_auth_key: bool = False,
         **kwargs: Any,
     ) -> Any:
         """Invoke a reaction client method with optional masquerade support.
@@ -545,7 +560,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
         rather than silently applying the reaction as the bot.
         """
         auth_key = kwargs.get("auth_key")
-        if auth_key is None:
+        if strip_auth_key or auth_key is None:
             kwargs.pop("auth_key", None)
             return method(**kwargs)
 
