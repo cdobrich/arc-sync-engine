@@ -1,22 +1,20 @@
-"""Runtime construction for authenticated Fluxer REST clients.
+"""Runtime construction and lifecycle for Fluxer REST destination clients.
 
-The synchronization engine uses the Fluxer REST surface synchronously through
-its destination adapter.  The upstream ``fluxer.py`` package exposes both a
-higher-level gateway ``Client`` and the lower-level ``HTTPClient``.  This
-module deliberately constructs the latter so the destination adapter does not
-start or own a WebSocket gateway merely to execute REST operations.
-
-The dependency is imported lazily so the core Archive-Sync Engine remains
-usable without installing the optional Fluxer integration dependency.
+The synchronization engine talks to a synchronous ``DestinationAdapter``
+interface, while ``fluxer.py`` exposes an asynchronous REST client.  This
+module owns the application-level translation between those two boundaries.
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Callable
 
+from .destination import DestinationAdapter
 from .exceptions import AdapterError
+from .fluxer import FluxerDestinationAdapter, FluxerIdentityMapping
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,13 +35,7 @@ class FluxerClientConfig:
 
 
 class FluxerHttpClientFactory:
-    """Construct authenticated ``fluxer.py`` REST clients.
-
-    ``fluxer.py`` keeps authentication on ``HTTPClient`` itself: bot tokens
-    receive the ``Bot `` authorization prefix while user tokens are sent as
-    user credentials.  This factory preserves that distinction for the
-    destination adapter's actor selection logic.
-    """
+    """Construct authenticated ``fluxer.py`` REST clients."""
 
     def __init__(
         self,
@@ -90,3 +82,238 @@ class FluxerHttpClientFactory:
         import fluxer
 
         return fluxer
+
+
+class FluxerHttpDestinationClient:
+    """Adapt one ``fluxer.py.HTTPClient`` to the engine's Fluxer client shape.
+
+    The adapter deliberately keeps this wrapper platform-specific.  The core
+    ``DestinationAdapter`` continues to receive only the project-level
+    destination contract.
+    """
+
+    def __init__(self, http_client: Any, *, guild_id: str) -> None:
+        self._http = http_client
+        self._guild_id = guild_id
+
+    async def _create_fluxer_channel_from_discord(
+        self,
+        channel_data: dict[str, Any],
+    ) -> Any:
+        return await self._http.create_guild_channel(
+            self._guild_id,
+            name=str(channel_data["name"]),
+            type=int(channel_data["type"]),
+        )
+
+    async def send_message(
+        self,
+        channel_id: str,
+        content: str,
+        attachments: list[dict[str, Any]] | None = None,
+        max_retries: int = 3,
+        author_name: str | None = None,
+        reply_to_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        del max_retries
+        del author_name
+
+        message_reference = None
+        if reply_to_id is not None:
+            message_reference = {
+                "message_id": reply_to_id,
+                "channel_id": channel_id,
+            }
+
+        return await self._http.send_message(
+            channel_id,
+            content=content,
+            files=attachments,
+            message_reference=message_reference,
+        )
+
+    async def edit_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        new_content: str,
+        new_attachments: list[Any] | None = None,
+        max_retries: int = 3,
+    ) -> bool:
+        del new_attachments
+        del max_retries
+        await self._http.edit_message(
+            channel_id,
+            message_id,
+            content=new_content,
+        )
+        return True
+
+    async def delete_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        max_retries: int = 3,
+    ) -> bool:
+        del max_retries
+        await self._http.delete_message(channel_id, message_id)
+        return True
+
+    async def delete_channel(self, channel_id: str) -> bool:
+        await self._http.delete_channel(channel_id)
+        return True
+
+    async def apply_reaction(
+        self,
+        channel_id: str,
+        message_id: str,
+        emoji: str,
+        auth_key: str | None = None,
+    ) -> bool:
+        del auth_key
+        await self._http.add_reaction(channel_id, message_id, emoji)
+        return True
+
+    async def remove_reaction(
+        self,
+        channel_id: str,
+        message_id: str,
+        emoji_id_or_name: str,
+        user_id: str = "@me",
+        auth_key: str | None = None,
+    ) -> bool:
+        del auth_key
+        await self._http.delete_reaction(
+            channel_id,
+            message_id,
+            emoji_id_or_name,
+            user_id=user_id,
+        )
+        return True
+
+    async def pin_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        max_retries: int = 3,
+    ) -> bool:
+        del max_retries
+        await self._http.pin_message(channel_id, message_id)
+        return True
+
+    async def unpin_message(
+        self,
+        channel_id: str,
+        message_id: str,
+        max_retries: int = 3,
+    ) -> bool:
+        del max_retries
+        await self._http.unpin_message(channel_id, message_id)
+        return True
+
+    async def close(self) -> None:
+        await self._http.close()
+
+
+class FluxerDestinationRuntime:
+    """Own the real Fluxer REST clients used by one destination adapter.
+
+    The bot client is created eagerly.  User clients are created lazily only
+    when a canonical identity mapping actually requires masquerading.
+    """
+
+    def __init__(
+        self,
+        *,
+        guild_id: str,
+        bot_client: FluxerClientConfig,
+        identity_mappings: tuple[FluxerIdentityMapping, ...] = (),
+        client_factory: FluxerHttpClientFactory | None = None,
+    ) -> None:
+        if not guild_id:
+            raise ValueError("Fluxer guild_id must not be empty.")
+
+        self._guild_id = guild_id
+        self._factory = client_factory or FluxerHttpClientFactory()
+        self._bot_config = bot_client
+        self._identity_mappings = identity_mappings
+        self._http_clients: list[Any] = []
+        self._closed = False
+
+        bot_http = self._factory.create(bot_client)
+        self._http_clients.append(bot_http)
+        self._bot_client = FluxerHttpDestinationClient(
+            bot_http,
+            guild_id=guild_id,
+        )
+
+        mapping_by_name = {mapping.username: mapping for mapping in identity_mappings}
+        self._mapping_by_name = mapping_by_name
+        self._identity_clients: dict[str, FluxerHttpDestinationClient] = {}
+
+        self._adapter = FluxerDestinationAdapter(
+            self._bot_client,
+            identity_mappings=identity_mappings,
+            identity_client_factory=self._create_identity_client,
+        )
+
+    @property
+    def adapter(self) -> DestinationAdapter:
+        return self._adapter
+
+    def _create_identity_client(
+        self,
+        mapping: FluxerIdentityMapping,
+    ) -> FluxerHttpDestinationClient:
+        if mapping.fluxer_auth_key is None:
+            return self._bot_client
+
+        cached = self._identity_clients.get(mapping.username)
+        if cached is not None:
+            return cached
+
+        if self._closed:
+            raise AdapterError(
+                "Cannot create a Fluxer identity client after the runtime "
+                "has been closed."
+            )
+
+        config = FluxerClientConfig(
+            token=mapping.fluxer_auth_key,
+            is_bot=False,
+            api_url=self._bot_config.api_url,
+            max_retries=self._bot_config.max_retries,
+            retry_forever=self._bot_config.retry_forever,
+        )
+        http_client = self._factory.create(config)
+        self._http_clients.append(http_client)
+        client = FluxerHttpDestinationClient(
+            http_client,
+            guild_id=self._guild_id,
+        )
+        self._identity_clients[mapping.username] = client
+        return client
+
+    def close(self) -> None:
+        """Close all owned HTTP clients.
+
+        The engine's application boundary is synchronous today.  Like the
+        destination adapter, this method must be called outside a running
+        asyncio event loop.
+        """
+        if self._closed:
+            return
+        self._closed = True
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            for client in reversed(self._http_clients):
+                asyncio.run(client.close())
+            return
+
+        self._closed = False
+        raise RuntimeError(
+            "FluxerDestinationRuntime.close() cannot run inside an active "
+            "asyncio event loop."
+        )
