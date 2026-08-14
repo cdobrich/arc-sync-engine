@@ -15,6 +15,7 @@ from archive_sync_engine.adapters.fluxer_runtime import (
     FluxerClientConfig,
     FluxerDestinationRuntime,
     FluxerHttpClientFactory,
+    FluxerHttpDestinationClient,
 )
 
 
@@ -361,3 +362,5 @@ def test_runtime_rejects_ambiguous_attachment_filename() -> None:
         )
 
     runtime.close()
+
+

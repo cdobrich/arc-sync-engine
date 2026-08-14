@@ -61,6 +61,22 @@ class FluxerClientProtocol(Protocol):
     ) -> Any:
         ...
 
+    async def create_thread(
+        self,
+        parent_channel_id: str,
+        *,
+        name: str,
+    ) -> Any:
+        ...
+
+    async def update_thread(
+        self,
+        thread_id: str,
+        *,
+        name: str,
+    ) -> Any:
+        ...
+
     async def send_message(
         self,
         channel_id: str,
@@ -211,15 +227,17 @@ class FluxerDestinationAdapter(DestinationAdapter):
     def create_conversation(
         self,
         conversation: CanonicalConversation,
+        parent: DestinationConversationRef | None = None,
     ) -> DestinationConversationRef:
+        name = conversation.title or str(conversation.id)
+
         if conversation.parent_id is not None:
             raise CapabilityError(
-                "Fluxer does not support thread conversations through the "
-                "current adapter."
+                "Fluxer does not currently support creating thread "
+                "conversations; thread export is intentionally skipped."
             )
 
         channel_type = self._fluxer_channel_type(conversation)
-        name = conversation.title or str(conversation.id)
         result = self._run(
             self._client._create_fluxer_channel_from_discord(
                 {
@@ -237,9 +255,21 @@ class FluxerDestinationAdapter(DestinationAdapter):
         conversation: CanonicalConversation,
         destination: DestinationConversationRef,
     ) -> None:
-        raise CapabilityError(
-            "Fluxer conversation updates are not supported by the current "
-            "client wrapper."
+        if conversation.parent_id is None:
+            raise CapabilityError(
+                "Fluxer conversation updates are only supported for threads "
+                "through the current adapter."
+            )
+
+        name = conversation.title or str(conversation.id)
+        self._require_success(
+            self._run(
+                self._client.update_thread(
+                    destination.id,
+                    name=name,
+                )
+            ),
+            f"update Fluxer conversation {destination.id}",
         )
 
     def delete_conversation(

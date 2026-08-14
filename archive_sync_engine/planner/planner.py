@@ -126,8 +126,27 @@ class Planner:
         anything is exposed to the caller.
         """
 
-        conversations = tuple(
+        archive_conversations = tuple(
             archive.iter_conversations(),
+        )
+
+        # A destination that does not support threads may intentionally omit
+        # thread conversations from export. This is a destination limitation,
+        # not an error in the canonical Archive: the thread remains preserved
+        # in the Archive and is simply not emitted for this destination.
+        excluded_thread_ids = {
+            str(conversation.id)
+            for conversation in archive_conversations
+            if (
+                not capabilities.supports_threads
+                and conversation.conversation_type == ConversationType.THREAD
+            )
+        }
+
+        exported_conversations = tuple(
+            conversation
+            for conversation in archive_conversations
+            if str(conversation.id) not in excluded_thread_ids
         )
 
         identities = tuple(
@@ -135,7 +154,7 @@ class Planner:
         )
 
         yield from self._plan_conversations(
-            conversations=conversations,
+            conversations=exported_conversations,
             synchronization_state=synchronization_state,
             capabilities=capabilities,
         )
@@ -146,8 +165,13 @@ class Planner:
             capabilities=capabilities,
         )
 
-        messages = tuple(
+        archive_messages = tuple(
             archive.iter_messages(),
+        )
+        messages = tuple(
+            message
+            for message in archive_messages
+            if str(message.conversation_id) not in excluded_thread_ids
         )
 
         yield from self._plan_messages(
@@ -157,11 +181,12 @@ class Planner:
         )
 
         yield from self._plan_deletions(
-            conversations=conversations,
+            conversations=exported_conversations,
             identities=identities,
             messages=messages,
             synchronization_state=synchronization_state,
             capabilities=capabilities,
+            excluded_conversation_ids=excluded_thread_ids,
         )
 
     def build_plan(
@@ -266,13 +291,6 @@ class Planner:
         fingerprint = canonical_fingerprint(conversation)
 
         if canonical_id not in synchronization_state.conversations:
-            if conversation.conversation_type == ConversationType.THREAD:
-                self._require_capability(
-                    capabilities.supports_threads,
-                    "supports_threads",
-                    "create thread conversations",
-                )
-
             yield CreateConversationOperation(
                 conversation=conversation,
             )
@@ -296,13 +314,6 @@ class Planner:
                 "supports_conversation_updates",
                 "update conversations",
             )
-
-            if conversation.conversation_type == ConversationType.THREAD:
-                self._require_capability(
-                    capabilities.supports_threads,
-                    "supports_threads",
-                    "update thread conversations",
-                )
 
             yield UpdateConversationOperation(
                 conversation=conversation,
@@ -792,6 +803,7 @@ class Planner:
         messages,
         synchronization_state: SynchronizationState,
         capabilities: DestinationCapabilities,
+        excluded_conversation_ids: set[str] = set(),
     ) -> Iterator[SyncOperation]:
         """
         Plan deletion of destination entities absent from the Archive.
@@ -829,7 +841,17 @@ class Planner:
         stale_conversation_ids = {
             conversation_id
             for conversation_id in synchronization_state.conversations
-            if conversation_id not in archive_conversation_ids
+            if (
+                conversation_id not in archive_conversation_ids
+                and conversation_id not in excluded_conversation_ids
+                and not (
+                    not capabilities.supports_threads
+                    and synchronization_state.conversation_parent_ids.get(
+                        conversation_id,
+                    )
+                    is not None
+                )
+            )
         }
 
         yield from self._plan_stale_conversations(

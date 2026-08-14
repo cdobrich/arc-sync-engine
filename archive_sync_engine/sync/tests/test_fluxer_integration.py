@@ -49,6 +49,36 @@ class FakeFluxerClient:
         )
         return {"id": channel_id}
 
+    async def create_thread(
+        self,
+        parent_channel_id: str,
+        *,
+        name: str,
+    ) -> dict[str, str]:
+        self.calls.append(
+            (
+                "create_thread",
+                (),
+                {"parent_channel_id": parent_channel_id, "name": name},
+            )
+        )
+        return {"id": "fluxer-thread-1"}
+
+    async def update_thread(
+        self,
+        thread_id: str,
+        *,
+        name: str,
+    ) -> bool:
+        self.calls.append(
+            (
+                "update_thread",
+                (),
+                {"thread_id": thread_id, "name": name},
+            )
+        )
+        return True
+
     async def send_message(
         self,
         channel_id: str,
@@ -812,3 +842,35 @@ def test_fluxer_custom_reaction_is_synchronized_through_full_sync(
 
     assert state.message_reactions["message-1"] == (reaction,)
     assert state.message_fingerprints["message-1"]
+
+
+def test_fluxer_threads_are_preserved_in_archive_but_skipped_for_export(
+    tmp_path: Path,
+) -> None:
+    parent = CanonicalConversation(
+        id=ConversationId("conversation-parent"),
+        conversation_type=ConversationType.CHANNEL,
+        title="general",
+    )
+    thread = CanonicalConversation(
+        id=ConversationId("conversation-thread"),
+        conversation_type=ConversationType.THREAD,
+        title="thread",
+        parent_id=parent.id,
+    )
+
+    archive = Mock(spec=Archive)
+    archive.iter_identities.return_value = iter(())
+    archive.iter_conversations.return_value = iter((parent, thread))
+    archive.iter_messages.return_value = iter(())
+
+    client = FakeFluxerClient()
+    path = tmp_path / "state.sqlite3"
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(archive, client, repository).synchronize()
+
+    assert [call[0] for call in client.calls] == [
+        "create_conversation",
+    ]
+

@@ -1824,14 +1824,14 @@ def test_plan_rejects_unsupported_identity_updates() -> None:
         )
 
 
-def test_plan_rejects_unsupported_thread_creation() -> None:
+def test_plan_skips_thread_creation_when_destination_lacks_thread_support() -> None:
     archive = _archive()
+    parent = _conversation("conversation-001")
     thread = _conversation(
         "thread-001",
         conversation_type=ConversationType.THREAD,
         parent_id="conversation-001",
     )
-    parent = _conversation("conversation-001")
 
     archive.iter_identities.return_value = iter([])
     archive.iter_conversations.return_value = iter([thread, parent])
@@ -1842,17 +1842,20 @@ def test_plan_rejects_unsupported_thread_creation() -> None:
         supports_identity_updates=True,
     )
 
-    with pytest.raises(CapabilityError, match="supports_threads"):
-        list(
-            Planner().plan(
-                archive=archive,
-                synchronization_state=SynchronizationState(),
-                capabilities=capabilities,
-            ),
-        )
+    operations = list(
+        Planner().plan(
+            archive=archive,
+            synchronization_state=SynchronizationState(),
+            capabilities=capabilities,
+        ),
+    )
+
+    assert operations == [
+        CreateConversationOperation(conversation=parent),
+    ]
 
 
-def test_plan_rejects_unsupported_thread_update() -> None:
+def test_plan_skips_thread_updates_when_destination_lacks_thread_support() -> None:
     archive = _archive()
     parent = _conversation("conversation-001")
     thread = _conversation(
@@ -1891,14 +1894,50 @@ def test_plan_rejects_unsupported_thread_update() -> None:
         supports_identity_updates=True,
     )
 
-    with pytest.raises(CapabilityError, match="supports_threads"):
-        list(
-            Planner().plan(
-                archive=archive,
-                synchronization_state=state,
-                capabilities=capabilities,
-            ),
-        )
+    operations = list(
+        Planner().plan(
+            archive=archive,
+            synchronization_state=state,
+            capabilities=capabilities,
+        ),
+    )
+
+    assert operations == []
+
+
+def test_plan_skips_messages_belonging_to_unsupported_threads() -> None:
+    archive = _archive()
+    parent = _conversation("conversation-001")
+    thread = _conversation(
+        "thread-001",
+        conversation_type=ConversationType.THREAD,
+        parent_id="conversation-001",
+    )
+    thread_message = _message("message-thread-001", "thread-001")
+    parent_message = _message("message-parent-001", "conversation-001")
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([parent, thread])
+    archive.iter_messages.return_value = iter([thread_message, parent_message])
+
+    capabilities = DestinationCapabilities(
+        supports_threads=False,
+        supports_identity_updates=True,
+    )
+
+    operations = list(
+        Planner().plan(
+            archive=archive,
+            synchronization_state=SynchronizationState(),
+            capabilities=capabilities,
+        ),
+    )
+
+    assert [type(operation).__name__ for operation in operations] == [
+        "CreateConversationOperation",
+        "CreateMessageOperation",
+    ]
+    assert operations[1].message.id == parent_message.id
 
 
 def test_plan_validates_all_capabilities_before_yielding_operations() -> None:
@@ -2321,6 +2360,81 @@ def test_plan_new_message_attachment_requires_attachment_capability() -> None:
             archive,
             capabilities=_capabilities(supports_attachments=False),
         )
+
+
+def test_plan_does_not_delete_unsupported_thread_reference() -> None:
+    archive = _archive()
+    parent = _conversation("conversation-001")
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([parent])
+    archive.iter_messages.return_value = iter([])
+
+    state = SynchronizationState(
+        conversations={
+            "conversation-001": Mock(),
+            "thread-001": Mock(),
+        },
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(parent),
+            "thread-001": "thread-fingerprint",
+        },
+        conversation_parent_ids={
+            "conversation-001": None,
+            "thread-001": "conversation-001",
+        },
+    )
+
+    capabilities = DestinationCapabilities(
+        supports_threads=False,
+        supports_identity_updates=True,
+    )
+
+    operations = list(
+        Planner().plan(
+            archive=archive,
+            synchronization_state=state,
+            capabilities=capabilities,
+        ),
+    )
+
+    assert operations == []
+
+
+def test_plan_still_deletes_stale_non_thread_conversation_when_threads_are_unsupported() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.return_value = iter([])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={
+            "conversation-001": canonical_fingerprint(conversation),
+        },
+        conversation_parent_ids={"conversation-001": None},
+    )
+
+    capabilities = DestinationCapabilities(
+        supports_threads=False,
+        supports_identity_updates=True,
+    )
+
+    operations = list(
+        Planner().plan(
+            archive=archive,
+            synchronization_state=state,
+            capabilities=capabilities,
+        ),
+    )
+
+    assert operations == [
+        DeleteConversationOperation(
+            conversation_id=conversation.id,
+        ),
+    ]
 
 
 def test_plan_does_not_reconcile_already_ordered_attachments() -> None:

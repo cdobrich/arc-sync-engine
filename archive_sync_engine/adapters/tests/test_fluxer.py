@@ -253,17 +253,20 @@ def test_create_conversation_maps_canonical_channel() -> None:
     ]
 
 
-def test_create_thread_is_rejected() -> None:
+def test_fluxer_thread_creation_is_explicitly_rejected_until_platform_support_exists() -> None:
     adapter = FluxerDestinationAdapter(FakeFluxerClient())
-    conversation = CanonicalConversation(
+    thread = CanonicalConversation(
         id=ConversationId("thread-1"),
         conversation_type=ConversationType.THREAD,
         title="thread",
         parent_id=ConversationId("conversation-1"),
     )
 
-    with pytest.raises(CapabilityError):
-        adapter.create_conversation(conversation)
+    with pytest.raises(CapabilityError, match="does not currently support creating thread"):
+        adapter.create_conversation(
+            thread,
+            DestinationConversationRef("fluxer-parent-channel"),
+        )
 
 
 def test_delete_conversation_uses_destination_reference() -> None:
