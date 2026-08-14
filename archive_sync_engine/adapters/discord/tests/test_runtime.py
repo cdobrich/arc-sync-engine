@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+from archive_sync_engine.adapters import AdapterError
+from archive_sync_engine.adapters.discord import (
+    DiscordClientConfig,
+    DiscordClientFactory,
+    DiscordSourceRuntime,
+)
+
+
+def test_discord_client_factory_normalizes_guild_ids_and_authenticates() -> None:
+    calls: list[object] = []
+
+    class FakeClient:
+        def __init__(self, *, intents: object) -> None:
+            self.intents = intents
+
+        async def login(self, token: str) -> None:
+            calls.append(("login", token))
+
+        async def close(self) -> None:
+            calls.append(("close",))
+
+    class FakeIntents:
+        def __init__(self) -> None:
+            self.guilds = False
+            self.members = False
+            self.message_content = False
+
+        @classmethod
+        def none(cls) -> "FakeIntents":
+            return cls()
+
+    fake_module = SimpleNamespace(
+        Client=FakeClient,
+        Intents=FakeIntents,
+    )
+
+    factory = DiscordClientFactory(importer=lambda: fake_module)
+    config = DiscordClientConfig(
+        token="discord-token",
+        guild_ids=(2, 1, 2),
+    )
+
+    client = factory.create(config)
+
+    assert isinstance(client, FakeClient)
+    assert config.guild_ids == (1, 2)
+    assert calls == [("login", "discord-token")]
+
+
+def test_discord_client_factory_wraps_client_construction_failure() -> None:
+    class FakeIntents:
+        def __init__(self) -> None:
+            self.guilds = False
+            self.members = False
+            self.message_content = False
+
+        @classmethod
+        def none(cls) -> "FakeIntents":
+            return cls()
+
+    fake_module = SimpleNamespace(
+        Intents=FakeIntents,
+    )
+
+    factory = DiscordClientFactory(importer=lambda: fake_module)
+
+    with pytest.raises(AdapterError, match="Client"):
+        factory.create(
+            DiscordClientConfig(
+                token="discord-token",
+                guild_ids=(1,),
+            )
+        )
+
+
+def test_discord_source_runtime_closes_client_once() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        async def close(self) -> None:
+            self.close_calls += 1
+
+        def get_guild(self, guild_id: int) -> None:
+            return None
+
+    client = FakeClient()
+    runtime = DiscordSourceRuntime(client, guild_ids=(1,))
+
+    runtime.close()
+    runtime.close()
+
+    assert client.close_calls == 1
+
+
+def test_discord_source_runtime_exposes_canonical_adapter() -> None:
+    class FakeClient:
+        async def close(self) -> None:
+            pass
+
+    runtime = DiscordSourceRuntime(FakeClient(), guild_ids=(1,))
+
+    assert runtime.adapter.name == "Discord"
