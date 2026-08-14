@@ -13,6 +13,8 @@ from types import ModuleType
 from typing import Any, Callable
 
 from archive_sync_engine.adapters.exceptions import AdapterError
+from archive_sync_engine.archive.paths import ArchivePaths
+from archive_sync_engine.importer.canonical_coordinator import CanonicalImportCoordinator
 
 from .source import DiscordSourceAdapter
 
@@ -124,6 +126,30 @@ class DiscordSourceRuntime:
             guild_ids,
         )
         self._closed = False
+
+    def import_to_archive(
+        self,
+        archive_paths: ArchivePaths,
+        *,
+        resume: bool = False,
+    ) -> None:
+        """Import the authenticated Discord source into an Archive Package.
+
+        The runtime owns only the Discord client/source boundary.
+        Canonical import lifecycle, checkpointing, and Archive persistence
+        remain owned by ``CanonicalImportCoordinator``.
+        """
+        if self._closed:
+            raise AdapterError(
+                "Cannot import from a closed Discord source runtime."
+            )
+
+        CanonicalImportCoordinator(
+            archive_paths,
+        ).run(
+            self.adapter,
+            resume=resume,
+        )
 
     def close(self) -> None:
         """Close the discord.py HTTP/session resources synchronously."""
