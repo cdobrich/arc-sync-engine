@@ -211,6 +211,57 @@ class FluxerHttpDestinationClient:
         await self._http.unpin_message(channel_id, message_id)
         return True
 
+    async def remove_attachment(
+        self,
+        channel_id: str,
+        message_id: str,
+        filename: str,
+    ) -> bool:
+        """Remove one existing message attachment safely.
+
+        The current fluxer.py wrapper exposes message retrieval and a generic
+        authenticated request API, but not a dedicated attachment-removal
+        helper. Fluxer's message PATCH API accepts the retained attachment
+        set, so the runtime fetches the current message, identifies a unique
+        attachment by filename, and patches the message with every attachment
+        except that one. Ambiguous matches are rejected rather than removing
+        an arbitrary attachment.
+        """
+        message = await self._http.get_message(channel_id, message_id)
+        attachments = list(message.get("attachments") or [])
+        matches = [
+            attachment
+            for attachment in attachments
+            if str(attachment.get("filename", "")) == filename
+        ]
+        if len(matches) > 1:
+            raise AdapterError(
+                f"Fluxer message {message_id!r} contains multiple attachments "
+                f"named {filename!r}; removal is ambiguous."
+            )
+        if not matches:
+            return True
+
+        retained = [
+            {
+                "id": str(attachment["id"]),
+                **({"filename": attachment["filename"]} if attachment.get("filename") else {}),
+            }
+            for attachment in attachments
+            if attachment is not matches[0]
+        ]
+        route = self._http._route(
+            "PATCH",
+            "/channels/{channel_id}/messages/{message_id}",
+            channel_id=channel_id,
+            message_id=message_id,
+        )
+        await self._http.request(
+            route,
+            json={"attachments": retained},
+        )
+        return True
+
     async def close(self) -> None:
         await self._http.close()
 

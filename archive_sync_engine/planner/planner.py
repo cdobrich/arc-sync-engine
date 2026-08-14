@@ -658,17 +658,15 @@ class Planner:
                     ),
                 )
 
-            if attachments_changed:
-                self._require_capability(
-                    capabilities.supports_attachments,
-                    "supports_attachments",
-                    "reconcile message attachments",
-                )
-
             working_attachments = list(previous_attachments)
             for attachment in previous_attachments:
                 if attachment in current_attachments:
                     continue
+                self._require_capability(
+                    capabilities.supports_attachment_removal,
+                    "supports_attachment_removal",
+                    "remove message attachments",
+                )
                 working_attachments.remove(attachment)
                 operations.append(
                     RemoveAttachmentOperation(
@@ -681,6 +679,11 @@ class Planner:
             for attachment in current_attachments:
                 if attachment in previous_attachments:
                     continue
+                self._require_capability(
+                    capabilities.supports_attachments,
+                    "supports_attachments",
+                    "add message attachments",
+                )
                 working_attachments.append(attachment)
                 operations.append(
                     AddAttachmentOperation(

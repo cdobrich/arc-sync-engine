@@ -128,6 +128,14 @@ class FluxerClientProtocol(Protocol):
     ) -> bool:
         ...
 
+    async def remove_attachment(
+        self,
+        channel_id: str,
+        message_id: str,
+        filename: str,
+    ) -> bool:
+        ...
+
 
 class FluxerDestinationAdapter(DestinationAdapter):
     """Destination adapter for the currently supported Fluxer API surface."""
@@ -190,6 +198,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
             supports_reactions=bool(self._identity_mappings),
             supports_custom_emoji=bool(self._identity_mappings),
             supports_attachments=False,
+            supports_attachment_removal=True,
             supports_initial_message_attachments=True,
             supports_initial_message_replying=True,
             supports_attachment_reordering=False,
@@ -294,9 +303,16 @@ class FluxerDestinationAdapter(DestinationAdapter):
         message: DestinationMessageRef,
         attachment: CanonicalAttachment,
     ) -> None:
-        raise CapabilityError(
-            "Fluxer incremental attachment removal is not supported by "
-            "the current adapter."
+        conversation_id = self._require_message_conversation(message)
+        self._require_success(
+            self._run(
+                self._client.remove_attachment(
+                    channel_id=conversation_id,
+                    message_id=message.id,
+                    filename=attachment.filename,
+                )
+            ),
+            f"remove attachment {attachment.id} from Fluxer message {message.id}",
         )
 
     def reorder_attachments(

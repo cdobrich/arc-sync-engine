@@ -79,6 +79,7 @@ def _capabilities(**overrides: bool) -> DestinationCapabilities:
         "supports_reactions": True,
         "supports_custom_emoji": True,
         "supports_attachments": True,
+        "supports_attachment_removal": True,
         "supports_initial_message_attachments": False,
         "supports_initial_message_replying": False,
         "supports_attachment_reordering": True,
@@ -2792,3 +2793,89 @@ def test_plan_rejects_initial_reply_when_target_is_not_already_synchronized() ->
 
     with pytest.raises(CapabilityError, match="supports_replying"):
         _planned_operations(Planner(), archive, SynchronizationState(), capabilities)
+
+
+def test_plan_allows_attachment_removal_when_only_removal_is_supported() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    old_attachment = _attachment()
+    message = replace(
+        _message("message-001", "conversation-001"),
+        attachments=(),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={"conversation-001": canonical_fingerprint(conversation)},
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock()},
+        message_fingerprints={"message-001": "old-fingerprint"},
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_attachments={"message-001": (old_attachment,)},
+        message_reactions={"message-001": ()},
+        message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
+    )
+
+    operations = _planned_operations(
+        Planner(),
+        archive,
+        state,
+        _capabilities(
+            supports_attachments=False,
+            supports_attachment_removal=True,
+            supports_attachment_reordering=False,
+        ),
+    )
+
+    assert len(operations) == 1
+    assert isinstance(operations[0], RemoveAttachmentOperation)
+    assert operations[0].attachment == old_attachment
+
+
+def test_plan_rejects_attachment_removal_without_removal_capability() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    old_attachment = _attachment()
+    message = replace(
+        _message("message-001", "conversation-001"),
+        attachments=(),
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message])
+
+    state = SynchronizationState(
+        conversations={"conversation-001": Mock()},
+        conversation_fingerprints={"conversation-001": canonical_fingerprint(conversation)},
+        conversation_parent_ids={"conversation-001": None},
+        messages={"message-001": Mock()},
+        message_fingerprints={"message-001": "old-fingerprint"},
+        message_content_fingerprints={
+            "message-001": canonical_message_content_fingerprint(message),
+        },
+        message_attachments={"message-001": (old_attachment,)},
+        message_reactions={"message-001": ()},
+        message_pinned={"message-001": False},
+        message_reply_to={"message-001": None},
+    )
+
+    with pytest.raises(CapabilityError, match="supports_attachment_removal"):
+        list(
+            Planner().plan(
+                archive=archive,
+                synchronization_state=state,
+                capabilities=_capabilities(
+                    supports_attachments=False,
+                    supports_attachment_removal=False,
+                    supports_attachment_reordering=False,
+                ),
+            )
+        )

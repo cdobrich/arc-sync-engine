@@ -144,6 +144,18 @@ class FakeFluxerClient:
         )
         return True
 
+    async def remove_attachment(self, channel_id, message_id, filename):
+        self.calls.append((
+            "remove_attachment",
+            (),
+            {
+                "channel_id": channel_id,
+                "message_id": message_id,
+                "filename": filename,
+            },
+        ))
+        return True
+
     async def pin_message(self, channel_id, message_id, max_retries=3):
         self.calls.append(
             (
@@ -210,6 +222,7 @@ def test_fluxer_adapter_reports_current_capabilities() -> None:
     assert capabilities.supports_reactions is True
     assert capabilities.supports_custom_emoji is True
     assert capabilities.supports_attachments is False
+    assert capabilities.supports_attachment_removal is True
     assert capabilities.supports_initial_message_attachments is True
     assert capabilities.supports_initial_message_replying is True
     assert capabilities.supports_replying is False
@@ -1007,3 +1020,31 @@ def test_message_actor_masquerading_factory_failure_is_reported() -> None:
             _message(),
             DestinationConversationRef("fluxer-channel-1"),
         )
+
+
+def test_remove_attachment_uses_destination_message_reference() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(client)
+
+    attachment = CanonicalAttachment(
+        id=AttachmentId("attachment-1"),
+        filename="hello.txt",
+        content_type="text/plain",
+        size=5,
+        sha256="a" * 64,
+    )
+
+    adapter.remove_attachment(
+        DestinationMessageRef("fluxer-message-1", conversation_id="fluxer-channel-1"),
+        attachment,
+    )
+
+    assert client.calls[-1] == (
+        "remove_attachment",
+        (),
+        {
+            "channel_id": "fluxer-channel-1",
+            "message_id": "fluxer-message-1",
+            "filename": "hello.txt",
+        },
+    )

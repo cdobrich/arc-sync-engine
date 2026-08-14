@@ -27,6 +27,7 @@ class FakeHTTPClient:
         self.closed = False
         self.created_channel_calls = []
         self.send_message_calls = []
+        self.request_calls = []
         type(self).instances.append(self)
 
     async def close(self) -> None:
@@ -61,6 +62,24 @@ class FakeHTTPClient:
         return None
 
     async def unpin_message(self, channel_id, message_id):
+        return None
+
+    async def get_message(self, channel_id, message_id):
+        return {
+            "id": message_id,
+            "channel_id": channel_id,
+            "attachments": [
+                {"id": "attachment-1", "filename": "keep.txt"},
+                {"id": "attachment-2", "filename": "remove.txt"},
+            ],
+        }
+
+    def _route(self, method, path, **params):
+        from types import SimpleNamespace
+        return SimpleNamespace(method=method, path=path, params=params)
+
+    async def request(self, route, *, json=None, **kwargs):
+        self.request_calls.append((route.method, route.path, json))
         return None
 
 
@@ -278,3 +297,67 @@ def test_runtime_wraps_client_factory_failures_as_adapter_error() -> None:
             bot_client=FluxerClientConfig(token="bot-token"),
             client_factory=factory,
         )
+
+
+def test_runtime_removes_one_existing_attachment_without_reuploading() -> None:
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=_factory(),
+    )
+
+    result = runtime._bot_client
+    assert result is not None
+
+    import asyncio
+    asyncio.run(
+        result.remove_attachment(
+            "channel-1",
+            "message-1",
+            "remove.txt",
+        )
+    )
+
+    client = FakeHTTPClient.instances[0]
+    assert client.request_calls == [
+        (
+            "PATCH",
+            "/channels/{channel_id}/messages/{message_id}",
+            {"attachments": [{"id": "attachment-1", "filename": "keep.txt"}]},
+        )
+    ]
+
+    runtime.close()
+
+
+def test_runtime_rejects_ambiguous_attachment_filename() -> None:
+    class AmbiguousHTTPClient(FakeHTTPClient):
+        async def get_message(self, channel_id, message_id):
+            return {
+                "id": message_id,
+                "channel_id": channel_id,
+                "attachments": [
+                    {"id": "attachment-1", "filename": "same.txt"},
+                    {"id": "attachment-2", "filename": "same.txt"},
+                ],
+            }
+
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=FluxerHttpClientFactory(
+            importer=lambda: SimpleNamespace(HTTPClient=AmbiguousHTTPClient),
+        ),
+    )
+
+    import asyncio
+    with pytest.raises(AdapterError, match="ambiguous"):
+        asyncio.run(
+            runtime._bot_client.remove_attachment(
+                "channel-1",
+                "message-1",
+                "same.txt",
+            )
+        )
+
+    runtime.close()
