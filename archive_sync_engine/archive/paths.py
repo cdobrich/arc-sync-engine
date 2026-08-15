@@ -88,6 +88,11 @@ class ArchivePaths:
         )
 
     @property
+    def run_configuration(self) -> Path:
+        """Path to the persisted, non-secret run configuration."""
+        return self.root / "run.json"
+
+    @property
     def session(self) -> Path:
         """
         Path to the synchronization session.

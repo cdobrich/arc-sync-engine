@@ -4,6 +4,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from archive_sync_engine.cli import main
+from archive_sync_engine.archive.package import ArchivePackage
+from archive_sync_engine.archive.paths import ArchivePaths
 
 
 def test_sync_cli_loads_yaml_setup_configuration(tmp_path: Path) -> None:
@@ -24,11 +26,13 @@ fluxer:
 user_mappings:
   discord:
     "987654321":
-      fluxer_username: BobOnFluxer#0001
+      fluxer_username: BobOnFluxer#0909
       fluxer_auth_key_file: bob.key
 """,
         encoding="utf-8",
     )
+
+    ArchivePackage.initialize(ArchivePaths(tmp_path / "archive"))
 
     runtime = MagicMock()
     runtime.__enter__.return_value = runtime
@@ -68,6 +72,8 @@ fluxer:
 """,
         encoding="utf-8",
     )
+
+    ArchivePackage.initialize(ArchivePaths(tmp_path / "cli-archive"))
 
     runtime = MagicMock()
     runtime.__enter__.return_value = runtime

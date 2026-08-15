@@ -13,6 +13,7 @@ from types import ModuleType
 from typing import Any, Callable
 
 from archive_sync_engine.adapters.exceptions import AdapterError
+from archive_sync_engine.adapters.source_runtime import SourceImportRuntime
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.importer.canonical_coordinator import CanonicalImportCoordinator
 
@@ -111,7 +112,7 @@ class DiscordClientFactory:
         return discord
 
 
-class DiscordSourceRuntime:
+class DiscordSourceRuntime(SourceImportRuntime):
     """Own an authenticated Discord client and expose its canonical adapter."""
 
     def __init__(
@@ -121,10 +122,14 @@ class DiscordSourceRuntime:
         guild_ids: tuple[int | str, ...],
     ) -> None:
         self._client = client
+        normalized_guild_ids = tuple(
+            str(int(guild_id)) for guild_id in guild_ids
+        )
         self.adapter = DiscordSourceAdapter(
             client,
-            guild_ids,
+            normalized_guild_ids,
         )
+        self.input_scope = normalized_guild_ids
         self._closed = False
 
     def import_to_archive(

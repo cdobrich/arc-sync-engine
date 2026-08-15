@@ -109,6 +109,7 @@ def test_discord_source_runtime_exposes_canonical_adapter() -> None:
     runtime = DiscordSourceRuntime(FakeClient(), guild_ids=(1,))
 
     assert runtime.adapter.name == "Discord"
+    assert runtime.input_scope == ("1",)
 
 
 def test_discord_source_runtime_imports_through_canonical_coordinator(

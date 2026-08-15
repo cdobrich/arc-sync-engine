@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from archive_sync_engine.cli import build_parser, main
+from archive_sync_engine.archive.package import ArchivePackage
+from archive_sync_engine.archive.paths import ArchivePaths
 
 
 def test_sync_cli_builds_runtime_configuration() -> None:
@@ -40,7 +42,10 @@ def test_sync_cli_builds_runtime_configuration() -> None:
     assert args.fluxer_identity == ["alice:alice-token", "bob"]
 
 
-def test_sync_cli_constructs_runtime_and_runs_resume() -> None:
+def test_sync_cli_constructs_runtime_and_runs_resume(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+
     runtime = MagicMock()
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
@@ -61,7 +66,7 @@ def test_sync_cli_constructs_runtime_and_runs_resume() -> None:
                 "--fluxer-guild-id",
                 "guild-1",
                 "--archive",
-                "/tmp/archive",
+                str(archive_path),
                 "--resume",
             ]
         )
@@ -69,10 +74,22 @@ def test_sync_cli_constructs_runtime_and_runs_resume() -> None:
     assert result == 0
     runtime_type.assert_called_once()
     runtime.run.assert_called_once_with(resume_import=True)
+
+    from archive_sync_engine.sync.run_configuration import RunDirection
+
+    persisted = ArchivePackage(ArchivePaths(archive_path)).load_run_configuration()
+    assert persisted.direction is RunDirection.SYNC
+    assert persisted.input_adapter == "discord"
+    assert persisted.input_scope == ("10",)
+    assert persisted.destination_adapter == "fluxer"
+    assert persisted.destination_scope == ("guild-1",)
     runtime.__exit__.assert_called_once()
 
 
-def test_sync_cli_maps_bot_identity_without_auth_token() -> None:
+def test_sync_cli_maps_bot_identity_without_auth_token(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+
     runtime = MagicMock()
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
@@ -94,7 +111,7 @@ def test_sync_cli_maps_bot_identity_without_auth_token() -> None:
                     "--fluxer-guild-id",
                     "guild-1",
                     "--archive",
-                    "/tmp/archive",
+                    str(archive_path),
                     "--fluxer-identity",
                     "bot-user",
                 ]
@@ -185,7 +202,9 @@ def test_diagnostics_cli_negative_limit_is_rejected(tmp_path: Path) -> None:
         )
 
 
-def test_sync_cli_cli_credentials_override_environment(monkeypatch) -> None:
+def test_sync_cli_cli_credentials_override_environment(monkeypatch, tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
     monkeypatch.setenv("ARCHIVE_SYNC_DISCORD_TOKEN", "discord-env")
     monkeypatch.setenv("ARCHIVE_SYNC_FLUXER_TOKEN", "fluxer-env")
 
@@ -202,7 +221,7 @@ def test_sync_cli_cli_credentials_override_environment(monkeypatch) -> None:
                     "--discord-guild-id", "10",
                     "--fluxer-token", "fluxer-cli",
                     "--fluxer-guild-id", "guild-cli",
-                    "--archive", "/cli/archive",
+                    "--archive", str(archive_path),
                 ]
             )
             == 0
@@ -212,7 +231,7 @@ def test_sync_cli_cli_credentials_override_environment(monkeypatch) -> None:
     assert config.discord.token == "discord-cli"
     assert config.fluxer.token == "fluxer-cli"
     assert config.fluxer_guild_id == "guild-cli"
-    assert config.archive_paths.root == Path("/cli/archive")
+    assert config.archive_paths.root == archive_path
 
 
 def test_sync_cli_rejects_missing_credentials(monkeypatch) -> None:
@@ -238,137 +257,3 @@ def test_sync_cli_rejects_invalid_config(tmp_path: Path, monkeypatch) -> None:
 
     with pytest.raises(SystemExit):
         main(["--config", str(config_path), "sync"])
-
-
-def test_init_cli_creates_archive_package(tmp_path: Path, capsys) -> None:
-    archive_path = tmp_path / "archive"
-
-    assert main(["init", "--archive", str(archive_path)]) == 0
-
-    output = capsys.readouterr().out
-    assert "Initialized Archive Package" in output
-    assert (archive_path / "archive.sqlite").is_file()
-    assert (archive_path / "manifest.json").is_file()
-    assert (archive_path / "attachments").is_dir()
-
-
-def test_init_cli_rejects_existing_nonempty_archive(tmp_path: Path) -> None:
-    archive_path = tmp_path / "archive"
-    archive_path.mkdir()
-    (archive_path / "existing.txt").write_text("keep", encoding="utf-8")
-
-    with pytest.raises(SystemExit):
-        main(["init", "--archive", str(archive_path)])
-
-    assert (archive_path / "existing.txt").read_text(encoding="utf-8") == "keep"
-
-
-def test_init_cli_requires_archive_path() -> None:
-    with pytest.raises(SystemExit):
-        main(["init"])
-
-
-def test_import_cli_builds_source_configuration() -> None:
-    parser = build_parser()
-    args = parser.parse_args(
-        [
-            "import",
-            "--discord-token",
-            "discord-token",
-            "--discord-guild-id",
-            "10",
-            "--discord-guild-id",
-            "20",
-            "--archive",
-            "/tmp/archive",
-            "--resume",
-        ]
-    )
-
-    assert args.command == "import"
-    assert args.discord_token == "discord-token"
-    assert args.discord_guild_id == [10, 20]
-    assert args.archive == Path("/tmp/archive")
-    assert args.resume is True
-
-
-def test_import_cli_constructs_discord_runtime_and_imports(tmp_path: Path) -> None:
-    archive_path = tmp_path / "archive"
-    assert main(["init", "--archive", str(archive_path)]) == 0
-
-    client = MagicMock()
-    discord_factory = MagicMock()
-    discord_factory.create.return_value = client
-    runtime = MagicMock()
-    runtime.__enter__.return_value = runtime
-    runtime.__exit__.return_value = None
-
-    with patch(
-        "archive_sync_engine.cli.DiscordClientFactory",
-        return_value=discord_factory,
-    ) as factory_type, patch(
-        "archive_sync_engine.cli.DiscordSourceRuntime",
-        return_value=runtime,
-    ) as runtime_type:
-        assert (
-            main(
-                [
-                    "import",
-                    "--discord-token",
-                    "discord-token",
-                    "--discord-guild-id",
-                    "10",
-                    "--archive",
-                    str(archive_path),
-                    "--resume",
-                ]
-            )
-            == 0
-        )
-
-    config = factory_type.return_value.create.call_args.args[0]
-    assert config.token == "discord-token"
-    assert config.guild_ids == (10,)
-    runtime_type.assert_called_once_with(client, guild_ids=(10,))
-    from archive_sync_engine.archive import ArchivePaths
-
-    runtime.import_to_archive.assert_called_once_with(
-        ArchivePaths(archive_path),
-        resume=True,
-    )
-
-
-def test_import_cli_rejects_uninitialized_archive(tmp_path: Path) -> None:
-    archive_path = tmp_path / "archive"
-
-    with pytest.raises(SystemExit):
-        main(
-            [
-                "import",
-                "--discord-token",
-                "discord-token",
-                "--discord-guild-id",
-                "10",
-                "--archive",
-                str(archive_path),
-            ]
-        )
-
-
-def test_import_cli_rejects_invalid_archive(tmp_path: Path) -> None:
-    archive_path = tmp_path / "archive"
-    assert main(["init", "--archive", str(archive_path)]) == 0
-    (archive_path / "manifest.json").write_text("{}\n", encoding="utf-8")
-
-    with pytest.raises(SystemExit):
-        main(
-            [
-                "import",
-                "--discord-token",
-                "discord-token",
-                "--discord-guild-id",
-                "10",
-                "--archive",
-                str(archive_path),
-            ]
-        )

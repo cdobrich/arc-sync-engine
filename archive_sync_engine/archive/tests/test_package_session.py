@@ -97,3 +97,23 @@ def test_archive_package_session_file_is_created(
     )
 
     assert paths.session.exists()
+
+
+def test_archive_package_persists_generic_run_configuration(tmp_path) -> None:
+    from archive_sync_engine.archive.package import ArchivePackage
+    from archive_sync_engine.archive.paths import ArchivePaths
+    from archive_sync_engine.sync.run_configuration import (
+        RunDirection,
+        SyncRunConfiguration,
+    )
+
+    package = ArchivePackage(ArchivePaths(tmp_path))
+    configuration = SyncRunConfiguration(
+        direction=RunDirection.IMPORT,
+        input_adapter="fluxer",
+        input_scope=("1375567890027713164",),
+    )
+
+    package.save_run_configuration(configuration)
+
+    assert package.load_run_configuration() == configuration

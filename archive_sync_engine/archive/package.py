@@ -5,31 +5,29 @@ import json
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from .manifest import ArchiveManifest
 from .paths import ArchivePaths
 from .version import ARCHIVE_ENGINE_VERSION
-from .store import ArchiveStore
 
-from archive_sync_engine.asset_store import AssetStore
-
-if TYPE_CHECKING:
-    from archive_sync_engine.sync.session import SyncSession
-    from archive_sync_engine.importer.state import ImportState
 
 class ArchivePackage:
-    """Represents an Archive Package on disk."""
+    """
+    Represents an Archive Package on disk.
+
+    The package currently consists of:
+
+    - manifest.json
+    - archive.sqlite
+    - attachments/
+    """
 
     @classmethod
-    def initialize(cls, paths: ArchivePaths) -> "ArchivePackage":
-        """Create a new, empty Archive Package at ``paths``.
-
-        Initialization creates the canonical SQLite database, package
-        directories, and manifest. Existing files are never overwritten.
-        A non-empty target directory is rejected so a partially initialized
-        or unrelated project cannot be mistaken for a new Archive Package.
-        """
+    def initialize(
+        cls,
+        paths: ArchivePaths,
+    ) -> "ArchivePackage":
+        """Create a new, empty Archive Package without overwriting data."""
         root = paths.root.expanduser()
         if root.exists() and any(root.iterdir()):
             raise FileExistsError(
@@ -38,6 +36,8 @@ class ArchivePackage:
 
         paths = ArchivePaths(root=root)
         paths.ensure_exists()
+
+        from archive_sync_engine.archive.store import ArchiveStore
 
         store = ArchiveStore.create(paths)
         store.close()
@@ -50,6 +50,8 @@ class ArchivePackage:
         self,
         paths: ArchivePaths,
     ) -> None:
+        from archive_sync_engine.asset_store import AssetStore
+
         self._asset_store = AssetStore(
             paths.root,
         )
@@ -62,6 +64,14 @@ class ArchivePackage:
         """
         Return the AssetStore owned by this Archive Package.
         """
+
+        return self._asset_store
+
+    @property
+    def asset_store(
+        self,
+    ) -> AssetStore:
+        """Return the package-owned content-addressed asset store."""
 
         return self._asset_store
 
@@ -134,12 +144,50 @@ class ArchivePackage:
         )
 
     #
+    # Run configuration
+    #
+
+    def save_run_configuration(
+        self,
+        configuration: "SyncRunConfiguration",
+    ) -> None:
+        """Persist non-secret configuration identifying the current run."""
+
+        with self._paths.run_configuration.open(
+            "w",
+            encoding="utf-8",
+        ) as handle:
+            json.dump(
+                configuration.to_json_dict(),
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
+            handle.write("\n")
+
+    def load_run_configuration(
+        self,
+    ) -> SyncRunConfiguration:
+        """Load persisted non-secret run configuration."""
+
+        with self._paths.run_configuration.open(
+            "r",
+            encoding="utf-8",
+        ) as handle:
+            data = json.load(handle)
+
+        if not isinstance(data, dict):
+            raise ValueError("Run configuration must contain a JSON object.")
+        from archive_sync_engine.sync.run_configuration import SyncRunConfiguration
+        return SyncRunConfiguration.from_json_dict(data)
+
+    #
     # Session
     #
 
     def save_session(
         self,
-        session: SyncSession,
+        session: "SyncSession",
     ) -> None:
         """
         Persist the current synchronization session.
@@ -181,7 +229,6 @@ class ArchivePackage:
             raise ValueError("Archive session must contain a JSON object.")
 
         from archive_sync_engine.sync.session import SyncSession
-
         return SyncSession.from_json_dict(
             data,
         )
@@ -192,7 +239,7 @@ class ArchivePackage:
 
     def save_import_state(
         self,
-        state: ImportState,
+        state: "ImportState",
     ) -> None:
         """
         Persist opaque importer-owned state.
@@ -241,7 +288,6 @@ class ArchivePackage:
             )
 
         from archive_sync_engine.importer.state import ImportState
-
         return ImportState(
             payload=data,
         )
