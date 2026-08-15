@@ -238,3 +238,31 @@ def test_sync_cli_rejects_invalid_config(tmp_path: Path, monkeypatch) -> None:
 
     with pytest.raises(SystemExit):
         main(["--config", str(config_path), "sync"])
+
+
+def test_init_cli_creates_archive_package(tmp_path: Path, capsys) -> None:
+    archive_path = tmp_path / "archive"
+
+    assert main(["init", "--archive", str(archive_path)]) == 0
+
+    output = capsys.readouterr().out
+    assert "Initialized Archive Package" in output
+    assert (archive_path / "archive.sqlite").is_file()
+    assert (archive_path / "manifest.json").is_file()
+    assert (archive_path / "attachments").is_dir()
+
+
+def test_init_cli_rejects_existing_nonempty_archive(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    archive_path.mkdir()
+    (archive_path / "existing.txt").write_text("keep", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main(["init", "--archive", str(archive_path)])
+
+    assert (archive_path / "existing.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_init_cli_requires_archive_path() -> None:
+    with pytest.raises(SystemExit):
+        main(["init"])

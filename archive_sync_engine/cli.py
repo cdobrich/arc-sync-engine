@@ -9,9 +9,8 @@ from typing import Sequence
 from archive_sync_engine.adapters.discord.runtime import DiscordClientConfig
 from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
 from archive_sync_engine.adapters.fluxer_runtime import FluxerClientConfig
-from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.config import ConfigurationError, load_setup_configuration
-from archive_sync_engine.archive import validate_archive_package
+from archive_sync_engine.archive import ArchivePackage, ArchivePaths, validate_archive_package
 from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
 from archive_sync_engine.sync.discord_fluxer_runtime import (
     DiscordFluxerSyncConfig,
@@ -92,6 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
 
+    initialize = subparsers.add_parser(
+        "init",
+        help="Initialize a new empty Archive Package.",
+    )
+    initialize.add_argument(
+        "--archive",
+        type=Path,
+        default=None,
+        help="Archive Package directory to initialize.",
+    )
     validate = subparsers.add_parser(
         "validate",
         help="Validate the integrity of an Archive Package.",
@@ -203,6 +212,23 @@ def _run_diagnostics(args: argparse.Namespace) -> int:
 
 
 
+def _run_init(args: argparse.Namespace) -> int:
+    if args.archive is None:
+        raise ConfigurationError(
+            "Archive path is required; provide --archive."
+        )
+
+    archive_path = args.archive.expanduser().resolve()
+
+    try:
+        ArchivePackage.initialize(ArchivePaths(archive_path))
+    except FileExistsError as exc:
+        raise ConfigurationError(str(exc)) from exc
+
+    print(f"Initialized Archive Package: {archive_path}")
+    return 0
+
+
 def _run_validate(args: argparse.Namespace) -> int:
     report = validate_archive_package(
         ArchivePaths(args.archive),
@@ -239,12 +265,11 @@ def _run_validate(args: argparse.Namespace) -> int:
 
 def _run_sync(args: argparse.Namespace) -> int:
     setup = load_setup_configuration(args.config) if args.config is not None else None
-    resolved_credentials = setup.resolve_credentials() if setup is not None else None
 
     discord_token = (
         args.discord_token
         if args.discord_token is not None
-        else (resolved_credentials.discord_token if resolved_credentials is not None else None)
+        else (setup.resolve_discord_token() if setup is not None else None)
     )
     if not discord_token:
         raise ConfigurationError(
@@ -264,7 +289,7 @@ def _run_sync(args: argparse.Namespace) -> int:
     fluxer_token = (
         args.fluxer_token
         if args.fluxer_token is not None
-        else (resolved_credentials.fluxer_token if resolved_credentials is not None else None)
+        else (setup.resolve_fluxer_token() if setup is not None else None)
     )
     if not fluxer_token:
         raise ConfigurationError(
@@ -297,7 +322,7 @@ def _run_sync(args: argparse.Namespace) -> int:
     identity_mappings = (
         _parse_identity_mappings(args.fluxer_identity)
         if args.fluxer_identity
-        else (resolved_credentials.identity_mappings if resolved_credentials is not None else ())
+        else (setup.resolve_identity_mappings() if setup is not None else ())
     )
 
     config = DiscordFluxerSyncConfig(
@@ -327,6 +352,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        if args.command == "init":
+            return _run_init(args)
         if args.command == "validate":
             return _run_validate(args)
         if args.command == "sync":

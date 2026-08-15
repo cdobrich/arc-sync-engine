@@ -13,6 +13,7 @@ The Archive contains no platform-specific logic.
 """
 
 from .archive import Archive
+from .package import ArchivePackage
 from .manifest import ArchiveManifest
 from .paths import ArchivePaths
 from .writer import ArchiveWriter
@@ -20,6 +21,7 @@ from .integrity import ArchiveIntegrityReport, validate_archive_package
 
 __all__ = [
     "Archive",
+    "ArchivePackage",
     "ArchiveManifest",
     "ArchivePaths",
     "ArchiveWriter",

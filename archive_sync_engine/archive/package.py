@@ -5,25 +5,46 @@ import json
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .manifest import ArchiveManifest
 from .paths import ArchivePaths
 from .version import ARCHIVE_ENGINE_VERSION
+from .store import ArchiveStore
 
-from archive_sync_engine.sync.session import SyncSession
 from archive_sync_engine.asset_store import AssetStore
-from archive_sync_engine.importer.state import ImportState
+
+if TYPE_CHECKING:
+    from archive_sync_engine.sync.session import SyncSession
+    from archive_sync_engine.importer.state import ImportState
 
 class ArchivePackage:
-    """
-    Represents an Archive Package on disk.
+    """Represents an Archive Package on disk."""
 
-    The package currently consists of:
+    @classmethod
+    def initialize(cls, paths: ArchivePaths) -> "ArchivePackage":
+        """Create a new, empty Archive Package at ``paths``.
 
-    - manifest.json
-    - archive.sqlite
-    - attachments/
-    """
+        Initialization creates the canonical SQLite database, package
+        directories, and manifest. Existing files are never overwritten.
+        A non-empty target directory is rejected so a partially initialized
+        or unrelated project cannot be mistaken for a new Archive Package.
+        """
+        root = paths.root.expanduser()
+        if root.exists() and any(root.iterdir()):
+            raise FileExistsError(
+                f"Archive Package target is not empty: {root}"
+            )
+
+        paths = ArchivePaths(root=root)
+        paths.ensure_exists()
+
+        store = ArchiveStore.create(paths)
+        store.close()
+
+        package = cls(paths)
+        package.save_manifest(package.create_manifest())
+        return package
 
     def __init__(
         self,
@@ -41,14 +62,6 @@ class ArchivePackage:
         """
         Return the AssetStore owned by this Archive Package.
         """
-
-        return self._asset_store
-
-    @property
-    def asset_store(
-        self,
-    ) -> AssetStore:
-        """Return the package-owned content-addressed asset store."""
 
         return self._asset_store
 
@@ -167,6 +180,8 @@ class ArchivePackage:
         if not isinstance(data, dict):
             raise ValueError("Archive session must contain a JSON object.")
 
+        from archive_sync_engine.sync.session import SyncSession
+
         return SyncSession.from_json_dict(
             data,
         )
@@ -224,6 +239,8 @@ class ArchivePackage:
             raise ValueError(
                 "Import state must contain a JSON object."
             )
+
+        from archive_sync_engine.importer.state import ImportState
 
         return ImportState(
             payload=data,
