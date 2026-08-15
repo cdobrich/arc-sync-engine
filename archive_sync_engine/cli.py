@@ -6,7 +6,11 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
-from archive_sync_engine.adapters.discord.runtime import DiscordClientConfig
+from archive_sync_engine.adapters.discord.runtime import (
+    DiscordClientConfig,
+    DiscordClientFactory,
+    DiscordSourceRuntime,
+)
 from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
 from archive_sync_engine.adapters.fluxer_runtime import FluxerClientConfig
 from archive_sync_engine.config import ConfigurationError, load_setup_configuration
@@ -24,6 +28,40 @@ def build_parser() -> argparse.ArgumentParser:
         description="Archive and synchronize Discord messages to Fluxer.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    import_command = subparsers.add_parser(
+        "import",
+        help="Import Discord canonical data into an Archive Package.",
+    )
+    import_command.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Human-authored YAML setup configuration.",
+    )
+    import_command.add_argument(
+        "--discord-token",
+        default=None,
+        help="Discord authentication token (overrides --config).",
+    )
+    import_command.add_argument(
+        "--discord-guild-id",
+        action="append",
+        type=int,
+        required=False,
+        help="Discord guild ID to archive. Repeat for multiple guilds; overrides --config.",
+    )
+    import_command.add_argument(
+        "--archive",
+        type=Path,
+        default=None,
+        help="Initialized Archive Package directory (overrides --config).",
+    )
+    import_command.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the previous Discord import checkpoint.",
+    )
 
     sync = subparsers.add_parser(
         "sync",
@@ -263,6 +301,70 @@ def _run_validate(args: argparse.Namespace) -> int:
 
     return 0 if report.valid else 1
 
+def _run_import(args: argparse.Namespace) -> int:
+    setup = load_setup_configuration(args.config) if args.config is not None else None
+
+    discord_token = (
+        args.discord_token
+        if args.discord_token is not None
+        else (setup.resolve_discord_token() if setup is not None else None)
+    )
+    if not discord_token:
+        raise ConfigurationError(
+            "Discord authentication token is required; provide --discord-token "
+            "or configure discord.token/token_file in --config."
+        )
+
+    discord_guild_ids = tuple(args.discord_guild_id or ())
+    if not discord_guild_ids and setup is not None:
+        discord_guild_ids = setup.discord_guild_ids
+    if not discord_guild_ids:
+        raise ConfigurationError(
+            "At least one Discord guild ID is required; provide "
+            "--discord-guild-id or configure discord.guild_id in --config."
+        )
+
+    archive_path = (
+        args.archive
+        if args.archive is not None
+        else (setup.resolved_archive_path() if setup is not None else None)
+    )
+    if archive_path is None:
+        raise ConfigurationError(
+            "Archive path is required; provide --archive or configure archive.path "
+            "in --config."
+        )
+
+    paths = ArchivePaths(archive_path.expanduser().resolve())
+    if not paths.database.is_file() or not paths.manifest.is_file():
+        raise ConfigurationError(
+            f"Archive Package is not initialized: {paths.root}. "
+            "Run 'archive-sync-engine init --archive <path>' first."
+        )
+
+    report = validate_archive_package(paths)
+    if not report.valid:
+        details = "; ".join(report.errors)
+        raise ConfigurationError(
+            f"Archive Package is invalid: {details}"
+        )
+
+    config = DiscordClientConfig(
+        token=discord_token,
+        guild_ids=discord_guild_ids,
+    )
+
+    client = DiscordClientFactory().create(config)
+    with DiscordSourceRuntime(client, guild_ids=config.guild_ids) as runtime:
+        runtime.import_to_archive(
+            paths,
+            resume=args.resume,
+        )
+
+    print(f"Imported Discord data into Archive Package: {paths.root}")
+    return 0
+
+
 def _run_sync(args: argparse.Namespace) -> int:
     setup = load_setup_configuration(args.config) if args.config is not None else None
 
@@ -356,6 +458,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_init(args)
         if args.command == "validate":
             return _run_validate(args)
+        if args.command == "import":
+            return _run_import(args)
         if args.command == "sync":
             return _run_sync(args)
         if args.command == "diagnostics":

@@ -266,3 +266,109 @@ def test_init_cli_rejects_existing_nonempty_archive(tmp_path: Path) -> None:
 def test_init_cli_requires_archive_path() -> None:
     with pytest.raises(SystemExit):
         main(["init"])
+
+
+def test_import_cli_builds_source_configuration() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "import",
+            "--discord-token",
+            "discord-token",
+            "--discord-guild-id",
+            "10",
+            "--discord-guild-id",
+            "20",
+            "--archive",
+            "/tmp/archive",
+            "--resume",
+        ]
+    )
+
+    assert args.command == "import"
+    assert args.discord_token == "discord-token"
+    assert args.discord_guild_id == [10, 20]
+    assert args.archive == Path("/tmp/archive")
+    assert args.resume is True
+
+
+def test_import_cli_constructs_discord_runtime_and_imports(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    assert main(["init", "--archive", str(archive_path)]) == 0
+
+    client = MagicMock()
+    discord_factory = MagicMock()
+    discord_factory.create.return_value = client
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+
+    with patch(
+        "archive_sync_engine.cli.DiscordClientFactory",
+        return_value=discord_factory,
+    ) as factory_type, patch(
+        "archive_sync_engine.cli.DiscordSourceRuntime",
+        return_value=runtime,
+    ) as runtime_type:
+        assert (
+            main(
+                [
+                    "import",
+                    "--discord-token",
+                    "discord-token",
+                    "--discord-guild-id",
+                    "10",
+                    "--archive",
+                    str(archive_path),
+                    "--resume",
+                ]
+            )
+            == 0
+        )
+
+    config = factory_type.return_value.create.call_args.args[0]
+    assert config.token == "discord-token"
+    assert config.guild_ids == (10,)
+    runtime_type.assert_called_once_with(client, guild_ids=(10,))
+    from archive_sync_engine.archive import ArchivePaths
+
+    runtime.import_to_archive.assert_called_once_with(
+        ArchivePaths(archive_path),
+        resume=True,
+    )
+
+
+def test_import_cli_rejects_uninitialized_archive(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "import",
+                "--discord-token",
+                "discord-token",
+                "--discord-guild-id",
+                "10",
+                "--archive",
+                str(archive_path),
+            ]
+        )
+
+
+def test_import_cli_rejects_invalid_archive(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    assert main(["init", "--archive", str(archive_path)]) == 0
+    (archive_path / "manifest.json").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "import",
+                "--discord-token",
+                "discord-token",
+                "--discord-guild-id",
+                "10",
+                "--archive",
+                str(archive_path),
+            ]
+        )
