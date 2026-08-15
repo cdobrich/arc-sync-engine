@@ -45,6 +45,14 @@ class ArchivePackage:
         return self._asset_store
 
     @property
+    def asset_store(
+        self,
+    ) -> AssetStore:
+        """Return the package-owned content-addressed asset store."""
+
+        return self._asset_store
+
+    @property
     def paths(
         self,
     ) -> ArchivePaths:

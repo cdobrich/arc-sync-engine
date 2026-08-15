@@ -36,6 +36,7 @@ class DiscordFluxerSyncConfig:
     fluxer_guild_id: str
     archive_paths: ArchivePaths
     identity_mappings: tuple[FluxerIdentityMapping, ...] = ()
+    state_repository_path: str | None = None
 
     def __post_init__(self) -> None:
         if not self.fluxer_guild_id:
@@ -59,6 +60,7 @@ class DiscordFluxerSyncRuntime:
         self._fluxer_runtime: FluxerDestinationRuntime | None = None
         self._pipeline = pipeline or ArchiveSyncPipeline(
             archive_paths=config.archive_paths,
+            state_repository_path=config.state_repository_path,
         )
 
         discord_factory = discord_factory or DiscordClientFactory()

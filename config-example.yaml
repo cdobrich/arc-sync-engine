@@ -1,30 +1,51 @@
-# --- Discord Bot Configuration ---
+# Archive-Sync Engine initial setup configuration.
+#
+# This file is a human-authored starting point. It describes external
+# resources and credentials that are known before the Archive is created.
+# The Archive and its synchronization state generate and persist canonical
+# identity keys and destination mappings themselves; those internal values do
+# not belong in this file.
+
+archive:
+  path: "./archive"
+
+# --- Discord source configuration ---
 discord:
+  # Use either token or token_file, not both.
   token_file: "discord_token.token"
   guild_id: "YOUR_DISCORD_SERVER_ID"
 
-# --- Fluxer Bot Configuration ---
+# --- Fluxer destination configuration ---
 fluxer:
+  # Use either token or token_file, not both.
   token_file: "fluxer_token.token"
   server_id: "YOUR_FLUXER_SERVER_ID"
 
-# --- Migration Delays ---
+# --- Migration delays ---
 delays:
   between_messages_seconds: 0.5
   between_channels_seconds: 5.0
 
-# --- User Masquerade Mappings ---
-# This section maps Discord users to Fluxer accounts.
-# The bot will post as the specified Fluxer user when it sees a message
-# from the corresponding Discord user.
+# --- External identity mappings ---
+# Stable Discord user IDs are used instead of display names. The application
+# derives the current canonical Discord identity key from the external ID.
+# Each mapping may use fluxer_auth_key OR fluxer_auth_key_file. Different
+# mappings may use different forms.
 user_mappings:
-  "Bob#1111":
-    fluxer_username: "BobsFluxerAccount"
-    fluxer_auth_key: "auth_key_for_bob_goes_here"
+  discord:
+    "123456789012345678":
+      fluxer_username: "BobsFluxerAccount"
+      fluxer_auth_key_file: "bob_fluxer_auth.key"
 
-  "Alice#2345":
-    fluxer_username: "AliceOnFluxer"
-    fluxer_auth_key: "auth_key_for_alice_goes_here"
+    "234567890123456789":
+      fluxer_username: "AliceOnFluxer"
+      fluxer_auth_key: "auth_key_for_alice_goes_here"
 
-# If a user is not in this mapping, the bot will post their messages
-# prepended with their Discord username, like "OtherUser#5678: Hello!".
+  fluxer:
+    "1375567890027713164":
+      fluxer_username: "BobsFluxerAccount#0909"
+      fluxer_auth_key_file: "bob_fluxer_auth.key"
+
+    "1613177200987655731":
+      fluxer_username: "AliceOnFluxer#1136"
+      fluxer_auth_key: "auth_key_for_alice_goes_here"

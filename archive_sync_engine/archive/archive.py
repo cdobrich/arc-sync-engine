@@ -62,6 +62,22 @@ class Archive:
             self._store,
         )
 
+    @property
+    def package(
+        self,
+    ) -> ArchivePackage:
+        """Return the underlying Archive Package metadata/storage view."""
+
+        return self._package
+
+    @property
+    def asset_store(
+        self,
+    ):
+        """Return the content-addressed asset store for this package."""
+
+        return self._package.asset_store
+
     #
     # Conversations
     #

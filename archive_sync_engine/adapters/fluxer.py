@@ -33,18 +33,26 @@ from archive_sync_engine.models import (
 
 @dataclass(frozen=True, slots=True)
 class FluxerIdentityMapping:
-    """Fluxer actor mapping for a canonical identity.
+    """Destination mapping for one canonical identity.
 
-    ``fluxer_auth_key`` is ``None`` for the adapter's default Fluxer bot
-    account. A non-``None`` value requests a masqueraded user account.
+    ``username`` is the canonical identity key used to select the mapping.
+    ``fluxer_username`` is the destination display name to use when the
+    destination API accepts an author name override. ``fluxer_auth_key`` is
+    ``None`` for the adapter's default Fluxer bot account. A non-``None``
+    value requests a masqueraded user account.
     """
 
     username: str
     fluxer_auth_key: str | None = None
+    fluxer_username: str | None = None
 
     def __post_init__(self) -> None:
         if not self.username:
             raise ValueError("Fluxer identity mapping username must not be empty.")
+        if self.fluxer_username == "":
+            raise ValueError(
+                "Fluxer identity mapping username must be None or a non-empty value."
+            )
         if self.fluxer_auth_key == "":
             raise ValueError(
                 "Fluxer identity mapping auth key must be None for the bot "
@@ -190,7 +198,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
             if mapping.username in mappings:
                 raise ValueError(
                     "Fluxer identity mappings must not contain duplicate "
-                    f"usernames: {mapping.username!r}."
+                    f"canonical identity keys: {mapping.username!r}."
                 )
             mappings[mapping.username] = mapping
 
@@ -570,7 +578,9 @@ class FluxerDestinationAdapter(DestinationAdapter):
         message: CanonicalMessage,
     ) -> str | None:
         mapping = self._identity_mappings.get(str(message.identity_key))
-        return None if mapping is None else mapping.username
+        return None if mapping is None else (
+            mapping.fluxer_username or mapping.username
+        )
 
     def _auth_key_for_reaction(
         self,

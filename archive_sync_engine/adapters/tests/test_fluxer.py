@@ -430,7 +430,7 @@ def test_identity_mapping_rejects_empty_username() -> None:
 
 
 def test_duplicate_identity_mappings_are_rejected() -> None:
-    with pytest.raises(ValueError, match="duplicate.*username"):
+    with pytest.raises(ValueError, match="duplicate.*identity"):
         FluxerDestinationAdapter(
             FakeFluxerClient(),
             identity_mappings=(
