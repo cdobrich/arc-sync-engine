@@ -239,11 +239,12 @@ def _run_validate(args: argparse.Namespace) -> int:
 
 def _run_sync(args: argparse.Namespace) -> int:
     setup = load_setup_configuration(args.config) if args.config is not None else None
+    resolved_credentials = setup.resolve_credentials() if setup is not None else None
 
     discord_token = (
         args.discord_token
         if args.discord_token is not None
-        else (setup.resolve_discord_token() if setup is not None else None)
+        else (resolved_credentials.discord_token if resolved_credentials is not None else None)
     )
     if not discord_token:
         raise ConfigurationError(
@@ -263,7 +264,7 @@ def _run_sync(args: argparse.Namespace) -> int:
     fluxer_token = (
         args.fluxer_token
         if args.fluxer_token is not None
-        else (setup.resolve_fluxer_token() if setup is not None else None)
+        else (resolved_credentials.fluxer_token if resolved_credentials is not None else None)
     )
     if not fluxer_token:
         raise ConfigurationError(
@@ -296,7 +297,7 @@ def _run_sync(args: argparse.Namespace) -> int:
     identity_mappings = (
         _parse_identity_mappings(args.fluxer_identity)
         if args.fluxer_identity
-        else (setup.resolve_identity_mappings() if setup is not None else ())
+        else (resolved_credentials.identity_mappings if resolved_credentials is not None else ())
     )
 
     config = DiscordFluxerSyncConfig(

@@ -122,6 +122,22 @@ class SetupUserMapping:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedSetupCredentials:
+    """Resolved secrets from one validated setup configuration.
+
+    Resolution is performed once at the application boundary so missing or
+    unreadable secret files fail before runtime clients are constructed.
+    Stable per-user mappings remain keyed by their external platform IDs.
+    """
+
+    discord_token: str
+    fluxer_token: str
+    discord_user_auth: Mapping[str, str]
+    fluxer_user_auth: Mapping[str, str]
+    identity_mappings: tuple[FluxerIdentityMapping, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class SetupConfiguration:
     """Validated human-authored setup configuration."""
 
@@ -143,33 +159,61 @@ class SetupConfiguration:
     def resolved_archive_path(self) -> Path:
         return _resolve_path(self.archive_path, self.config_directory)
 
-    def resolve_discord_token(self) -> str:
-        return self.discord_token.resolve(
-            base_dir=self.config_directory,
-            label="Discord token",
-        )
+    def resolve_credentials(self) -> ResolvedSetupCredentials:
+        """Resolve every configured authentication secret exactly once.
 
-    def resolve_fluxer_token(self) -> str:
-        return self.fluxer_token.resolve(
-            base_dir=self.config_directory,
-            label="Fluxer token",
-        )
-
-    def resolve_identity_mappings(self) -> tuple[FluxerIdentityMapping, ...]:
-        return tuple(
-            mapping.resolve(base_dir=self.config_directory)
+        This is the application boundary for turning human-authored secret
+        sources into runtime credentials. File-backed secrets are resolved
+        relative to the configuration file, while inline secrets are returned
+        unchanged.
+        """
+        base_dir = self.config_directory
+        identity_mappings = tuple(
+            mapping.resolve(base_dir=base_dir)
             for mapping in self.identity_mappings
         )
-
-    def resolve_discord_user_auth(self) -> dict[str, str]:
-        """Resolve configured per-user Discord credentials by stable user ID."""
-        return {
-            mapping.discord_user_id: mapping.resolve_discord_auth(
-                base_dir=self.config_directory
-            )
+        discord_user_auth = {
+            mapping.discord_user_id: mapping.resolve_discord_auth(base_dir=base_dir)
             for mapping in self.identity_mappings
             if mapping.discord_auth is not None
         }
+        fluxer_user_auth = {
+            mapping.fluxer_user_id: mapping.fluxer_auth.resolve(
+                base_dir=base_dir,
+                label=f"Fluxer auth for Fluxer user {mapping.fluxer_user_id}",
+            )
+            for mapping in self.fluxer_user_mappings
+        }
+        return ResolvedSetupCredentials(
+            discord_token=self.discord_token.resolve(
+                base_dir=base_dir,
+                label="Discord token",
+            ),
+            fluxer_token=self.fluxer_token.resolve(
+                base_dir=base_dir,
+                label="Fluxer token",
+            ),
+            discord_user_auth=discord_user_auth,
+            fluxer_user_auth=fluxer_user_auth,
+            identity_mappings=identity_mappings,
+        )
+
+    def resolve_discord_token(self) -> str:
+        return self.resolve_credentials().discord_token
+
+    def resolve_fluxer_token(self) -> str:
+        return self.resolve_credentials().fluxer_token
+
+    def resolve_identity_mappings(self) -> tuple[FluxerIdentityMapping, ...]:
+        return self.resolve_credentials().identity_mappings
+
+    def resolve_discord_user_auth(self) -> dict[str, str]:
+        """Resolve configured per-user Discord credentials by stable user ID."""
+        return dict(self.resolve_credentials().discord_user_auth)
+
+    def resolve_fluxer_user_auth(self) -> dict[str, str]:
+        """Resolve configured per-user Fluxer credentials by stable user ID."""
+        return dict(self.resolve_credentials().fluxer_user_auth)
 
 
 def load_setup_configuration(path: str | Path) -> SetupConfiguration:

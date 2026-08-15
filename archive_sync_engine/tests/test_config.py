@@ -267,3 +267,72 @@ user_mappings:
 
     with pytest.raises(ConfigurationError, match="discord_auth_key"):
         load_setup_configuration(config)
+
+
+def test_setup_resolve_credentials_resolves_all_secret_sources(tmp_path: Path) -> None:
+    (tmp_path / "discord.token").write_text("discord\n", encoding="utf-8")
+    (tmp_path / "fluxer.token").write_text("fluxer\n", encoding="utf-8")
+    (tmp_path / "discord-user.key").write_text("discord-user\n", encoding="utf-8")
+    (tmp_path / "fluxer-user.key").write_text("fluxer-user\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token_file: discord.token
+  guild_id: 123
+fluxer:
+  token_file: fluxer.token
+  server_id: 456
+user_mappings:
+  discord:
+    "1":
+      discord_auth_key_file: discord-user.key
+      fluxer_username: Bob#0001
+      fluxer_auth_key: discord-fluxer
+  fluxer:
+    "2":
+      fluxer_username: Alice#0002
+      fluxer_auth_key_file: fluxer-user.key
+""",
+        encoding="utf-8",
+    )
+
+    setup = load_setup_configuration(config)
+    credentials = setup.resolve_credentials()
+
+    assert credentials.discord_token == "discord"
+    assert credentials.fluxer_token == "fluxer"
+    assert dict(credentials.discord_user_auth) == {"1": "discord-user"}
+    assert dict(credentials.fluxer_user_auth) == {"2": "fluxer-user"}
+    assert credentials.identity_mappings[0].fluxer_auth_key == "discord-fluxer"
+
+
+def test_setup_resolve_credentials_fails_before_runtime_for_missing_mapping_secret_file(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord
+  guild_id: 123
+fluxer:
+  token: fluxer
+  server_id: 456
+user_mappings:
+  fluxer:
+    "2":
+      fluxer_username: Alice#0002
+      fluxer_auth_key_file: missing.key
+""",
+        encoding="utf-8",
+    )
+
+    setup = load_setup_configuration(config)
+
+    with pytest.raises(ConfigurationError, match="Fluxer auth for Fluxer user 2"):
+        setup.resolve_credentials()
