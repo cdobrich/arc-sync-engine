@@ -137,6 +137,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_logging_options(resume)
 
+    preflight = subparsers.add_parser(
+        "preflight",
+        help="Validate configuration, credentials, and Archive readiness without executing work.",
+    )
+    preflight.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Human-authored YAML setup configuration.",
+    )
+    preflight.add_argument(
+        "--archive",
+        type=Path,
+        default=None,
+        help="Archive Package directory (overrides --config).",
+    )
+    preflight.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit machine-readable JSON instead of text.",
+    )
+    add_logging_options(preflight)
+
     validate = subparsers.add_parser(
         "validate",
         help="Validate the integrity of an Archive Package.",
@@ -373,6 +397,73 @@ def _run_diagnostics_summary(args: argparse.Namespace) -> int:
             print(f"ERROR: {error}")
 
     return 0 if integrity.valid else 1
+
+
+def _run_preflight(args: argparse.Namespace) -> int:
+    """Validate all local prerequisites for a configured run without side effects."""
+    setup = load_setup_configuration(args.config)
+    archive_path = (
+        args.archive.expanduser().resolve()
+        if args.archive is not None
+        else setup.resolved_archive_path().expanduser().resolve()
+    )
+
+    checks: dict[str, object] = {
+        "configuration": {
+            "valid": True,
+            "path": str(setup.source_config_path),
+            "discord_guild_ids": list(setup.discord_guild_ids),
+            "fluxer_guild_id": setup.fluxer_guild_id,
+            "identity_mappings": len(setup.identity_mappings),
+            "credentials_resolved": False,
+        },
+        "archive": {
+            "path": str(archive_path),
+            "initialized": False,
+            "valid": False,
+            "errors": [],
+        },
+    }
+
+    # Resolve every configured secret only to verify availability. Never emit it.
+    setup.resolve_discord_token()
+    setup.resolve_fluxer_token()
+    setup.resolve_identity_mappings()
+    checks["configuration"]["credentials_resolved"] = True
+
+    if not archive_path.is_dir():
+        checks["archive"]["errors"] = [
+            f"Archive Package does not exist: {archive_path}"
+        ]
+    else:
+        checks["archive"]["initialized"] = True
+        report = validate_archive_package(ArchivePaths(archive_path))
+        checks["archive"]["valid"] = report.valid
+        checks["archive"]["errors"] = list(report.errors)
+
+    ready = bool(
+        checks["configuration"]["valid"]
+        and checks["configuration"]["credentials_resolved"]
+        and checks["archive"]["initialized"]
+        and checks["archive"]["valid"]
+    )
+    checks["ready"] = ready
+
+    if args.as_json:
+        import json
+        print(json.dumps(checks, indent=2, sort_keys=True))
+    else:
+        configuration = checks["configuration"]
+        archive = checks["archive"]
+        print(f"Configuration: VALID ({configuration['path']})")
+        print(f"Credentials: {'RESOLVED' if configuration['credentials_resolved'] else 'INVALID'}")
+        print(f"Identity mappings: {configuration['identity_mappings']}")
+        print(f"Archive: {'VALID' if archive['valid'] else 'INVALID'} ({archive['path']})")
+        for error in archive["errors"]:
+            print(f"ERROR: {error}")
+        print(f"Ready: {'YES' if ready else 'NO'}")
+
+    return 0 if ready else 1
 
 
 def _run_validate(args: argparse.Namespace) -> int:
@@ -615,6 +706,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info("Starting command: %s", args.command)
 
     try:
+        if args.command == "preflight":
+            return _run_preflight(args)
         if args.command == "validate":
             return _run_validate(args)
         if args.command == "resume":

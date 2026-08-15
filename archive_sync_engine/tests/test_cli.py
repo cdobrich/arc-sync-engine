@@ -414,3 +414,64 @@ def test_diagnostics_summary_json_is_read_only_and_reports_invalid_archive(
     assert '"valid": false' in output
     assert "does not exist" in output
     assert not archive_path.exists()
+
+
+def test_preflight_validates_configuration_and_archive_without_writing(tmp_path: Path, capsys) -> None:
+    (tmp_path / "discord.token").write_text("discord-secret\n", encoding="utf-8")
+    (tmp_path / "fluxer.token").write_text("fluxer-secret\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token_file: discord.token
+  guild_id: 123
+fluxer:
+  token_file: fluxer.token
+  server_id: fluxer-server
+user_mappings: {}
+""",
+        encoding="utf-8",
+    )
+    ArchivePackage.initialize(ArchivePaths(tmp_path / "archive"))
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+
+    assert main(["preflight", "--config", str(config)]) == 0
+
+    output = capsys.readouterr().out
+    assert "Ready: YES" in output
+    assert "discord-secret" not in output
+    assert "fluxer-secret" not in output
+    after = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    assert after == before
+
+
+def test_preflight_json_reports_missing_archive_without_exposing_secrets(tmp_path: Path, capsys) -> None:
+    (tmp_path / "discord.token").write_text("discord-secret\n", encoding="utf-8")
+    (tmp_path / "fluxer.token").write_text("fluxer-secret\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./missing
+discord:
+  token_file: discord.token
+  guild_id: 123
+fluxer:
+  token_file: fluxer.token
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    assert main(["preflight", "--config", str(config), "--json"]) == 1
+
+    import json
+    rendered = capsys.readouterr().out
+    payload = json.loads(rendered)
+    assert payload["ready"] is False
+    assert payload["configuration"]["credentials_resolved"] is True
+    assert payload["archive"]["initialized"] is False
+    assert "discord-secret" not in rendered
+    assert "fluxer-secret" not in rendered
