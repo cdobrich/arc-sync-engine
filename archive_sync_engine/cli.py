@@ -6,6 +6,12 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
+from archive_sync_engine.logging_support import (
+    configure_logging,
+    report_expected_error,
+    report_unexpected_error,
+)
+
 from archive_sync_engine.adapters.discord.runtime import DiscordClientConfig
 from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
 from archive_sync_engine.adapters.fluxer_runtime import FluxerClientConfig
@@ -27,6 +33,20 @@ def build_parser() -> argparse.ArgumentParser:
         description="Archive and synchronize Discord messages to Fluxer.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    def add_logging_options(command: argparse.ArgumentParser) -> None:
+        command.add_argument(
+            "--log-level",
+            choices=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"),
+            default="WARNING",
+            help="Application log level (default: WARNING).",
+        )
+        command.add_argument(
+            "--log-file",
+            type=Path,
+            default=None,
+            help="Optional file for application logs and error details.",
+        )
 
     sync = subparsers.add_parser(
         "sync",
@@ -97,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Omit AUTH_TOKEN to use the bot account for that identity."
         ),
     )
-
+    add_logging_options(sync)
 
     resume = subparsers.add_parser(
         "resume",
@@ -115,6 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Archive Package directory (overrides config.yaml).",
     )
+    add_logging_options(resume)
 
     validate = subparsers.add_parser(
         "validate",
@@ -132,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="as_json",
         help="Emit machine-readable JSON instead of text.",
     )
+    add_logging_options(validate)
 
     diagnostics = subparsers.add_parser(
         "diagnostics",
@@ -170,6 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Inspect Archive integrity and persisted run/session state instead of execution records.",
     )
+    add_logging_options(diagnostics)
     return parser
 
 
@@ -578,6 +601,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    secrets = [
+        value
+        for name in ("discord_token", "fluxer_token")
+        for value in (getattr(args, name, None),)
+        if isinstance(value, str) and value
+    ]
+    logger = configure_logging(
+        level=getattr(args, "log_level", "WARNING"),
+        log_file=getattr(args, "log_file", None),
+        secrets=secrets,
+    )
+    logger.info("Starting command: %s", args.command)
+
     try:
         if args.command == "validate":
             return _run_validate(args)
@@ -588,7 +624,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "diagnostics":
             return _run_diagnostics(args)
     except (ValueError, ConfigurationError) as exc:
+        report_expected_error(exc)
         parser.error(str(exc))
+    except Exception as exc:
+        report_unexpected_error(exc)
+        parser.error("Unexpected application error; consult the log for details.")
 
     parser.error("No command was selected.")
     return 2
