@@ -380,3 +380,37 @@ def test_sync_cli_dry_run_does_not_persist_run_configuration(tmp_path: Path, cap
 def test_sync_cli_rejects_dry_run_with_resume() -> None:
     with pytest.raises(SystemExit):
         main(["sync", "--dry-run", "--resume", "--discord-token", "discord", "--discord-guild-id", "10", "--fluxer-token", "fluxer", "--fluxer-guild-id", "guild", "--archive", "/tmp/archive"])
+
+
+def test_diagnostics_summary_cli_reports_archive_and_operational_state(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    from archive_sync_engine.archive.package import ArchivePackage
+    from archive_sync_engine.archive.paths import ArchivePaths
+
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+
+    assert main(["diagnostics", "--archive", str(archive_path), "--summary"]) == 0
+    output = capsys.readouterr().out
+    assert "Integrity: VALID" in output
+    assert "Canonical records:" in output
+    assert "Run configuration: none" in output
+    assert "Session: none" in output
+    assert "Synchronization state: present=false" in output
+
+
+def test_diagnostics_summary_json_is_read_only_and_reports_invalid_archive(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    archive_path = tmp_path / "missing"
+
+    assert main(
+        ["diagnostics", "--archive", str(archive_path), "--summary", "--json"]
+    ) == 1
+    output = capsys.readouterr().out
+    assert '"valid": false' in output
+    assert "does not exist" in output
+    assert not archive_path.exists()

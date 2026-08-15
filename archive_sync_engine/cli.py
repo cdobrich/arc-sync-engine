@@ -165,6 +165,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="as_json",
         help="Emit machine-readable JSON instead of tabular text.",
     )
+    diagnostics.add_argument(
+        "--summary",
+        action="store_true",
+        help="Inspect Archive integrity and persisted run/session state instead of execution records.",
+    )
     return parser
 
 
@@ -184,6 +189,9 @@ def _parse_identity_mappings(values: Sequence[str]) -> tuple[FluxerIdentityMappi
 
 
 def _run_diagnostics(args: argparse.Namespace) -> int:
+    if args.summary:
+        return _run_diagnostics_summary(args)
+
     repository_path = args.archive / "synchronization.sqlite"
     with SQLiteStateRepository(repository_path) as repository:
         entries = repository.query_execution_log(
@@ -225,6 +233,123 @@ def _run_diagnostics(args: argparse.Namespace) -> int:
 
     return 0
 
+
+
+def _run_diagnostics_summary(args: argparse.Namespace) -> int:
+    """Inspect read-only Archive and operational state without executing work."""
+    paths = ArchivePaths(args.archive.expanduser().resolve())
+    integrity = validate_archive_package(paths)
+
+    summary: dict[str, object] = {
+        "archive": {
+            "path": str(paths.root),
+            "valid": integrity.valid,
+            "errors": list(integrity.errors),
+            "conversations": integrity.conversations_checked,
+            "identities": integrity.identities_checked,
+            "messages": integrity.messages_checked,
+            "attachments": integrity.attachments_checked,
+            "manifest_loaded": integrity.manifest_loaded,
+        },
+        "run_configuration": None,
+        "session": None,
+        "synchronization": {
+            "state_present": False,
+            "executions": 0,
+            "conversations": 0,
+            "identities": 0,
+            "messages": 0,
+        },
+    }
+
+    if paths.run_configuration.is_file():
+        package = ArchivePackage(paths)
+        configuration = package.load_run_configuration()
+        summary["run_configuration"] = configuration.to_json_dict()
+
+    if paths.session.is_file():
+        package = ArchivePackage(paths)
+        session = package.load_session()
+        summary["session"] = {
+            "id": session.id,
+            "direction": session.direction.value,
+            "paused": session.paused,
+            "completed": session.completed,
+            "cancelled": session.cancelled,
+            "checkpoint": session.checkpoint,
+            "error": session.error,
+            "started_at": session.started_at.isoformat(),
+            "updated_at": session.updated_at.isoformat(),
+        }
+
+    repository_path = paths.root / "synchronization.sqlite"
+    if repository_path.is_file():
+        from archive_sync_engine.repository.execution_log import SQLiteExecutionLog
+        from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
+
+        with SQLiteStateRepository(repository_path) as repository:
+            state = repository.load_synchronization_state()
+        with SQLiteExecutionLog(repository_path) as execution_log:
+            execution_count = execution_log.count()
+        summary["synchronization"] = {
+            "state_present": True,
+            "executions": execution_count,
+            "conversations": len(state.conversations),
+            "identities": len(state.identities),
+            "messages": len(state.messages),
+        }
+
+    if args.as_json:
+        import json
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    else:
+        archive = summary["archive"]
+        run = summary["run_configuration"]
+        session = summary["session"]
+        synchronization = summary["synchronization"]
+        print(f"Archive: {paths.root}")
+        print(f"Integrity: {'VALID' if archive['valid'] else 'INVALID'}")
+        print(
+            "Canonical records: "
+            f"conversations={archive['conversations']} "
+            f"identities={archive['identities']} "
+            f"messages={archive['messages']} "
+            f"attachments={archive['attachments']}"
+        )
+        print(
+            "Run configuration: "
+            + (
+                f"{run['direction']} input={run['input_adapter']}"
+                if run is not None
+                else "none"
+            )
+        )
+        if session is None:
+            print("Session: none")
+        else:
+            print(
+                "Session: "
+                f"{session['id']} direction={session['direction']} "
+                f"paused={str(session['paused']).lower()} "
+                f"completed={str(session['completed']).lower()} "
+                f"cancelled={str(session['cancelled']).lower()}"
+            )
+            if session["checkpoint"] is not None:
+                print(f"Checkpoint: {session['checkpoint']}")
+            if session["error"] is not None:
+                print(f"Session error: {session['error']}")
+        print(
+            "Synchronization state: "
+            f"present={str(synchronization['state_present']).lower()} "
+            f"executions={synchronization['executions']} "
+            f"conversations={synchronization['conversations']} "
+            f"identities={synchronization['identities']} "
+            f"messages={synchronization['messages']}"
+        )
+        for error in archive["errors"]:
+            print(f"ERROR: {error}")
+
+    return 0 if integrity.valid else 1
 
 
 def _run_validate(args: argparse.Namespace) -> int:
