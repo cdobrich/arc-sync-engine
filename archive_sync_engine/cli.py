@@ -83,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Resume the previous Discord import checkpoint.",
     )
     sync.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Plan synchronization without importing, executing, or changing state.",
+    )
+    sync.add_argument(
         "--fluxer-identity",
         action="append",
         default=[],
@@ -93,6 +98,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+
+    resume = subparsers.add_parser(
+        "resume",
+        help="Resume the persisted Archive synchronization/import run.",
+    )
+    resume.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Human-authored YAML setup configuration containing credentials.",
+    )
+    resume.add_argument(
+        "--archive",
+        type=Path,
+        default=None,
+        help="Archive Package directory (overrides config.yaml).",
+    )
 
     validate = subparsers.add_parser(
         "validate",
@@ -239,8 +261,85 @@ def _run_validate(args: argparse.Namespace) -> int:
 
     return 0 if report.valid else 1
 
+def _run_resume(args: argparse.Namespace) -> int:
+    """Resume the persisted run using current human-authored credentials.
+
+    Persisted run configuration supplies the source/destination adapters and
+    scopes. Secrets are deliberately read again from config.yaml and are never
+    recovered from run.json.
+    """
+    setup = load_setup_configuration(args.config)
+    configured_archive = setup.resolved_archive_path()
+    archive_path = args.archive.expanduser().resolve() if args.archive is not None else configured_archive
+    paths = ArchivePaths(archive_path)
+
+    package = ArchivePackage(paths)
+    try:
+        run_configuration = package.load_run_configuration()
+    except FileNotFoundError as exc:
+        raise ConfigurationError(
+            f"No persisted run configuration exists in Archive Package: {paths.root}. "
+            "Run an import or sync first."
+        ) from exc
+
+    try:
+        session = package.load_session()
+    except FileNotFoundError as exc:
+        raise ConfigurationError(
+            f"No persisted run session exists in Archive Package: {paths.root}."
+        ) from exc
+
+    if session.completed:
+        raise ConfigurationError("The persisted run is already completed; it cannot be resumed.")
+    if session.cancelled:
+        raise ConfigurationError("The persisted run was cancelled and cannot be resumed.")
+    if run_configuration.direction is not RunDirection.SYNC:
+        raise ConfigurationError(
+            "The persisted run is not a sync run. The current resume CLI only "
+            "supports the Discord-to-Fluxer synchronization runtime."
+        )
+    if run_configuration.input_adapter != "discord":
+        raise ConfigurationError(
+            f"The persisted input adapter {run_configuration.input_adapter!r} "
+            "is not supported by the current sync runtime."
+        )
+    if run_configuration.destination_adapter != "fluxer":
+        raise ConfigurationError(
+            f"The persisted destination adapter "
+            f"{run_configuration.destination_adapter!r} is not supported by "
+            "the current sync runtime."
+        )
+    if not run_configuration.input_scope or not run_configuration.destination_scope:
+        raise ConfigurationError("The persisted run configuration has no source/destination scope.")
+
+    try:
+        discord_guild_ids = tuple(int(value) for value in run_configuration.input_scope)
+    except ValueError as exc:
+        raise ConfigurationError(
+            "The persisted Discord input scope contains a non-numeric guild ID."
+        ) from exc
+
+    resume_args = argparse.Namespace(
+        config=args.config,
+        discord_token=None,
+        discord_guild_id=list(discord_guild_ids),
+        fluxer_token=None,
+        fluxer_guild_id=run_configuration.destination_scope[0],
+        archive=archive_path,
+        fluxer_api_url=None,
+        fluxer_max_retries=4,
+        resume=True,
+        dry_run=False,
+        fluxer_identity=[],
+    )
+    return _run_sync(resume_args)
+
+
 def _run_sync(args: argparse.Namespace) -> int:
     setup = load_setup_configuration(args.config) if args.config is not None else None
+
+    if args.dry_run and args.resume:
+        raise ConfigurationError("--dry-run cannot be combined with --resume.")
 
     discord_token = (
         args.discord_token
@@ -329,18 +428,23 @@ def _run_sync(args: argparse.Namespace) -> int:
         identity_mappings=identity_mappings,
     )
 
-    ArchivePackage(paths).save_run_configuration(
-        SyncRunConfiguration(
-            direction=RunDirection.SYNC,
-            input_adapter="discord",
-            input_scope=tuple(str(value) for value in discord_guild_ids),
-            destination_adapter="fluxer",
-            destination_scope=(str(fluxer_guild_id),),
+    if not args.dry_run:
+        ArchivePackage(paths).save_run_configuration(
+            SyncRunConfiguration(
+                direction=RunDirection.SYNC,
+                input_adapter="discord",
+                input_scope=tuple(str(value) for value in discord_guild_ids),
+                destination_adapter="fluxer",
+                destination_scope=(str(fluxer_guild_id),),
+            )
         )
-    )
 
     with DiscordFluxerSyncRuntime(config) as runtime:
-        runtime.run(resume_import=args.resume)
+        if args.dry_run:
+            operations = runtime.dry_run()
+            print(f"Dry run: {len(operations)} synchronization operations planned.")
+        else:
+            runtime.run(resume_import=args.resume)
 
     return 0
 
@@ -352,6 +456,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "validate":
             return _run_validate(args)
+        if args.command == "resume":
+            return _run_resume(args)
         if args.command == "sync":
             return _run_sync(args)
         if args.command == "diagnostics":

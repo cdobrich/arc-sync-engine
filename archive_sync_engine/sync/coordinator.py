@@ -66,6 +66,25 @@ class SyncCoordinator:
         self._capabilities = capabilities
         self._state_repository = state_repository
 
+    def dry_run(self) -> tuple[SyncOperation, ...]:
+        """Plan synchronization without executing or persisting anything.
+
+        Dry-run planning loads the current synchronization state and asks the
+        Planner for the complete validated operation stream. It deliberately
+        does not call the executor, mutate the destination, or persist state.
+        """
+        synchronization_state: SynchronizationState = (
+            self._state_repository.load_synchronization_state()
+        )
+
+        return tuple(
+            self._planner.plan(
+                archive=self._archive,
+                synchronization_state=synchronization_state,
+                capabilities=self._capabilities,
+            )
+        )
+
     def synchronize(self) -> None:
         """
         Perform one synchronization run.

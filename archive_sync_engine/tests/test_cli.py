@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from archive_sync_engine.cli import build_parser, main
+from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
 from archive_sync_engine.archive.package import ArchivePackage
 from archive_sync_engine.archive.paths import ArchivePaths
 
@@ -257,3 +258,125 @@ def test_sync_cli_rejects_invalid_config(tmp_path: Path, monkeypatch) -> None:
 
     with pytest.raises(SystemExit):
         main(["--config", str(config_path), "sync"])
+
+
+def test_resume_cli_reuses_persisted_scopes_but_requires_current_credentials(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    ArchivePackage(ArchivePaths(archive_path)).save_run_configuration(
+        SyncRunConfiguration(
+            direction=RunDirection.SYNC,
+            input_adapter="discord",
+            input_scope=("10", "20"),
+            destination_adapter="fluxer",
+            destination_scope=("fluxer-guild",),
+        )
+    )
+    from archive_sync_engine.sync.session import SyncDirection, SyncSession
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    ArchivePackage(ArchivePaths(archive_path)).save_session(
+        SyncSession(id="sync-1", direction=SyncDirection.EXPORT, started_at=now, updated_at=now)
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 999
+fluxer:
+  token: fluxer-secret
+  server_id: config-guild
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    with patch("archive_sync_engine.cli.DiscordFluxerSyncRuntime", return_value=runtime) as runtime_type:
+        assert main(["resume", "--config", str(config)]) == 0
+
+    runtime_type.assert_called_once()
+    config_arg = runtime_type.call_args.args[0]
+    assert config_arg.discord.guild_ids == (10, 20)
+    assert config_arg.fluxer_guild_id == "fluxer-guild"
+    runtime.run.assert_called_once_with(resume_import=True)
+
+
+def test_resume_cli_rejects_completed_persisted_run(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    ArchivePackage(ArchivePaths(archive_path)).save_run_configuration(
+        SyncRunConfiguration(
+            direction=RunDirection.SYNC,
+            input_adapter="discord",
+            input_scope=("10",),
+            destination_adapter="fluxer",
+            destination_scope=("fluxer-guild",),
+        )
+    )
+    from archive_sync_engine.sync.session import SyncDirection, SyncSession
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    ArchivePackage(ArchivePaths(archive_path)).save_session(
+        SyncSession(id="sync-1", direction=SyncDirection.EXPORT, started_at=now, updated_at=now, completed=True)
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 10
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-guild
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit):
+        main(["resume", "--config", str(config)])
+
+
+def test_sync_cli_dry_run_does_not_persist_run_configuration(tmp_path: Path, capsys) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.dry_run.return_value = (Mock(), Mock())
+
+    with patch(
+        "archive_sync_engine.cli.DiscordFluxerSyncRuntime",
+        return_value=runtime,
+    ):
+        assert (
+            main(
+                [
+                    "sync",
+                    "--discord-token", "discord-token",
+                    "--discord-guild-id", "10",
+                    "--fluxer-token", "fluxer-token",
+                    "--fluxer-guild-id", "guild-1",
+                    "--archive", str(archive_path),
+                    "--dry-run",
+                ]
+            )
+            == 0
+        )
+
+    runtime.dry_run.assert_called_once_with()
+    runtime.run.assert_not_called()
+    assert not (archive_path / "run.json").exists()
+    assert "2 synchronization operations planned" in capsys.readouterr().out
+
+
+def test_sync_cli_rejects_dry_run_with_resume() -> None:
+    with pytest.raises(SystemExit):
+        main(["sync", "--dry-run", "--resume", "--discord-token", "discord", "--discord-guild-id", "10", "--fluxer-token", "fluxer", "--fluxer-guild-id", "guild", "--archive", "/tmp/archive"])

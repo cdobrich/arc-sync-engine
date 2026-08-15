@@ -1595,3 +1595,37 @@ def test_synchronize_does_not_expose_checkpoint_state_after_repository_failure()
     # Restore the repository implementation to verify that the state was
     # never replaced before the failed checkpoint.
     state_repository.record_execution = original_record_execution
+
+
+def test_dry_run_plans_operations_without_executing_or_persisting_state() -> None:
+    archive = _archive()
+    planner = _planner()
+    executor = _executor()
+    destination = _destination()
+    capabilities = _capabilities()
+    state_repository = _state_repository()
+
+    state = SynchronizationState()
+    operation_one = Mock(spec=SyncOperation)
+    operation_two = Mock(spec=SyncOperation)
+    state_repository.load_synchronization_state.return_value = state
+    planner.plan.return_value = iter((operation_one, operation_two))
+
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=planner,
+        executor=executor,
+        destination=destination,
+        capabilities=capabilities,
+        state_repository=state_repository,
+    )
+
+    assert coordinator.dry_run() == (operation_one, operation_two)
+    state_repository.load_synchronization_state.assert_called_once_with()
+    planner.plan.assert_called_once_with(
+        archive=archive,
+        synchronization_state=state,
+        capabilities=capabilities,
+    )
+    executor.execute.assert_not_called()
+    state_repository.record_execution.assert_not_called()

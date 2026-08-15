@@ -8,7 +8,10 @@ components.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from archive_sync_engine.operations import SyncOperation
 
 from archive_sync_engine.adapters.exceptions import AdapterError
 from archive_sync_engine.adapters.discord.runtime import (
@@ -100,6 +103,17 @@ class DiscordFluxerSyncRuntime:
         if runtime is None:
             raise AdapterError("Fluxer runtime is not available.")
         return runtime
+
+    def dry_run(self) -> tuple["SyncOperation", ...]:
+        """Plan the current Archive-to-Fluxer synchronization without writes."""
+        if self._closed:
+            raise AdapterError(
+                "Cannot dry-run a closed Discord-to-Fluxer runtime."
+            )
+
+        return self._pipeline.dry_run(
+            destination=self.fluxer.adapter,
+        )
 
     def run(self, *, resume_import: bool = False) -> None:
         """Import Discord into the Archive, then synchronize the Archive to Fluxer."""

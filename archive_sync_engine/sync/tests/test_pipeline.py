@@ -18,6 +18,7 @@ from archive_sync_engine.archive import ArchivePaths
 from archive_sync_engine.models import CanonicalConversation, CanonicalMessage
 from archive_sync_engine.models.enums import ConversationType
 from archive_sync_engine.models.ids import ConversationId, IdentityKey, MessageId
+from archive_sync_engine.operations import SyncOperation
 from archive_sync_engine.sync.pipeline import ArchiveSyncPipeline
 
 
@@ -113,3 +114,29 @@ def test_archive_sync_pipeline_does_not_touch_destination_when_import_fails(
 
     destination.create_conversation.assert_not_called()
     destination.create_message.assert_not_called()
+
+
+def test_pipeline_dry_run_does_not_execute_or_import() -> None:
+    from unittest.mock import MagicMock, patch
+
+    archive_paths = ArchivePaths(Path("/tmp/archive"))
+    destination = MagicMock(spec=DestinationAdapter)
+    destination.capabilities = MagicMock()
+    operations = (Mock(spec=SyncOperation),)
+
+    coordinator = MagicMock()
+    coordinator.dry_run.return_value = operations
+
+    with patch("archive_sync_engine.sync.pipeline.Archive") as archive_type, patch(
+        "archive_sync_engine.sync.pipeline.SQLiteStateRepository"
+    ) as repository_type, patch(
+        "archive_sync_engine.sync.pipeline.SyncCoordinator",
+        return_value=coordinator,
+    ):
+        result = ArchiveSyncPipeline(archive_paths=archive_paths).dry_run(
+            destination=destination,
+        )
+
+    assert result == operations
+    coordinator.dry_run.assert_called_once_with()
+    assert not (archive_paths.root / "synchronization.sqlite").exists()

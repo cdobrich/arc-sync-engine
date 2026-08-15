@@ -11,7 +11,8 @@ from archive_sync_engine.importer.canonical_coordinator import (
 )
 from archive_sync_engine.planner import Planner
 from archive_sync_engine.asset_store import AssetStore
-from archive_sync_engine.repository import SQLiteStateRepository
+from archive_sync_engine.repository import InMemoryStateRepository, SQLiteStateRepository
+from archive_sync_engine.operations import SyncOperation
 
 from .coordinator import SyncCoordinator
 
@@ -36,6 +37,45 @@ class ArchiveSyncPipeline:
             if state_repository_path is not None
             else archive_paths.root / "synchronization.sqlite"
         )
+
+    def dry_run(
+        self,
+        *,
+        destination: DestinationAdapter,
+    ) -> tuple[SyncOperation, ...]:
+        """Plan synchronization without importing, executing, or persisting.
+
+        The canonical Archive is read as-is. The destination adapter supplies
+        capabilities only; no destination operation is executed.
+        """
+        from archive_sync_engine.operations import SyncOperation
+
+        with Archive(self._archive_paths) as archive:
+            if Path(self._state_repository_path).is_file():
+                with SQLiteStateRepository(
+                    self._state_repository_path,
+                ) as state_repository:
+                    return SyncCoordinator(
+                        archive=archive,
+                        planner=Planner(),
+                        executor=OperationExecutor(
+                            asset_store=AssetStore(self._archive_paths.root),
+                        ),
+                        destination=destination,
+                        capabilities=destination.capabilities,
+                        state_repository=state_repository,
+                    ).dry_run()
+
+            return SyncCoordinator(
+                archive=archive,
+                planner=Planner(),
+                executor=OperationExecutor(
+                    asset_store=AssetStore(self._archive_paths.root),
+                ),
+                destination=destination,
+                capabilities=destination.capabilities,
+                state_repository=InMemoryStateRepository(),
+            ).dry_run()
 
     def run(
         self,
