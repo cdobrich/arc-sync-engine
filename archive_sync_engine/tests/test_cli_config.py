@@ -38,20 +38,23 @@ user_mappings:
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
 
+    registry = MagicMock()
+    registry.create.return_value = runtime
     with patch(
-        "archive_sync_engine.sync.discord_fluxer_runtime.DiscordFluxerSyncRuntime.from_runtime_request",
-        return_value=runtime,
-    ) as runtime_type:
+        "archive_sync_engine.cli.default_sync_runtime_registry",
+        return_value=registry,
+    ) as registry_factory:
         assert main(["sync", "--config", str(config)]) == 0
 
-    runtime_config = runtime_type.call_args.args[0]
-    assert runtime_config.adapter_config["discord"].token == "discord-secret"
-    assert runtime_config.adapter_config["discord"].guild_ids == (123,)
-    assert runtime_config.adapter_config["fluxer"].token == "fluxer-secret"
-    assert runtime_config.destination_scope == ("fluxer-server",)
-    assert runtime_config.archive_path == (tmp_path / "archive").resolve()
-    assert runtime_config.adapter_config["identity_mappings"][0].username == "discord:user:987654321"
-    assert runtime_config.adapter_config["identity_mappings"][0].fluxer_auth_key == "bob-secret"
+    registry_factory.assert_called_once()
+    request = registry.create.call_args.args[2]
+    assert request.adapter_config["discord"].token == "discord-secret"
+    assert request.adapter_config["discord"].guild_ids == (123,)
+    assert request.adapter_config["fluxer"].token == "fluxer-secret"
+    assert request.destination_scope == ("fluxer-server",)
+    assert request.archive_path == (tmp_path / "archive").resolve()
+    assert request.adapter_config["identity_mappings"][0].username == "discord:user:987654321"
+    assert request.adapter_config["identity_mappings"][0].fluxer_auth_key == "bob-secret"
 
 
 def test_sync_cli_arguments_override_yaml_configuration(tmp_path: Path) -> None:
@@ -79,10 +82,12 @@ fluxer:
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
 
+    registry = MagicMock()
+    registry.create.return_value = runtime
     with patch(
-        "archive_sync_engine.sync.discord_fluxer_runtime.DiscordFluxerSyncRuntime.from_runtime_request",
-        return_value=runtime,
-    ) as runtime_type:
+        "archive_sync_engine.cli.default_sync_runtime_registry",
+        return_value=registry,
+    ) as registry_factory:
         assert (
             main(
                 [
@@ -104,9 +109,10 @@ fluxer:
             == 0
         )
 
-    runtime_config = runtime_type.call_args.args[0]
-    assert runtime_config.adapter_config["discord"].token == "cli-discord"
-    assert runtime_config.adapter_config["discord"].guild_ids == (222,)
-    assert runtime_config.adapter_config["fluxer"].token == "cli-fluxer"
-    assert runtime_config.destination_scope == ("cli-server",)
-    assert runtime_config.archive_path == (tmp_path / "cli-archive").resolve()
+    registry_factory.assert_called_once()
+    request = registry.create.call_args.args[2]
+    assert request.adapter_config["discord"].token == "cli-discord"
+    assert request.adapter_config["discord"].guild_ids == (222,)
+    assert request.adapter_config["fluxer"].token == "cli-fluxer"
+    assert request.destination_scope == ("cli-server",)
+    assert request.archive_path == tmp_path / "cli-archive"
