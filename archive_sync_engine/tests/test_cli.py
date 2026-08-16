@@ -928,3 +928,35 @@ def test_init_cli_refuses_non_empty_directory(tmp_path: Path) -> None:
         main(["init", "--archive", str(archive_path)])
 
     assert (archive_path / "existing.txt").read_text(encoding="utf-8") == "do not overwrite"
+
+
+def test_config_example_cli_writes_template(tmp_path: Path, capsys) -> None:
+    output = tmp_path / "config.yaml"
+
+    assert main(["config-example", "--output", str(output)]) == 0
+    assert output.read_text(encoding="utf-8") == (
+        Path("config-example.yaml").read_text(encoding="utf-8")
+    )
+    assert f"Configuration template written to: {output}" in capsys.readouterr().out
+
+
+def test_config_example_cli_refuses_to_overwrite_existing_file(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "config.yaml"
+    output.write_text("existing", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main(["config-example", "--output", str(output)])
+
+    assert output.read_text(encoding="utf-8") == "existing"
+
+
+def test_config_example_cli_force_overwrites_existing_file(tmp_path: Path) -> None:
+    output = tmp_path / "config.yaml"
+    output.write_text("existing", encoding="utf-8")
+
+    assert main(["config-example", "--output", str(output), "--force"]) == 0
+    assert output.read_text(encoding="utf-8") == Path(
+        "config-example.yaml"
+    ).read_text(encoding="utf-8")

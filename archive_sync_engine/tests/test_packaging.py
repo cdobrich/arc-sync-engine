@@ -34,16 +34,16 @@ def test_platform_adapter_dependencies_are_optional() -> None:
     extras = metadata["optional-dependencies"]
 
     assert extras["discord"] == ["discord.py>=2.7,<3"]
-    assert extras["fluxer"] == ["fluxer.py>=0.4,<0.5"]
+    assert extras["fluxer"] == ["fluxer.py>=0.4.2,<0.5"]
     assert extras["sync"] == [
         "discord.py>=2.7,<3",
-        "fluxer.py>=0.4,<0.5",
+        "fluxer.py>=0.4.2,<0.5",
     ]
 
 
-def test_configuration_template_is_included_in_source_manifest() -> None:
-    manifest = (PROJECT_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
-    assert "include config-example.yaml" in manifest
+def test_configuration_template_is_declared_as_distribution_data() -> None:
+    pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"share/archive-sync-engine" = ["config-example.yaml"]' in pyproject
     assert (PROJECT_ROOT / "config-example.yaml").is_file()
 
 

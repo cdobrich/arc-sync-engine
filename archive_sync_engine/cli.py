@@ -59,6 +59,23 @@ def build_parser() -> argparse.ArgumentParser:
             help="Optional file for application logs and error details.",
         )
 
+    config_example = subparsers.add_parser(
+        "config-example",
+        help="Write the shipped human-authored YAML setup template.",
+    )
+    config_example.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Destination path for the generated configuration template.",
+    )
+    config_example.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow replacing an existing output file.",
+    )
+    add_logging_options(config_example)
+
     import_command = subparsers.add_parser(
         "import",
         help="Import a configured source into an Archive Package.",
@@ -673,6 +690,41 @@ def _run_validate(args: argparse.Namespace) -> int:
 
     return 0 if report.valid else 1
 
+def _config_example_candidates() -> tuple[Path, ...]:
+    import sysconfig
+
+    source_candidate = Path(__file__).resolve().parents[1] / "config-example.yaml"
+    installed_candidate = (
+        Path(sysconfig.get_path("data"))
+        / "share"
+        / "archive-sync-engine"
+        / "config-example.yaml"
+    )
+    return (source_candidate, installed_candidate)
+
+
+def _load_config_example_template() -> str:
+    for candidate in _config_example_candidates():
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    raise ConfigurationError(
+        "The packaged config-example.yaml template could not be found."
+    )
+
+
+def _run_config_example(args: argparse.Namespace) -> int:
+    output = args.output.expanduser()
+    if output.exists() and not args.force:
+        raise ConfigurationError(
+            f"Refusing to overwrite existing configuration file: {output}. "
+            "Use --force to replace it."
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(_load_config_example_template(), encoding="utf-8")
+    print(f"Configuration template written to: {output}")
+    return 0
+
+
 def _run_init(args: argparse.Namespace) -> int:
     """Create a new empty Archive Package without touching existing data."""
     if args.config is not None:
@@ -1139,6 +1191,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info("Starting command: %s", args.command)
 
     try:
+        if args.command == "config-example":
+            return _run_config_example(args)
         if args.command == "init":
             return _run_init(args)
         if args.command == "import":
