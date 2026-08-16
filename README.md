@@ -326,7 +326,7 @@ Tested with Python 3.11, but in theory should work for older versions of Python.
 
 Run the following:
 
-    pytest -q --disable-warnings
+    python -m pytest archive_sync_engine
 
 There are many warnings from the Discord sub-libraries, which is why we suppress them.
 
