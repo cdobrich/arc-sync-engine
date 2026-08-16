@@ -147,6 +147,8 @@ class SetupConfiguration:
     discord_guild_ids: tuple[int, ...]
     fluxer_token: SecretSource
     fluxer_guild_id: str
+    input_adapter: str = "discord"
+    input_scope: tuple[str, ...] = ()
     identity_mappings: tuple[SetupUserMapping, ...] = ()
     fluxer_user_mappings: tuple[SetupUserMapping, ...] = ()
     between_messages_seconds: float = 0.0
@@ -238,6 +240,7 @@ def load_setup_configuration(path: str | Path) -> SetupConfiguration:
     archive = _mapping(raw, "archive")
     discord = _mapping(raw, "discord")
     fluxer = _mapping(raw, "fluxer")
+    input_config = _mapping(raw, "input", required=False)
     delays = _mapping(raw, "delays", required=False)
     mappings = _mapping(raw, "user_mappings", required=False)
 
@@ -249,6 +252,17 @@ def load_setup_configuration(path: str | Path) -> SetupConfiguration:
     if discord_guild_value is None:
         discord_guild_value = discord.get("guild_ids")
     discord_guild_ids = _guild_ids(discord_guild_value, "discord.guild_id")
+
+    input_adapter = _optional_adapter_name(input_config.get("adapter")) or "discord"
+    input_scope_value = input_config.get("scope")
+    if input_scope_value is None:
+        input_scope = tuple(str(value) for value in discord_guild_ids) if input_adapter == "discord" else ()
+    else:
+        input_scope = _scope_values(input_scope_value, "input.scope")
+    if not input_scope:
+        raise ConfigurationError(
+            f"input.scope must contain at least one value for source adapter {input_adapter!r}."
+        )
 
     fluxer_guild_id = _required_identifier(
         fluxer,
@@ -272,6 +286,8 @@ def load_setup_configuration(path: str | Path) -> SetupConfiguration:
         archive_path=Path(archive_path).expanduser(),
         discord_token=discord_token,
         discord_guild_ids=discord_guild_ids,
+        input_adapter=input_adapter,
+        input_scope=input_scope,
         fluxer_token=fluxer_token,
         fluxer_guild_id=fluxer_guild_id,
         identity_mappings=identity_mappings,
@@ -279,6 +295,26 @@ def load_setup_configuration(path: str | Path) -> SetupConfiguration:
         between_messages_seconds=between_messages,
         between_channels_seconds=between_channels,
     )
+
+
+def _optional_adapter_name(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigurationError("input.adapter must be a non-empty string.")
+    return value.strip().lower()
+
+
+def _scope_values(value: Any, label: str) -> tuple[str, ...]:
+    if isinstance(value, (str, int)) and not isinstance(value, bool):
+        values = (str(value).strip(),)
+    elif isinstance(value, (list, tuple)):
+        values = tuple(str(item).strip() for item in value)
+    else:
+        raise ConfigurationError(f"{label} must be a value or a YAML sequence of values.")
+    if not values or any(not item for item in values):
+        raise ConfigurationError(f"{label} must contain at least one non-empty value.")
+    return values
 
 
 def _parse_user_mappings(

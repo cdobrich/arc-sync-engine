@@ -9,6 +9,14 @@
 archive:
   path: "./archive"
 
+# --- Generic source/import selection ---
+# The input adapter and scope are intentionally adapter-neutral.
+# Concrete credentials remain in the platform-specific sections below.
+input:
+  adapter: discord
+  scope:
+    - "YOUR_DISCORD_SERVER_ID"
+
 # --- Discord source configuration ---
 discord:
   # Use either token or token_file, not both.

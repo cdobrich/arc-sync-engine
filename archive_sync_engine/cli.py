@@ -86,8 +86,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_command.add_argument(
         "--input-adapter",
-        default="discord",
-        help="Registered source adapter to import from (default: discord).",
+        default=None,
+        help="Registered source adapter to import from (defaults to input.adapter in YAML).",
     )
     import_command.add_argument(
         "--input-scope",
@@ -810,7 +810,7 @@ def _run_import(args: argparse.Namespace) -> int:
             f"Archive Package is invalid: {'; '.join(report.errors)}"
         )
 
-    adapter_name = args.input_adapter.strip().lower()
+    adapter_name = (args.input_adapter or setup.input_adapter).strip().lower()
     try:
         descriptor = default_adapter_registry().require_source(adapter_name)
     except ValueError as exc:
@@ -820,8 +820,8 @@ def _run_import(args: argparse.Namespace) -> int:
         scope = tuple(value.strip() for value in args.input_scope)
         if any(not value for value in scope):
             raise ConfigurationError("Input scope values must not be empty.")
-    elif adapter_name == "discord":
-        scope = tuple(str(value) for value in setup.discord_guild_ids)
+    elif setup.input_scope:
+        scope = tuple(setup.input_scope)
     else:
         raise ConfigurationError(
             f"Input scope must be provided for source adapter {descriptor.name!r}."

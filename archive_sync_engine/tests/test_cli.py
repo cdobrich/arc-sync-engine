@@ -584,6 +584,10 @@ discord:
 fluxer:
   token: fluxer-secret
   server_id: fluxer-server
+input:
+  adapter: discord
+  scope:
+    - 321
 """,
         encoding="utf-8",
     )
@@ -605,7 +609,7 @@ fluxer:
     registry.create.assert_called_once()
     request = registry.create.call_args.args[1]
     assert request.adapter == "discord"
-    assert request.scope == ("123",)
+    assert request.scope == ("321",)
     assert request.archive_path == archive_path.resolve()
     assert request.adapter_config["discord"].token == "discord-secret"
     runtime.import_to_archive.assert_called_once_with(
@@ -616,7 +620,7 @@ fluxer:
     persisted = ArchivePackage(ArchivePaths(archive_path)).load_run_configuration()
     assert persisted.direction is RunDirection.IMPORT
     assert persisted.input_adapter == "discord"
-    assert persisted.input_scope == ("123",)
+    assert persisted.input_scope == ("321",)
     assert persisted.destination_adapter is None
     assert persisted.destination_scope == ()
 
