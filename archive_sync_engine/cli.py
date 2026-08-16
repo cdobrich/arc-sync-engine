@@ -32,10 +32,7 @@ from archive_sync_engine.exporter import CanonicalExporter
 from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
 from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
 from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
-from archive_sync_engine.sync.discord_fluxer_runtime import (
-    DiscordFluxerSyncConfig,
-    DiscordFluxerSyncRuntime,
-)
+from archive_sync_engine.sync.discord_fluxer_runtime import DiscordFluxerSyncConfig
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1130,26 +1127,7 @@ def _run_sync(args: argparse.Namespace) -> int:
             )
         )
 
-    def build_discord_fluxer_runtime(request: SyncRuntimeRequest) -> DiscordFluxerSyncRuntime:
-        if request.input_adapter != "discord" or request.destination_adapter != "fluxer":
-            raise ConfigurationError("The current Discord/Fluxer runtime cannot handle this adapter pair.")
-        if len(request.destination_scope) != 1:
-            raise ConfigurationError("Fluxer destination scope must contain exactly one server ID.")
-        try:
-            discord_config = request.adapter_config["discord"]
-            fluxer_config = request.adapter_config["fluxer"]
-        except KeyError as exc:
-            raise ConfigurationError(f"Missing runtime configuration for adapter {exc.args[0]!r}.") from exc
-        runtime_config = DiscordFluxerSyncConfig(
-            discord=discord_config,
-            fluxer=fluxer_config,
-            fluxer_guild_id=request.destination_scope[0],
-            archive_paths=ArchivePaths(request.archive_path),
-            identity_mappings=tuple(request.adapter_config.get("identity_mappings", ())),
-        )
-        return DiscordFluxerSyncRuntime(runtime_config)
-
-    runtime_registry = default_sync_runtime_registry(build_discord_fluxer_runtime)
+    runtime_registry = default_sync_runtime_registry()
     runtime_request = SyncRuntimeRequest(
         input_adapter=input_adapter,
         input_scope=tuple(str(value) for value in discord_guild_ids),

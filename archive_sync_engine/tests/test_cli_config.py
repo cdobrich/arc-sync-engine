@@ -39,19 +39,19 @@ user_mappings:
     runtime.__exit__.return_value = None
 
     with patch(
-        "archive_sync_engine.cli.DiscordFluxerSyncRuntime",
+        "archive_sync_engine.sync.discord_fluxer_runtime.DiscordFluxerSyncRuntime.from_runtime_request",
         return_value=runtime,
     ) as runtime_type:
         assert main(["sync", "--config", str(config)]) == 0
 
     runtime_config = runtime_type.call_args.args[0]
-    assert runtime_config.discord.token == "discord-secret"
-    assert runtime_config.discord.guild_ids == (123,)
-    assert runtime_config.fluxer.token == "fluxer-secret"
-    assert runtime_config.fluxer_guild_id == "fluxer-server"
-    assert runtime_config.archive_paths.root == (tmp_path / "archive").resolve()
-    assert runtime_config.identity_mappings[0].username == "discord:user:987654321"
-    assert runtime_config.identity_mappings[0].fluxer_auth_key == "bob-secret"
+    assert runtime_config.adapter_config["discord"].token == "discord-secret"
+    assert runtime_config.adapter_config["discord"].guild_ids == (123,)
+    assert runtime_config.adapter_config["fluxer"].token == "fluxer-secret"
+    assert runtime_config.destination_scope == ("fluxer-server",)
+    assert runtime_config.archive_path == (tmp_path / "archive").resolve()
+    assert runtime_config.adapter_config["identity_mappings"][0].username == "discord:user:987654321"
+    assert runtime_config.adapter_config["identity_mappings"][0].fluxer_auth_key == "bob-secret"
 
 
 def test_sync_cli_arguments_override_yaml_configuration(tmp_path: Path) -> None:
@@ -80,7 +80,7 @@ fluxer:
     runtime.__exit__.return_value = None
 
     with patch(
-        "archive_sync_engine.cli.DiscordFluxerSyncRuntime",
+        "archive_sync_engine.sync.discord_fluxer_runtime.DiscordFluxerSyncRuntime.from_runtime_request",
         return_value=runtime,
     ) as runtime_type:
         assert (
@@ -105,8 +105,8 @@ fluxer:
         )
 
     runtime_config = runtime_type.call_args.args[0]
-    assert runtime_config.discord.token == "cli-discord"
-    assert runtime_config.discord.guild_ids == (222,)
-    assert runtime_config.fluxer.token == "cli-fluxer"
-    assert runtime_config.fluxer_guild_id == "cli-server"
-    assert runtime_config.archive_paths.root == tmp_path / "cli-archive"
+    assert runtime_config.adapter_config["discord"].token == "cli-discord"
+    assert runtime_config.adapter_config["discord"].guild_ids == (222,)
+    assert runtime_config.adapter_config["fluxer"].token == "cli-fluxer"
+    assert runtime_config.destination_scope == ("cli-server",)
+    assert runtime_config.archive_path == (tmp_path / "cli-archive").resolve()
