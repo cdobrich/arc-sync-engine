@@ -26,6 +26,7 @@ of the Archive Engine.
 from .capabilities import DestinationCapabilities
 from .registry import AdapterDescriptor, AdapterRegistry, default_adapter_registry
 from .source_registry import SourceRuntimeRegistry, default_source_runtime_registry
+from .source_runtime_request import SourceRuntimeRequest
 from .sync_registry import SyncPairDescriptor, SyncPairRegistry, default_sync_pair_registry
 from .destination import DestinationAdapter
 from .exceptions import (
@@ -72,6 +73,7 @@ __all__ = [
     "RateLimitError",
     "SourceAdapter",
     "SourceRuntimeRegistry",
+    "SourceRuntimeRequest",
     "default_source_runtime_registry",
     "SyncPairDescriptor",
     "SyncPairRegistry",

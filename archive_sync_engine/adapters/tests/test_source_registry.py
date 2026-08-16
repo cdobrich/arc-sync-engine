@@ -1,33 +1,33 @@
-from __future__ import annotations
+from pathlib import Path
 
 import pytest
 
-from archive_sync_engine.adapters import SourceRuntimeRegistry
+from archive_sync_engine.adapters import SourceRuntimeRegistry, SourceRuntimeRequest
 
 
-def test_source_runtime_registry_resolves_registered_factory() -> None:
-    class Runtime:
-        def __init__(self, value: str) -> None:
-            self.value = value
+def request(tmp_path: Path, adapter: str = "discord") -> SourceRuntimeRequest:
+    return SourceRuntimeRequest(adapter, ("123",), tmp_path, {})
 
+
+def test_source_runtime_registry_creates_from_request(tmp_path: Path) -> None:
     registry = SourceRuntimeRegistry()
-    registry.register(" Example ", Runtime)
+    marker = object()
+    registry.register("Discord", lambda request: marker)
 
-    assert registry.resolve("EXAMPLE") is Runtime
-    assert registry.create("example", "ok").value == "ok"
-    assert registry.names() == ("example",)
-
-
-def test_source_runtime_registry_rejects_duplicate_names() -> None:
-    registry = SourceRuntimeRegistry()
-    registry.register("discord", object)
-
-    with pytest.raises(ValueError, match="already registered"):
-        registry.register("DISCORD", object)
+    assert registry.create(" discord ", request(tmp_path)) is marker
 
 
-def test_source_runtime_registry_rejects_unknown_source() -> None:
-    registry = SourceRuntimeRegistry()
+def test_source_runtime_registry_rejects_mismatched_request(tmp_path: Path) -> None:
+    registry = SourceRuntimeRegistry({"discord": lambda request: object()})
 
-    with pytest.raises(ValueError, match="Unknown source adapter"):
-        registry.resolve("fluxer")
+    with pytest.raises(ValueError, match="does not match"):
+        registry.create("discord", request(tmp_path, "fluxer"))
+
+
+def test_default_source_runtime_registry_uses_adapter_neutral_factory() -> None:
+    registry = __import__(
+        "archive_sync_engine.adapters.source_registry",
+        fromlist=["default_source_runtime_registry"],
+    ).default_source_runtime_registry(lambda request: request)
+
+    assert registry.names() == ("discord",)

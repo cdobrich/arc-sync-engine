@@ -13,7 +13,6 @@ from types import ModuleType
 from typing import Any, Callable
 
 from archive_sync_engine.adapters.exceptions import AdapterError
-from archive_sync_engine.adapters.source_runtime import SourceImportRuntime
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.importer.canonical_coordinator import CanonicalImportCoordinator
 
@@ -112,7 +111,27 @@ class DiscordClientFactory:
         return discord
 
 
-class DiscordSourceRuntime(SourceImportRuntime):
+class DiscordSourceRuntime:
+    """Own an authenticated Discord client and expose its canonical adapter."""
+
+    @classmethod
+    def from_source_runtime_request(cls, request: "SourceRuntimeRequest") -> "DiscordSourceRuntime":
+        """Construct the Discord source runtime from an adapter-neutral request."""
+        from archive_sync_engine.adapters.source_runtime_request import SourceRuntimeRequest
+
+        if request.adapter != "discord":
+            raise AdapterError("DiscordSourceRuntime requires the discord source adapter.")
+        try:
+            config = request.adapter_config["discord"]
+        except KeyError as exc:
+            raise AdapterError("Missing runtime configuration for adapter 'discord'.") from exc
+        if not isinstance(config, DiscordClientConfig):
+            raise AdapterError("Runtime configuration for 'discord' is invalid.")
+        factory = request.adapter_config.get("discord_client_factory")
+        if factory is None:
+            factory = DiscordClientFactory()
+        client = factory.create(config)
+        return cls(client, guild_ids=config.guild_ids)
     """Own an authenticated Discord client and expose its canonical adapter."""
 
     def __init__(
@@ -122,15 +141,17 @@ class DiscordSourceRuntime(SourceImportRuntime):
         guild_ids: tuple[int | str, ...],
     ) -> None:
         self._client = client
-        normalized_guild_ids = tuple(
-            str(int(guild_id)) for guild_id in guild_ids
-        )
+        self._guild_ids = tuple(guild_ids)
         self.adapter = DiscordSourceAdapter(
             client,
-            normalized_guild_ids,
+            self._guild_ids,
         )
-        self.input_scope = normalized_guild_ids
         self._closed = False
+
+    @property
+    def input_scope(self) -> tuple[str, ...]:
+        """Return the configured source scope in its canonical string form."""
+        return tuple(str(guild_id) for guild_id in self._guild_ids)
 
     def import_to_archive(
         self,

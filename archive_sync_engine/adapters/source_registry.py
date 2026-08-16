@@ -1,18 +1,12 @@
-"""Registry for source/input adapter runtimes.
-
-The source-runtime registry is intentionally separate from the generic adapter
-role registry.  The generic registry describes which roles an adapter supports;
-this registry supplies the concrete runtime factory used to construct a source
-runtime for an import workflow.
-"""
-
+"""Registry for concrete source/input adapter runtimes."""
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from .source_runtime_request import SourceRuntimeRequest
 
-SourceRuntimeFactory = Callable[..., Any]
+SourceRuntimeFactory = Callable[[SourceRuntimeRequest], Any]
 
 
 class SourceRuntimeRegistry:
@@ -51,24 +45,29 @@ class SourceRuntimeRegistry:
                 f"Unknown source adapter {name!r}. Available source adapters: {available}."
             ) from exc
 
-    def create(self, name: str, *args: Any, **kwargs: Any) -> Any:
-        """Construct a source runtime using the registered factory."""
-        return self.resolve(name)(*args, **kwargs)
+    def create(self, name: str, request: SourceRuntimeRequest) -> Any:
+        """Construct a source runtime from an adapter-neutral request."""
+        normalized = self._normalize(name)
+        if request.adapter != normalized:
+            raise ValueError(
+                "Source runtime request adapter does not match the requested runtime adapter."
+            )
+        return self.resolve(normalized)(request)
 
     def names(self) -> tuple[str, ...]:
         """Return registered source adapter names in stable order."""
         return tuple(sorted(self._factories))
 
     def list(self) -> tuple[str, ...]:
-        """Alias for ``names`` for callers that enumerate registry entries."""
         return self.names()
 
 
-def default_source_runtime_registry() -> SourceRuntimeRegistry:
-    """Return the source runtimes shipped by the current application."""
-    from archive_sync_engine.adapters.discord.runtime import DiscordSourceRuntime
+def default_source_runtime_registry(
+    discord_factory: SourceRuntimeFactory | None = None,
+) -> SourceRuntimeRegistry:
+    """Return source runtimes shipped by the current application."""
+    if discord_factory is None:
+        from archive_sync_engine.adapters.discord.runtime import DiscordSourceRuntime
 
-    # The factory is deliberately registered as a class rather than being
-    # instantiated here, keeping client construction and credentials in the
-    # selected source runtime boundary.
-    return SourceRuntimeRegistry({"discord": DiscordSourceRuntime})
+        discord_factory = DiscordSourceRuntime.from_source_runtime_request
+    return SourceRuntimeRegistry({"discord": discord_factory})
