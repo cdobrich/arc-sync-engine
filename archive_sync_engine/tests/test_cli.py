@@ -9,6 +9,7 @@ from archive_sync_engine.cli import build_parser, main
 from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
 from archive_sync_engine.archive.package import ArchivePackage
 from archive_sync_engine.archive.paths import ArchivePaths
+from archive_sync_engine.archive import validate_archive_package
 
 
 def test_sync_cli_builds_runtime_configuration() -> None:
@@ -860,3 +861,70 @@ fluxer:
                 "future-platform",
             ]
         )
+
+
+def test_init_cli_creates_archive_from_explicit_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    archive_path = tmp_path / "archive"
+
+    assert main(["init", "--archive", str(archive_path)]) == 0
+
+    output = capsys.readouterr().out
+    assert "Initialized Archive Package:" in output
+    report = validate_archive_package(ArchivePaths(archive_path))
+    assert report.valid
+
+
+def test_init_cli_creates_archive_from_configuration(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config_path = tmp_path / "config.yaml"
+    archive_path = tmp_path / "configured-archive"
+    config_path.write_text(
+        """
+archive:
+  path: ./configured-archive
+discord:
+  token: discord-token
+  guild_id: \"123\"
+fluxer:
+  token: fluxer-token
+  server_id: fluxer-server
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+
+    assert main(["init", "--config", str(config_path)]) == 0
+
+    output = capsys.readouterr().out
+    assert str(config_path) in output
+    assert validate_archive_package(ArchivePaths(archive_path)).valid
+
+
+def test_init_cli_config_does_not_resolve_credentials(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    archive_path = tmp_path / "archive"
+    config_path.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token_file: missing-discord.token
+  guild_id: \"123\"
+fluxer:
+  token_file: missing-fluxer.token
+  server_id: fluxer-server
+""".strip() + "\n",
+        encoding="utf-8",
+    )
+
+    assert main(["init", "--config", str(config_path)]) == 0
+    assert validate_archive_package(ArchivePaths(archive_path)).valid
+
+
+def test_init_cli_refuses_non_empty_directory(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    archive_path.mkdir()
+    (archive_path / "existing.txt").write_text("do not overwrite", encoding="utf-8")
+
+    with pytest.raises(SystemExit):
+        main(["init", "--archive", str(archive_path)])
+
+    assert (archive_path / "existing.txt").read_text(encoding="utf-8") == "do not overwrite"

@@ -133,6 +133,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_logging_options(export_command)
 
+    init_command = subparsers.add_parser(
+        "init",
+        help="Create a new empty Archive Package for a configured or explicit path.",
+    )
+    init_group = init_command.add_mutually_exclusive_group(required=True)
+    init_group.add_argument(
+        "--config",
+        type=Path,
+        help="Human-authored YAML setup configuration whose archive.path selects the package.",
+    )
+    init_group.add_argument(
+        "--archive",
+        type=Path,
+        help="Archive Package directory to initialize.",
+    )
+    add_logging_options(init_command)
+
     sync = subparsers.add_parser(
         "sync",
         help="Import Discord into an Archive Package and synchronize it to Fluxer.",
@@ -656,6 +673,25 @@ def _run_validate(args: argparse.Namespace) -> int:
 
     return 0 if report.valid else 1
 
+def _run_init(args: argparse.Namespace) -> int:
+    """Create a new empty Archive Package without touching existing data."""
+    if args.config is not None:
+        setup = load_setup_configuration(args.config)
+        archive_path = setup.resolved_archive_path()
+        source = str(setup.source_config_path)
+    else:
+        archive_path = args.archive.expanduser().resolve()
+        source = None
+
+    paths = ArchivePaths(archive_path)
+    package = ArchivePackage.initialize(paths)
+
+    print(f"Initialized Archive Package: {package.paths.root}")
+    if source is not None:
+        print(f"Configuration: {source}")
+    return 0
+
+
 def _run_import(args: argparse.Namespace) -> int:
     """Import one registered source adapter into an Archive Package."""
     setup = load_setup_configuration(args.config)
@@ -1103,6 +1139,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info("Starting command: %s", args.command)
 
     try:
+        if args.command == "init":
+            return _run_init(args)
         if args.command == "import":
             return _run_import(args)
         if args.command == "preflight":
