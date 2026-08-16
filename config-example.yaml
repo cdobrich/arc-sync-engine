@@ -9,11 +9,11 @@
 archive:
   path: "./archive"
 
-# --- Generic source/import selection ---
-# The input adapter and scope are intentionally adapter-neutral.
-# Concrete credentials remain in the platform-specific sections below.
+# --- Generic import source selection ---
+# The adapter name and scope are opaque to the generic application layer.
+# If omitted, import defaults to the Discord configuration below.
 input:
-  adapter: discord
+  adapter: "discord"
   scope:
     - "YOUR_DISCORD_SERVER_ID"
 

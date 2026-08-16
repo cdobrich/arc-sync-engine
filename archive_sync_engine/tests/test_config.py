@@ -344,16 +344,16 @@ def test_load_yaml_setup_supports_adapter_neutral_input_selection(tmp_path: Path
         """
 archive:
   path: ./archive
+input:
+  adapter: fluxer
+  scope:
+    - "1375567890027713164"
 discord:
   token: discord
   guild_id: 123
 fluxer:
   token: fluxer
   server_id: 456
-input:
-  adapter: Fluxer
-  scope:
-    - 1375567890027713164
 """,
         encoding="utf-8",
     )
@@ -364,7 +364,9 @@ input:
     assert setup.input_scope == ("1375567890027713164",)
 
 
-def test_load_yaml_setup_defaults_input_scope_to_discord_guilds(tmp_path: Path) -> None:
+def test_load_yaml_setup_defaults_input_selection_to_discord_configuration(
+    tmp_path: Path,
+) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(
         """
@@ -372,12 +374,10 @@ archive:
   path: ./archive
 discord:
   token: discord
-  guild_ids:
-    - 123
-    - 456
+  guild_id: 123
 fluxer:
   token: fluxer
-  server_id: 789
+  server_id: 456
 """,
         encoding="utf-8",
     )
@@ -385,4 +385,4 @@ fluxer:
     setup = load_setup_configuration(config)
 
     assert setup.input_adapter == "discord"
-    assert setup.input_scope == ("123", "456")
+    assert setup.input_scope == ()

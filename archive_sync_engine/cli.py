@@ -822,6 +822,8 @@ def _run_import(args: argparse.Namespace) -> int:
             raise ConfigurationError("Input scope values must not be empty.")
     elif setup.input_scope:
         scope = tuple(setup.input_scope)
+    elif adapter_name == "discord":
+        scope = tuple(str(value) for value in setup.discord_guild_ids)
     else:
         raise ConfigurationError(
             f"Input scope must be provided for source adapter {descriptor.name!r}."
