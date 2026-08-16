@@ -13,6 +13,7 @@ from archive_sync_engine.logging_support import (
 )
 
 from archive_sync_engine.adapters import default_adapter_registry, default_sync_pair_registry
+from archive_sync_engine.sync.runtime_registry import default_sync_runtime_registry
 from archive_sync_engine.adapters.discord.runtime import DiscordClientConfig
 from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
 from archive_sync_engine.adapters.fluxer_runtime import FluxerClientConfig
@@ -708,11 +709,9 @@ def _run_sync(args: argparse.Namespace) -> int:
         else (setup.resolve_identity_mappings() if setup is not None else ())
     )
 
-    # The runtime below is currently the concrete Discord -> Fluxer
-    # implementation, but pair support is validated through the generic
-    # registry so unsupported platform combinations fail at the workflow
-    # boundary rather than being encoded as ad-hoc conditionals.
-    _require_supported_sync_pair("discord", "fluxer")
+    input_adapter = "discord"
+    destination_adapter = "fluxer"
+    _require_supported_sync_pair(input_adapter, destination_adapter)
 
     paths = ArchivePaths(archive_path.expanduser().resolve())
     if not paths.database.is_file() or not paths.manifest.is_file():
@@ -753,7 +752,9 @@ def _run_sync(args: argparse.Namespace) -> int:
             )
         )
 
-    with DiscordFluxerSyncRuntime(config) as runtime:
+    runtime_registry = default_sync_runtime_registry(DiscordFluxerSyncRuntime)
+    runtime = runtime_registry.create(input_adapter, destination_adapter, config)
+    with runtime:
         if args.dry_run:
             operations = runtime.dry_run()
             print(f"Dry run: {len(operations)} synchronization operations planned.")
