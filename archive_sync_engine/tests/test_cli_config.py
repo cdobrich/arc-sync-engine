@@ -40,19 +40,22 @@ user_mappings:
 
     registry = MagicMock()
     registry.create.return_value = runtime
+
     with patch(
         "archive_sync_engine.cli.default_sync_runtime_registry",
         return_value=registry,
-    ) as registry_factory:
+    ):
         assert main(["sync", "--config", str(config)]) == 0
 
-    registry_factory.assert_called_once()
     request = registry.create.call_args.args[2]
+    assert request.input_adapter == "discord"
+    assert request.input_scope == ("123",)
+    assert request.destination_adapter == "fluxer"
+    assert request.destination_scope == ("fluxer-server",)
+    assert request.archive_path == (tmp_path / "archive").resolve()
     assert request.adapter_config["discord"].token == "discord-secret"
     assert request.adapter_config["discord"].guild_ids == (123,)
     assert request.adapter_config["fluxer"].token == "fluxer-secret"
-    assert request.destination_scope == ("fluxer-server",)
-    assert request.archive_path == (tmp_path / "archive").resolve()
     assert request.adapter_config["identity_mappings"][0].username == "discord:user:987654321"
     assert request.adapter_config["identity_mappings"][0].fluxer_auth_key == "bob-secret"
 
@@ -84,10 +87,11 @@ fluxer:
 
     registry = MagicMock()
     registry.create.return_value = runtime
+
     with patch(
         "archive_sync_engine.cli.default_sync_runtime_registry",
         return_value=registry,
-    ) as registry_factory:
+    ):
         assert (
             main(
                 [
@@ -109,10 +113,12 @@ fluxer:
             == 0
         )
 
-    registry_factory.assert_called_once()
     request = registry.create.call_args.args[2]
+    assert request.input_adapter == "discord"
+    assert request.input_scope == ("222",)
+    assert request.destination_adapter == "fluxer"
+    assert request.destination_scope == ("cli-server",)
+    assert request.archive_path == (tmp_path / "cli-archive").resolve()
     assert request.adapter_config["discord"].token == "cli-discord"
     assert request.adapter_config["discord"].guild_ids == (222,)
     assert request.adapter_config["fluxer"].token == "cli-fluxer"
-    assert request.destination_scope == ("cli-server",)
-    assert request.archive_path == tmp_path / "cli-archive"

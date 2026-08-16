@@ -24,6 +24,7 @@ of the Archive Engine.
 """
 
 from .capabilities import DestinationCapabilities
+from .capability_validation import AdapterCapabilityReport, validate_adapter_capabilities
 from .registry import AdapterDescriptor, AdapterRegistry, default_adapter_registry
 from .source_registry import SourceRuntimeRegistry, default_source_runtime_registry
 from .destination_registry import DestinationRuntimeRegistry, default_destination_runtime_registry
@@ -52,9 +53,11 @@ from .references import (
 )
 
 __all__ = [
+    "AdapterCapabilityReport",
     "AdapterDescriptor",
     "AdapterError",
     "AdapterRegistry",
+    "validate_adapter_capabilities",
     "AuthenticationError",
     "default_adapter_registry",
     "AuthorizationError",

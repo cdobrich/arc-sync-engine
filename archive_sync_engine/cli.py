@@ -13,6 +13,7 @@ from archive_sync_engine.logging_support import (
 )
 
 from archive_sync_engine.adapters import (
+    validate_adapter_capabilities,
     DestinationRuntimeRequest,
     SourceRuntimeRequest,
     default_adapter_registry,
@@ -305,6 +306,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="as_json",
         help="Emit machine-readable JSON.",
     )
+    adapters.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate adapter roles, runtimes, and synchronization pairs without executing work.",
+    )
     add_logging_options(adapters)
 
     diagnostics = subparsers.add_parser(
@@ -373,6 +379,26 @@ def _parse_identity_mappings(values: Sequence[str]) -> tuple[FluxerIdentityMappi
 
 def _run_adapters(args: argparse.Namespace) -> int:
     """List adapter roles, runtime implementations, and sync combinations."""
+    if args.validate:
+        report = validate_adapter_capabilities()
+        if args.as_json:
+            import json
+
+            print(
+                json.dumps(
+                    {"valid": report.valid, "errors": list(report.errors)},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif report.valid:
+            print("Adapter capability validation: OK")
+        else:
+            print("Adapter capability validation: FAILED")
+            for error in report.errors:
+                print(f"- {error}")
+        return 0 if report.valid else 2
+
     descriptors = default_adapter_registry().list()
     source_runtimes = default_source_runtime_registry().list()
     destination_runtimes = default_destination_runtime_registry().list()

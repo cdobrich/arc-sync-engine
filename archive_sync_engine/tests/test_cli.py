@@ -1034,3 +1034,16 @@ def test_sync_cli_uses_default_sync_runtime_registry_factory(tmp_path: Path) -> 
     assert request.adapter_config["discord"].token == "discord"
     assert request.adapter_config["fluxer"].token == "fluxer"
     assert request.archive_path == archive_path.resolve()
+
+
+def test_adapters_cli_validates_registered_capabilities(capsys) -> None:
+    assert main(["adapters", "--validate"]) == 0
+    assert capsys.readouterr().out.strip() == "Adapter capability validation: OK"
+
+
+def test_adapters_cli_json_validates_registered_capabilities(capsys) -> None:
+    import json
+
+    assert main(["adapters", "--validate", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"errors": [], "valid": True}
