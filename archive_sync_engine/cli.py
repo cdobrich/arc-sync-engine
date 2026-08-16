@@ -372,9 +372,13 @@ def _parse_identity_mappings(values: Sequence[str]) -> tuple[FluxerIdentityMappi
 
 
 def _run_adapters(args: argparse.Namespace) -> int:
-    """List registered adapter roles and concrete synchronization pairs."""
+    """List adapter roles, runtime implementations, and sync combinations."""
     descriptors = default_adapter_registry().list()
-    pairs = default_sync_pair_registry().list()
+    source_runtimes = default_source_runtime_registry().list()
+    destination_runtimes = default_destination_runtime_registry().list()
+    sync_pairs = default_sync_pair_registry().list()
+    sync_runtimes = default_sync_runtime_registry().list()
+
     if args.as_json:
         import json
 
@@ -390,13 +394,22 @@ def _run_adapters(args: argparse.Namespace) -> int:
                         }
                         for descriptor in descriptors
                     ],
+                    "source_runtimes": list(source_runtimes),
+                    "destination_runtimes": list(destination_runtimes),
                     "sync_pairs": [
                         {
                             "input_adapter": pair.input_adapter,
                             "destination_adapter": pair.destination_adapter,
                             "description": pair.description,
                         }
-                        for pair in pairs
+                        for pair in sync_pairs
+                    ],
+                    "sync_runtimes": [
+                        {
+                            "input_adapter": source,
+                            "destination_adapter": destination,
+                        }
+                        for source, destination in sync_runtimes
                     ],
                 },
                 indent=2,
@@ -412,13 +425,23 @@ def _run_adapters(args: argparse.Namespace) -> int:
                 f"{str(descriptor.destination).lower()}\t"
                 f"{descriptor.description}"
             )
+        print("\nREGISTERED SOURCE RUNTIMES")
+        for name in source_runtimes:
+            print(name)
+        print("\nREGISTERED DESTINATION RUNTIMES")
+        for name in destination_runtimes:
+            print(name)
         print("\nSUPPORTED SYNC PAIRS")
         print("INPUT\tDESTINATION\tDESCRIPTION")
-        for pair in pairs:
+        for pair in sync_pairs:
             print(
                 f"{pair.input_adapter}\t{pair.destination_adapter}\t"
                 f"{pair.description}"
             )
+        print("\nREGISTERED SYNC RUNTIMES")
+        print("INPUT\tDESTINATION")
+        for source, destination in sync_runtimes:
+            print(f"{source}\t{destination}")
     return 0
 
 

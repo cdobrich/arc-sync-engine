@@ -532,9 +532,26 @@ def test_adapters_cli_json_is_machine_readable(capsys) -> None:
     assert main(["adapters", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert {entry["name"] for entry in payload["adapters"]} == {"discord", "fluxer"}
+    assert payload["source_runtimes"] == ["discord"]
+    assert payload["destination_runtimes"] == ["fluxer"]
     assert payload["sync_pairs"][0]["input_adapter"] == "discord"
     assert payload["sync_pairs"][0]["destination_adapter"] == "fluxer"
+    assert payload["sync_runtimes"] == [
+        {"input_adapter": "discord", "destination_adapter": "fluxer"}
+    ]
     assert next(entry for entry in payload["adapters"] if entry["name"] == "discord")["source"] is True
+
+
+def test_adapters_cli_text_reports_registered_runtime_implementations(capsys) -> None:
+    assert main(["adapters"]) == 0
+    output = capsys.readouterr().out
+    assert "REGISTERED SOURCE RUNTIMES" in output
+    assert "REGISTERED DESTINATION RUNTIMES" in output
+    assert "REGISTERED SYNC RUNTIMES" in output
+    assert "\ndiscord\n" in output
+    assert "\nfluxer\n" in output
+    assert "INPUT\tDESTINATION" in output
+    assert "discord\tfluxer" in output
 
 
 def test_sync_rejects_unregistered_adapter_pair(monkeypatch) -> None:
