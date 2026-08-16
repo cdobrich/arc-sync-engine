@@ -475,3 +475,20 @@ fluxer:
     assert payload["archive"]["initialized"] is False
     assert "discord-secret" not in rendered
     assert "fluxer-secret" not in rendered
+
+
+def test_adapters_cli_lists_registered_roles(capsys) -> None:
+    assert main(["adapters"]) == 0
+    output = capsys.readouterr().out
+    assert "NAME\tSOURCE\tDESTINATION" in output
+    assert "discord\ttrue\tfalse" in output
+    assert "fluxer\tfalse\ttrue" in output
+
+
+def test_adapters_cli_json_is_machine_readable(capsys) -> None:
+    import json
+
+    assert main(["adapters", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert {entry["name"] for entry in payload} == {"discord", "fluxer"}
+    assert next(entry for entry in payload if entry["name"] == "discord")["source"] is True

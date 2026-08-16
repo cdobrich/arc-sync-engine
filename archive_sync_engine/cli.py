@@ -12,6 +12,7 @@ from archive_sync_engine.logging_support import (
     report_unexpected_error,
 )
 
+from archive_sync_engine.adapters import default_adapter_registry
 from archive_sync_engine.adapters.discord.runtime import DiscordClientConfig
 from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
 from archive_sync_engine.adapters.fluxer_runtime import FluxerClientConfig
@@ -179,6 +180,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_logging_options(validate)
 
+    adapters = subparsers.add_parser(
+        "adapters",
+        help="List adapter roles registered with the application.",
+    )
+    adapters.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="Emit machine-readable JSON.",
+    )
+    add_logging_options(adapters)
+
     diagnostics = subparsers.add_parser(
         "diagnostics",
         help="Inspect successfully checkpointed synchronization executions.",
@@ -233,6 +246,39 @@ def _parse_identity_mappings(values: Sequence[str]) -> tuple[FluxerIdentityMappi
             )
         )
     return tuple(mappings)
+
+
+def _run_adapters(args: argparse.Namespace) -> int:
+    """List registered source/destination adapter roles without side effects."""
+    descriptors = default_adapter_registry().list()
+    if args.as_json:
+        import json
+
+        print(
+            json.dumps(
+                [
+                    {
+                        "name": descriptor.name,
+                        "source": descriptor.source,
+                        "destination": descriptor.destination,
+                        "description": descriptor.description,
+                    }
+                    for descriptor in descriptors
+                ],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    else:
+        print("NAME\tSOURCE\tDESTINATION\tDESCRIPTION")
+        for descriptor in descriptors:
+            print(
+                f"{descriptor.name}\t"
+                f"{str(descriptor.source).lower()}\t"
+                f"{str(descriptor.destination).lower()}\t"
+                f"{descriptor.description}"
+            )
+    return 0
 
 
 def _run_diagnostics(args: argparse.Namespace) -> int:
@@ -714,6 +760,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_resume(args)
         if args.command == "sync":
             return _run_sync(args)
+        if args.command == "adapters":
+            return _run_adapters(args)
         if args.command == "diagnostics":
             return _run_diagnostics(args)
     except (ValueError, ConfigurationError) as exc:

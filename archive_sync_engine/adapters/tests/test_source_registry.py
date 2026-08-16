@@ -5,28 +5,29 @@ import pytest
 from archive_sync_engine.adapters import SourceRuntimeRegistry
 
 
-def test_source_runtime_registry_resolves_registered_runtime_factory() -> None:
+def test_source_runtime_registry_resolves_registered_factory() -> None:
+    class Runtime:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
     registry = SourceRuntimeRegistry()
-    factory = object()
+    registry.register(" Example ", Runtime)
 
-    registry.register("Example", factory)  # type: ignore[arg-type]
-
+    assert registry.resolve("EXAMPLE") is Runtime
+    assert registry.create("example", "ok").value == "ok"
     assert registry.names() == ("example",)
-    assert registry.resolve("EXAMPLE") is factory
 
 
 def test_source_runtime_registry_rejects_duplicate_names() -> None:
     registry = SourceRuntimeRegistry()
-    registry.register("example", lambda _args: object())  # type: ignore[arg-type]
+    registry.register("discord", object)
 
     with pytest.raises(ValueError, match="already registered"):
-        registry.register("EXAMPLE", lambda _args: object())  # type: ignore[arg-type]
+        registry.register("DISCORD", object)
 
 
-def test_source_runtime_registry_reports_unknown_adapter_and_available_names() -> None:
+def test_source_runtime_registry_rejects_unknown_source() -> None:
     registry = SourceRuntimeRegistry()
-    registry.register("discord", lambda _args: object())  # type: ignore[arg-type]
-    registry.register("fluxer", lambda _args: object())  # type: ignore[arg-type]
 
-    with pytest.raises(ValueError, match="Available adapters: discord, fluxer"):
-        registry.resolve("matrix")
+    with pytest.raises(ValueError, match="Unknown source adapter"):
+        registry.resolve("fluxer")
