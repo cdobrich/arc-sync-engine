@@ -23,6 +23,7 @@ from archive_sync_engine.config import ConfigurationError, load_setup_configurat
 from archive_sync_engine.archive import validate_archive_package
 from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
 from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
+from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
 from archive_sync_engine.sync.discord_fluxer_runtime import (
     DiscordFluxerSyncConfig,
     DiscordFluxerSyncRuntime,
@@ -752,8 +753,39 @@ def _run_sync(args: argparse.Namespace) -> int:
             )
         )
 
-    runtime_registry = default_sync_runtime_registry(DiscordFluxerSyncRuntime)
-    runtime = runtime_registry.create(input_adapter, destination_adapter, config)
+    def build_discord_fluxer_runtime(request: SyncRuntimeRequest) -> DiscordFluxerSyncRuntime:
+        if request.input_adapter != "discord" or request.destination_adapter != "fluxer":
+            raise ConfigurationError("The current Discord/Fluxer runtime cannot handle this adapter pair.")
+        if len(request.destination_scope) != 1:
+            raise ConfigurationError("Fluxer destination scope must contain exactly one server ID.")
+        try:
+            discord_config = request.adapter_config["discord"]
+            fluxer_config = request.adapter_config["fluxer"]
+        except KeyError as exc:
+            raise ConfigurationError(f"Missing runtime configuration for adapter {exc.args[0]!r}.") from exc
+        runtime_config = DiscordFluxerSyncConfig(
+            discord=discord_config,
+            fluxer=fluxer_config,
+            fluxer_guild_id=request.destination_scope[0],
+            archive_paths=ArchivePaths(request.archive_path),
+            identity_mappings=tuple(request.adapter_config.get("identity_mappings", ())),
+        )
+        return DiscordFluxerSyncRuntime(runtime_config)
+
+    runtime_registry = default_sync_runtime_registry(build_discord_fluxer_runtime)
+    runtime_request = SyncRuntimeRequest(
+        input_adapter=input_adapter,
+        input_scope=tuple(str(value) for value in discord_guild_ids),
+        destination_adapter=destination_adapter,
+        destination_scope=(str(fluxer_guild_id),),
+        archive_path=paths.root,
+        adapter_config={
+            "discord": config.discord,
+            "fluxer": config.fluxer,
+            "identity_mappings": identity_mappings,
+        },
+    )
+    runtime = runtime_registry.create(input_adapter, destination_adapter, runtime_request)
     with runtime:
         if args.dry_run:
             operations = runtime.dry_run()

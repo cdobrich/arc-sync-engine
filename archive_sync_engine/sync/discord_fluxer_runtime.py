@@ -28,6 +28,7 @@ from archive_sync_engine.adapters.fluxer_runtime import (
 from archive_sync_engine.archive.paths import ArchivePaths
 
 from .pipeline import ArchiveSyncPipeline
+from .runtime_request import SyncRuntimeRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,36 @@ class DiscordFluxerSyncConfig:
 
 class DiscordFluxerSyncRuntime:
     """Own Discord/Fluxer clients and run one archive-mediated sync."""
+
+    @classmethod
+    def from_runtime_request(cls, request: SyncRuntimeRequest) -> "DiscordFluxerSyncRuntime":
+        """Construct the concrete runtime from the generic registry request."""
+        if request.input_adapter != "discord" or request.destination_adapter != "fluxer":
+            raise AdapterError(
+                "DiscordFluxerSyncRuntime requires the discord -> fluxer adapter pair."
+            )
+        try:
+            discord = request.adapter_config["discord"]
+            fluxer = request.adapter_config["fluxer"]
+        except KeyError as exc:
+            raise AdapterError(
+                f"Missing runtime configuration for adapter {exc.args[0]!r}."
+            ) from exc
+        if not isinstance(discord, DiscordClientConfig):
+            raise AdapterError("Runtime configuration for 'discord' is invalid.")
+        if not isinstance(fluxer, FluxerClientConfig):
+            raise AdapterError("Runtime configuration for 'fluxer' is invalid.")
+        if len(request.destination_scope) != 1:
+            raise AdapterError("Fluxer destination scope must contain exactly one server ID.")
+        return cls(
+            DiscordFluxerSyncConfig(
+                discord=discord,
+                fluxer=fluxer,
+                fluxer_guild_id=request.destination_scope[0],
+                archive_paths=ArchivePaths(request.archive_path),
+                identity_mappings=tuple(request.adapter_config.get("identity_mappings", ())),
+            )
+        )
 
     def __init__(
         self,

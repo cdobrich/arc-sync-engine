@@ -1,11 +1,22 @@
 from __future__ import annotations
 import pytest
+from pathlib import Path
+
 from archive_sync_engine.sync.runtime_registry import SyncRuntimeRegistry, default_sync_runtime_registry
+from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
 
 def test_runtime_registry_normalizes_and_creates() -> None:
     registry = SyncRuntimeRegistry()
     registry.register(" Discord ", " Fluxer ", lambda config: {"config": config})
-    assert registry.create("DISCORD", "FLUXER", "configuration") == {"config": "configuration"}
+    request = SyncRuntimeRequest(
+        input_adapter="discord",
+        input_scope=("1",),
+        destination_adapter="fluxer",
+        destination_scope=("2",),
+        archive_path=Path("archive"),
+        adapter_config={},
+    )
+    assert registry.create("DISCORD", "FLUXER", request) == {"config": request}
 
 def test_runtime_registry_rejects_duplicate_pair() -> None:
     registry = SyncRuntimeRegistry()
@@ -28,4 +39,27 @@ def test_default_runtime_registry_is_injectable() -> None:
     marker = object()
     registry = default_sync_runtime_registry(lambda config: marker)
     assert registry.keys() == (("discord", "fluxer"),)
-    assert registry.create("discord", "fluxer", object()) is marker
+    request = SyncRuntimeRequest(
+        input_adapter="discord",
+        input_scope=("1",),
+        destination_adapter="fluxer",
+        destination_scope=("2",),
+        archive_path=Path("archive"),
+        adapter_config={},
+    )
+    assert registry.create("discord", "fluxer", request) is marker
+
+
+def test_runtime_registry_rejects_mismatched_request_pair() -> None:
+    registry = SyncRuntimeRegistry()
+    registry.register("discord", "fluxer", lambda request: request)
+    request = SyncRuntimeRequest(
+        input_adapter="fluxer",
+        input_scope=("1",),
+        destination_adapter="fluxer",
+        destination_scope=("2",),
+        archive_path=Path("archive"),
+        adapter_config={},
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        registry.create("discord", "fluxer", request)

@@ -12,6 +12,8 @@ __all__ = [
     "canonical_fingerprint",
     "SyncRuntimeRegistry",
     "default_sync_runtime_registry",
+    "SyncRuntimeRequest",
 ]
 
 from .runtime_registry import SyncRuntimeRegistry, default_sync_runtime_registry
+from .runtime_request import SyncRuntimeRequest

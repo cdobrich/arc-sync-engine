@@ -3,7 +3,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
-SyncRuntimeFactory = Callable[[Any], Any]
+from .runtime_request import SyncRuntimeRequest
+
+SyncRuntimeFactory = Callable[[SyncRuntimeRequest], Any]
 SyncRuntimeKey = tuple[str, str]
 
 class SyncRuntimeRegistry:
@@ -44,8 +46,11 @@ class SyncRuntimeRegistry:
                 f"Available runtimes: {available}."
             ) from exc
 
-    def create(self, source: str, destination: str, config: Any) -> Any:
-        return self.resolve(source, destination)(config)
+    def create(self, source: str, destination: str, request: SyncRuntimeRequest) -> Any:
+        """Construct a runtime for an adapter pair from an adapter-neutral request."""
+        if request.input_adapter != self._normalize(source) or request.destination_adapter != self._normalize(destination):
+            raise ValueError("Sync runtime request adapter pair does not match the requested runtime pair.")
+        return self.resolve(source, destination)(request)
 
     def keys(self) -> tuple[SyncRuntimeKey, ...]:
         return tuple(sorted(self._factories))
@@ -60,5 +65,5 @@ def default_sync_runtime_registry(
     """Return runtime factories shipped by the current application."""
     if discord_fluxer_factory is None:
         from archive_sync_engine.sync.discord_fluxer_runtime import DiscordFluxerSyncRuntime
-        discord_fluxer_factory = DiscordFluxerSyncRuntime
+        discord_fluxer_factory = DiscordFluxerSyncRuntime.from_runtime_request
     return SyncRuntimeRegistry({("discord", "fluxer"): discord_fluxer_factory})
