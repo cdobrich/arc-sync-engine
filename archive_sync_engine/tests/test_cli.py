@@ -125,6 +125,29 @@ def test_sync_cli_maps_bot_identity_without_auth_token(tmp_path: Path) -> None:
     assert config.identity_mappings[0].fluxer_auth_key is None
 
 
+def test_adapters_cli_lists_supported_sync_pairs(capsys) -> None:
+    assert main(["adapters"]) == 0
+
+    output = capsys.readouterr().out
+    assert "SUPPORTED SYNC PAIRS" in output
+    assert "discord\tfluxer" in output
+
+
+def test_adapters_cli_json_includes_supported_sync_pairs(capsys) -> None:
+    import json
+
+    assert main(["adapters", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sync_pairs"] == [
+        {
+            "description": "Discord import synchronized to Fluxer.",
+            "destination_adapter": "fluxer",
+            "input_adapter": "discord",
+        }
+    ]
+
+
 def test_diagnostics_cli_queries_execution_log_and_prints_table(tmp_path: Path, capsys) -> None:
     from archive_sync_engine.adapters.references import DestinationMessageRef
     from archive_sync_engine.executor import ExecutionResult
@@ -490,5 +513,7 @@ def test_adapters_cli_json_is_machine_readable(capsys) -> None:
 
     assert main(["adapters", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert {entry["name"] for entry in payload} == {"discord", "fluxer"}
-    assert next(entry for entry in payload if entry["name"] == "discord")["source"] is True
+    assert {entry["name"] for entry in payload["adapters"]} == {"discord", "fluxer"}
+    assert payload["sync_pairs"][0]["input_adapter"] == "discord"
+    assert payload["sync_pairs"][0]["destination_adapter"] == "fluxer"
+    assert next(entry for entry in payload["adapters"] if entry["name"] == "discord")["source"] is True

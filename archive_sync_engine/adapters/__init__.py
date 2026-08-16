@@ -26,6 +26,7 @@ of the Archive Engine.
 from .capabilities import DestinationCapabilities
 from .registry import AdapterDescriptor, AdapterRegistry, default_adapter_registry
 from .source_registry import SourceRuntimeRegistry, default_source_runtime_registry
+from .sync_registry import SyncPairDescriptor, SyncPairRegistry, default_sync_pair_registry
 from .destination import DestinationAdapter
 from .exceptions import (
     AdapterError,
@@ -72,4 +73,7 @@ __all__ = [
     "SourceAdapter",
     "SourceRuntimeRegistry",
     "default_source_runtime_registry",
+    "SyncPairDescriptor",
+    "SyncPairRegistry",
+    "default_sync_pair_registry",
 ]

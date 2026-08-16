@@ -12,7 +12,7 @@ from archive_sync_engine.logging_support import (
     report_unexpected_error,
 )
 
-from archive_sync_engine.adapters import default_adapter_registry
+from archive_sync_engine.adapters import default_adapter_registry, default_sync_pair_registry
 from archive_sync_engine.adapters.discord.runtime import DiscordClientConfig
 from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
 from archive_sync_engine.adapters.fluxer_runtime import FluxerClientConfig
@@ -249,22 +249,33 @@ def _parse_identity_mappings(values: Sequence[str]) -> tuple[FluxerIdentityMappi
 
 
 def _run_adapters(args: argparse.Namespace) -> int:
-    """List registered source/destination adapter roles without side effects."""
+    """List registered adapter roles and concrete synchronization pairs."""
     descriptors = default_adapter_registry().list()
+    pairs = default_sync_pair_registry().list()
     if args.as_json:
         import json
 
         print(
             json.dumps(
-                [
-                    {
-                        "name": descriptor.name,
-                        "source": descriptor.source,
-                        "destination": descriptor.destination,
-                        "description": descriptor.description,
-                    }
-                    for descriptor in descriptors
-                ],
+                {
+                    "adapters": [
+                        {
+                            "name": descriptor.name,
+                            "source": descriptor.source,
+                            "destination": descriptor.destination,
+                            "description": descriptor.description,
+                        }
+                        for descriptor in descriptors
+                    ],
+                    "sync_pairs": [
+                        {
+                            "input_adapter": pair.input_adapter,
+                            "destination_adapter": pair.destination_adapter,
+                            "description": pair.description,
+                        }
+                        for pair in pairs
+                    ],
+                },
                 indent=2,
                 sort_keys=True,
             )
@@ -277,6 +288,13 @@ def _run_adapters(args: argparse.Namespace) -> int:
                 f"{str(descriptor.source).lower()}\t"
                 f"{str(descriptor.destination).lower()}\t"
                 f"{descriptor.description}"
+            )
+        print("\nSUPPORTED SYNC PAIRS")
+        print("INPUT\tDESTINATION\tDESCRIPTION")
+        for pair in pairs:
+            print(
+                f"{pair.input_adapter}\t{pair.destination_adapter}\t"
+                f"{pair.description}"
             )
     return 0
 
