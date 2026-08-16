@@ -26,6 +26,8 @@ of the Archive Engine.
 from .capabilities import DestinationCapabilities
 from .registry import AdapterDescriptor, AdapterRegistry, default_adapter_registry
 from .source_registry import SourceRuntimeRegistry, default_source_runtime_registry
+from .destination_registry import DestinationRuntimeRegistry, default_destination_runtime_registry
+from .destination_runtime_request import DestinationRuntimeRequest
 from .source_runtime_request import SourceRuntimeRequest
 from .sync_registry import SyncPairDescriptor, SyncPairRegistry, default_sync_pair_registry
 from .destination import DestinationAdapter
@@ -59,6 +61,9 @@ __all__ = [
     "CapabilityError",
     "ConflictError",
     "DestinationAdapter",
+    "DestinationRuntimeRegistry",
+    "DestinationRuntimeRequest",
+    "default_destination_runtime_registry",
     "DestinationAttachmentRef",
     "DestinationCapabilities",
     "DestinationConversationRef",

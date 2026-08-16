@@ -273,6 +273,35 @@ class FluxerDestinationRuntime:
     when a canonical identity mapping actually requires masquerading.
     """
 
+    @classmethod
+    def from_destination_runtime_request(
+        cls, request: "DestinationRuntimeRequest"
+    ) -> "FluxerDestinationRuntime":
+        """Construct the Fluxer destination runtime from an adapter-neutral request."""
+        from archive_sync_engine.adapters.destination_runtime_request import DestinationRuntimeRequest
+
+        if request.adapter != "fluxer":
+            raise AdapterError(
+                "FluxerDestinationRuntime requires the fluxer destination adapter."
+            )
+        try:
+            config = request.adapter_config["fluxer"]
+        except KeyError as exc:
+            raise AdapterError(
+                "Missing runtime configuration for adapter 'fluxer'."
+            ) from exc
+        if not isinstance(config, FluxerClientConfig):
+            raise AdapterError("Runtime configuration for 'fluxer' is invalid.")
+        if len(request.scope) != 1:
+            raise AdapterError("Fluxer destination scope must contain exactly one server ID.")
+        identity_mappings = tuple(request.adapter_config.get("identity_mappings", ()))
+        return cls(
+            guild_id=request.scope[0],
+            bot_client=config,
+            identity_mappings=identity_mappings,
+            client_factory=request.adapter_config.get("fluxer_client_factory"),
+        )
+
     def __init__(
         self,
         *,
