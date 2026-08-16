@@ -531,3 +531,179 @@ def test_sync_rejects_unregistered_adapter_pair(monkeypatch) -> None:
 
     with pytest.raises(ConfigurationError, match="Unsupported sync adapter pair"):
         _require_supported_sync_pair("fluxer", "fluxer")
+
+
+def test_import_cli_uses_source_runtime_registry_and_persists_generic_run_configuration(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+
+    registry = MagicMock()
+    registry.create.return_value = runtime
+
+    with patch(
+        "archive_sync_engine.cli.default_source_runtime_registry",
+        return_value=registry,
+    ) as registry_factory:
+        assert main(["import", "--config", str(config)]) == 0
+
+    registry_factory.assert_called_once()
+    registry.create.assert_called_once()
+    request = registry.create.call_args.args[1]
+    assert request.adapter == "discord"
+    assert request.scope == ("123",)
+    assert request.archive_path == archive_path.resolve()
+    assert request.adapter_config["discord"].token == "discord-secret"
+    runtime.import_to_archive.assert_called_once_with(
+        ArchivePaths(archive_path.resolve()),
+        resume=False,
+    )
+
+    persisted = ArchivePackage(ArchivePaths(archive_path)).load_run_configuration()
+    assert persisted.direction is RunDirection.IMPORT
+    assert persisted.input_adapter == "discord"
+    assert persisted.input_scope == ("123",)
+    assert persisted.destination_adapter is None
+    assert persisted.destination_scope == ()
+
+
+def test_import_cli_resume_uses_persisted_scope_and_current_credentials(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    package = ArchivePackage(ArchivePaths(archive_path))
+    package.save_run_configuration(
+        SyncRunConfiguration(
+            direction=RunDirection.IMPORT,
+            input_adapter="discord",
+            input_scope=("10", "20"),
+        )
+    )
+    from archive_sync_engine.importer import ImportState
+
+    package.save_import_state(ImportState(payload={"guild": "20"}))
+    now = __import__("datetime").datetime.now(__import__("datetime").timezone.utc)
+    package.save_session(
+        __import__("archive_sync_engine.sync.session", fromlist=["SyncSession"]).SyncSession(
+            id="import-session",
+            direction=__import__("archive_sync_engine.sync.session", fromlist=["SyncDirection"]).SyncDirection.IMPORT,
+            started_at=now,
+            updated_at=now,
+        )
+    )
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: current-discord-secret
+  guild_id: 999
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    registry = MagicMock()
+    registry.create.return_value = runtime
+
+    with patch(
+        "archive_sync_engine.cli.default_source_runtime_registry",
+        return_value=registry,
+    ):
+        assert main(["resume", "--config", str(config)]) == 0
+
+    request = registry.create.call_args.args[1]
+    assert request.adapter == "discord"
+    assert request.scope == ("10", "20")
+    assert request.adapter_config["discord"].token == "current-discord-secret"
+    runtime.import_to_archive.assert_called_once_with(
+        ArchivePaths(archive_path.resolve()),
+        resume=True,
+    )
+
+
+def test_import_cli_resume_rejects_scope_changes_against_persisted_run(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    package = ArchivePackage(ArchivePaths(archive_path))
+    package.save_run_configuration(
+        SyncRunConfiguration(
+            direction=RunDirection.IMPORT,
+            input_adapter="discord",
+            input_scope=("10",),
+        )
+    )
+    from archive_sync_engine.importer import ImportState
+
+    package.save_import_state(ImportState(payload={"guild": "10"}))
+    from datetime import datetime, timezone
+    from archive_sync_engine.sync.session import SyncDirection, SyncSession
+
+    now = datetime.now(timezone.utc)
+    package.save_session(
+        SyncSession(
+            id="import-session",
+            direction=SyncDirection.IMPORT,
+            started_at=now,
+            updated_at=now,
+        )
+    )
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: current-discord-secret
+  guild_id: 999
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    with patch("archive_sync_engine.cli.default_source_runtime_registry") as registry:
+        registry.create.return_value = MagicMock()
+        with pytest.raises(SystemExit):
+            main(
+                [
+                    "import",
+                    "--config",
+                    str(config),
+                    "--resume",
+                    "--input-scope",
+                    "999",
+                ]
+            )
+        registry.create.assert_not_called()

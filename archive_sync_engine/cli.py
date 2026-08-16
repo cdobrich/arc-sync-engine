@@ -12,7 +12,12 @@ from archive_sync_engine.logging_support import (
     report_unexpected_error,
 )
 
-from archive_sync_engine.adapters import default_adapter_registry, default_sync_pair_registry
+from archive_sync_engine.adapters import (
+    SourceRuntimeRequest,
+    default_adapter_registry,
+    default_source_runtime_registry,
+    default_sync_pair_registry,
+)
 from archive_sync_engine.sync.runtime_registry import default_sync_runtime_registry
 from archive_sync_engine.adapters.discord.runtime import DiscordClientConfig
 from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
@@ -50,6 +55,40 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help="Optional file for application logs and error details.",
         )
+
+    import_command = subparsers.add_parser(
+        "import",
+        help="Import a configured source into an Archive Package.",
+    )
+    import_command.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Human-authored YAML setup configuration.",
+    )
+    import_command.add_argument(
+        "--input-adapter",
+        default="discord",
+        help="Registered source adapter to import from (default: discord).",
+    )
+    import_command.add_argument(
+        "--input-scope",
+        action="append",
+        default=[],
+        help="Opaque source scope value; repeat as needed to override configuration.",
+    )
+    import_command.add_argument(
+        "--archive",
+        type=Path,
+        default=None,
+        help="Archive Package directory (overrides --config).",
+    )
+    import_command.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the persisted importer-owned checkpoint state.",
+    )
+    add_logging_options(import_command)
 
     sync = subparsers.add_parser(
         "sync",
@@ -574,6 +613,104 @@ def _run_validate(args: argparse.Namespace) -> int:
 
     return 0 if report.valid else 1
 
+def _run_import(args: argparse.Namespace) -> int:
+    """Import one registered source adapter into an Archive Package."""
+    setup = load_setup_configuration(args.config)
+    archive_path = (
+        args.archive.expanduser().resolve()
+        if args.archive is not None
+        else setup.resolved_archive_path()
+    )
+    paths = ArchivePaths(archive_path)
+    if not paths.database.is_file() or not paths.manifest.is_file():
+        raise ConfigurationError(
+            f"Archive Package is not initialized: {paths.root}. "
+            "Run 'archive-sync-engine init --archive <path>' first."
+        )
+    report = validate_archive_package(paths)
+    if not report.valid:
+        raise ConfigurationError(
+            f"Archive Package is invalid: {'; '.join(report.errors)}"
+        )
+
+    adapter_name = args.input_adapter.strip().lower()
+    try:
+        descriptor = default_adapter_registry().require_source(adapter_name)
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
+
+    if args.input_scope:
+        scope = tuple(value.strip() for value in args.input_scope)
+        if any(not value for value in scope):
+            raise ConfigurationError("Input scope values must not be empty.")
+    elif adapter_name == "discord":
+        scope = tuple(str(value) for value in setup.discord_guild_ids)
+    else:
+        raise ConfigurationError(
+            f"Input scope must be provided for source adapter {descriptor.name!r}."
+        )
+
+    if adapter_name != "discord":
+        raise ConfigurationError(
+            f"No concrete source runtime configuration is currently available "
+            f"for adapter {adapter_name!r}."
+        )
+
+    credentials = setup.resolve_credentials()
+    discord_config = DiscordClientConfig(
+        token=credentials.discord_token,
+        guild_ids=tuple(int(value) for value in scope),
+    )
+    runtime_request = SourceRuntimeRequest(
+        adapter=adapter_name,
+        scope=scope,
+        archive_path=paths.root,
+        adapter_config={
+            "discord": discord_config,
+        },
+    )
+
+    if not args.resume:
+        ArchivePackage(paths).save_run_configuration(
+            SyncRunConfiguration(
+                direction=RunDirection.IMPORT,
+                input_adapter=adapter_name,
+                input_scope=scope,
+            )
+        )
+    else:
+        try:
+            run_configuration = ArchivePackage(paths).load_run_configuration()
+        except FileNotFoundError as exc:
+            raise ConfigurationError(
+                f"No persisted run configuration exists in Archive Package: {paths.root}."
+            ) from exc
+        if run_configuration.direction is not RunDirection.IMPORT:
+            raise ConfigurationError(
+                "The persisted run configuration is not an import run."
+            )
+        if (run_configuration.input_adapter != adapter_name or
+                run_configuration.input_scope != scope):
+            raise ConfigurationError(
+                "Import resume arguments do not match the persisted adapter or scope."
+            )
+        try:
+            ArchivePackage(paths).load_import_state()
+        except FileNotFoundError as exc:
+            raise ConfigurationError(
+                f"No importer checkpoint exists in Archive Package: {paths.root}."
+            ) from exc
+
+    runtime = default_source_runtime_registry().create(
+        adapter_name,
+        runtime_request,
+    )
+    with runtime:
+        runtime.import_to_archive(paths, resume=args.resume)
+
+    return 0
+
+
 def _run_resume(args: argparse.Namespace) -> int:
     """Resume the persisted run using current human-authored credentials.
 
@@ -606,10 +743,47 @@ def _run_resume(args: argparse.Namespace) -> int:
         raise ConfigurationError("The persisted run is already completed; it cannot be resumed.")
     if session.cancelled:
         raise ConfigurationError("The persisted run was cancelled and cannot be resumed.")
+    if run_configuration.direction is RunDirection.IMPORT:
+        if args.archive is not None:
+            archive_path = args.archive.expanduser().resolve()
+        try:
+            package.load_import_state()
+        except FileNotFoundError as exc:
+            raise ConfigurationError(
+                f"No importer checkpoint exists in Archive Package: {paths.root}."
+            ) from exc
+        if run_configuration.input_adapter != "discord":
+            raise ConfigurationError(
+                f"No concrete source runtime is currently available for "
+                f"adapter {run_configuration.input_adapter!r}."
+            )
+        try:
+            scope = tuple(str(value) for value in run_configuration.input_scope)
+            discord_config = DiscordClientConfig(
+                token=setup.resolve_discord_token(),
+                guild_ids=tuple(int(value) for value in scope),
+            )
+        except ValueError as exc:
+            raise ConfigurationError(
+                "The persisted Discord input scope contains a non-numeric guild ID."
+            ) from exc
+        request = SourceRuntimeRequest(
+            adapter=run_configuration.input_adapter,
+            scope=scope,
+            archive_path=paths.root,
+            adapter_config={"discord": discord_config},
+        )
+        runtime = default_source_runtime_registry().create(
+            run_configuration.input_adapter,
+            request,
+        )
+        with runtime:
+            runtime.import_to_archive(paths, resume=True)
+        return 0
+
     if run_configuration.direction is not RunDirection.SYNC:
         raise ConfigurationError(
-            "The persisted run is not a sync run. The current resume CLI only "
-            "supports the Discord-to-Fluxer synchronization runtime."
+            f"Unsupported persisted run direction: {run_configuration.direction.value!r}."
         )
     if run_configuration.destination_adapter is None:
         raise ConfigurationError(
@@ -814,6 +988,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger.info("Starting command: %s", args.command)
 
     try:
+        if args.command == "import":
+            return _run_import(args)
         if args.command == "preflight":
             return _run_preflight(args)
         if args.command == "validate":
