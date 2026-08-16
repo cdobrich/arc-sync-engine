@@ -707,3 +707,156 @@ fluxer:
                 ]
             )
         registry.create.assert_not_called()
+
+
+def test_export_cli_uses_destination_runtime_registry_and_canonical_exporter(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.adapter = object()
+
+    registry = MagicMock()
+    registry.create.return_value = runtime
+
+    exporter = MagicMock()
+
+    with (
+        patch(
+            "archive_sync_engine.cli.default_destination_runtime_registry",
+            return_value=registry,
+        ) as registry_factory,
+        patch(
+            "archive_sync_engine.cli.CanonicalExporter",
+            return_value=exporter,
+        ) as exporter_type,
+    ):
+        assert main(["export", "--config", str(config)]) == 0
+
+    registry_factory.assert_called_once()
+    registry.create.assert_called_once()
+    request = registry.create.call_args.args[1]
+    assert request.adapter == "fluxer"
+    assert request.scope == ("fluxer-server",)
+    assert request.archive_path == archive_path.resolve()
+    assert request.adapter_config["fluxer"].token == "fluxer-secret"
+
+    exporter_type.assert_called_once()
+    exporter.export.assert_called_once()
+    assert exporter.export.call_args.kwargs["destination"] is runtime.adapter
+    assert exporter.export.call_args.kwargs["archive"].package.paths.root == archive_path.resolve()
+
+
+def test_export_cli_allows_destination_scope_override(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+fluxer:
+  token: fluxer-secret
+  server_id: configured-server
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.adapter = object()
+    registry = MagicMock()
+    registry.create.return_value = runtime
+
+    with (
+        patch(
+            "archive_sync_engine.cli.default_destination_runtime_registry",
+            return_value=registry,
+        ),
+        patch("archive_sync_engine.cli.CanonicalExporter"),
+    ):
+        assert main(
+            [
+                "export",
+                "--config",
+                str(config),
+                "--destination-scope",
+                "override-server",
+            ]
+        ) == 0
+
+    request = registry.create.call_args.args[1]
+    assert request.scope == ("override-server",)
+
+
+def test_export_cli_rejects_uninitialized_archive(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+fluxer:
+  token: fluxer-secret
+  server_id: configured-server
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit):
+        main(["export", "--config", str(config)])
+
+
+def test_export_cli_uses_destination_registry_for_unknown_adapter(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+fluxer:
+  token: fluxer-secret
+  server_id: configured-server
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "export",
+                "--config",
+                str(config),
+                "--destination-adapter",
+                "future-platform",
+            ]
+        )

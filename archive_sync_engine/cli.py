@@ -13,8 +13,10 @@ from archive_sync_engine.logging_support import (
 )
 
 from archive_sync_engine.adapters import (
+    DestinationRuntimeRequest,
     SourceRuntimeRequest,
     default_adapter_registry,
+    default_destination_runtime_registry,
     default_source_runtime_registry,
     default_sync_pair_registry,
 )
@@ -25,7 +27,8 @@ from archive_sync_engine.adapters.fluxer_runtime import FluxerClientConfig
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.archive.package import ArchivePackage
 from archive_sync_engine.config import ConfigurationError, load_setup_configuration
-from archive_sync_engine.archive import validate_archive_package
+from archive_sync_engine.archive import Archive, validate_archive_package
+from archive_sync_engine.exporter import CanonicalExporter
 from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
 from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
 from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
@@ -89,6 +92,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="Resume the persisted importer-owned checkpoint state.",
     )
     add_logging_options(import_command)
+
+    export_command = subparsers.add_parser(
+        "export",
+        help="Export an existing Archive Package to a registered destination adapter.",
+    )
+    export_command.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Human-authored YAML setup configuration.",
+    )
+    export_command.add_argument(
+        "--destination-adapter",
+        default="fluxer",
+        help="Registered destination adapter to export to (default: fluxer).",
+    )
+    export_command.add_argument(
+        "--destination-scope",
+        action="append",
+        default=[],
+        help="Opaque destination scope value; repeat as needed to override configuration.",
+    )
+    export_command.add_argument(
+        "--archive",
+        type=Path,
+        default=None,
+        help="Archive Package directory (overrides --config).",
+    )
+    export_command.add_argument(
+        "--fluxer-api-url",
+        default=None,
+        help="Optional Fluxer API URL for self-hosted deployments.",
+    )
+    export_command.add_argument(
+        "--fluxer-max-retries",
+        type=int,
+        default=4,
+        help="Maximum Fluxer REST retries (default: 4).",
+    )
+    add_logging_options(export_command)
 
     sync = subparsers.add_parser(
         "sync",
@@ -711,6 +754,78 @@ def _run_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_export(args: argparse.Namespace) -> int:
+    """Export an existing Archive through a registered destination runtime."""
+    setup = load_setup_configuration(args.config)
+    archive_path = (
+        args.archive.expanduser().resolve()
+        if args.archive is not None
+        else setup.resolved_archive_path()
+    )
+    paths = ArchivePaths(archive_path)
+    if not paths.database.is_file() or not paths.manifest.is_file():
+        raise ConfigurationError(
+            f"Archive Package is not initialized: {paths.root}. "
+            "Run 'archive-sync-engine init --archive <path>' first."
+        )
+    report = validate_archive_package(paths)
+    if not report.valid:
+        raise ConfigurationError(
+            f"Archive Package is invalid: {'; '.join(report.errors)}"
+        )
+
+    destination_adapter = args.destination_adapter.strip().lower()
+    try:
+        default_adapter_registry().require_destination(destination_adapter)
+        destination_registry = default_destination_runtime_registry()
+        destination_scope = (
+            tuple(value.strip() for value in args.destination_scope)
+            if args.destination_scope
+            else ((setup.fluxer_guild_id,) if destination_adapter == "fluxer" else ())
+        )
+        if not destination_scope:
+            raise ConfigurationError(
+                f"Destination scope must be provided for destination adapter "
+                f"{destination_adapter!r}."
+            )
+        if any(not value for value in destination_scope):
+            raise ConfigurationError("Destination scope values must not be empty.")
+
+        if destination_adapter != "fluxer":
+            raise ConfigurationError(
+                f"No concrete destination runtime configuration is currently "
+                f"available for adapter {destination_adapter!r}."
+            )
+
+        credentials = setup.resolve_credentials()
+        runtime_request = DestinationRuntimeRequest(
+            adapter=destination_adapter,
+            scope=destination_scope,
+            archive_path=paths.root,
+            adapter_config={
+                "fluxer": FluxerClientConfig(
+                    token=credentials.fluxer_token,
+                    is_bot=True,
+                    api_url=args.fluxer_api_url,
+                    max_retries=args.fluxer_max_retries,
+                ),
+                "identity_mappings": credentials.identity_mappings,
+            },
+        )
+        runtime = destination_registry.create(destination_adapter, runtime_request)
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
+
+    with Archive(paths) as archive, runtime:
+        CanonicalExporter().export(
+            archive=archive,
+            destination=runtime.adapter,
+            asset_store=archive.asset_store,
+        )
+
+    return 0
+
+
 def _run_resume(args: argparse.Namespace) -> int:
     """Resume the persisted run using current human-authored credentials.
 
@@ -994,6 +1109,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_preflight(args)
         if args.command == "validate":
             return _run_validate(args)
+        if args.command == "export":
+            return _run_export(args)
         if args.command == "resume":
             return _run_resume(args)
         if args.command == "sync":
