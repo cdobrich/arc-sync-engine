@@ -233,6 +233,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _require_supported_sync_pair(input_adapter: str, destination_adapter: str) -> None:
+    """Validate a source/destination pair through the application registry."""
+    try:
+        default_sync_pair_registry().get(input_adapter, destination_adapter)
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
+
+
 def _parse_identity_mappings(values: Sequence[str]) -> tuple[FluxerIdentityMapping, ...]:
     mappings: list[FluxerIdentityMapping] = []
     for value in values:
@@ -601,17 +609,14 @@ def _run_resume(args: argparse.Namespace) -> int:
             "The persisted run is not a sync run. The current resume CLI only "
             "supports the Discord-to-Fluxer synchronization runtime."
         )
-    if run_configuration.input_adapter != "discord":
+    if run_configuration.destination_adapter is None:
         raise ConfigurationError(
-            f"The persisted input adapter {run_configuration.input_adapter!r} "
-            "is not supported by the current sync runtime."
+            "The persisted sync run has no destination adapter."
         )
-    if run_configuration.destination_adapter != "fluxer":
-        raise ConfigurationError(
-            f"The persisted destination adapter "
-            f"{run_configuration.destination_adapter!r} is not supported by "
-            "the current sync runtime."
-        )
+    _require_supported_sync_pair(
+        run_configuration.input_adapter,
+        run_configuration.destination_adapter,
+    )
     if not run_configuration.input_scope or not run_configuration.destination_scope:
         raise ConfigurationError("The persisted run configuration has no source/destination scope.")
 
@@ -702,6 +707,12 @@ def _run_sync(args: argparse.Namespace) -> int:
         if args.fluxer_identity
         else (setup.resolve_identity_mappings() if setup is not None else ())
     )
+
+    # The runtime below is currently the concrete Discord -> Fluxer
+    # implementation, but pair support is validated through the generic
+    # registry so unsupported platform combinations fail at the workflow
+    # boundary rather than being encoded as ad-hoc conditionals.
+    _require_supported_sync_pair("discord", "fluxer")
 
     paths = ArchivePaths(archive_path.expanduser().resolve())
     if not paths.database.is_file() or not paths.manifest.is_file():

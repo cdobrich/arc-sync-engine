@@ -517,3 +517,17 @@ def test_adapters_cli_json_is_machine_readable(capsys) -> None:
     assert payload["sync_pairs"][0]["input_adapter"] == "discord"
     assert payload["sync_pairs"][0]["destination_adapter"] == "fluxer"
     assert next(entry for entry in payload["adapters"] if entry["name"] == "discord")["source"] is True
+
+
+def test_sync_rejects_unregistered_adapter_pair(monkeypatch) -> None:
+    from archive_sync_engine.adapters import SyncPairRegistry
+    from archive_sync_engine.cli import _require_supported_sync_pair
+    from archive_sync_engine.config import ConfigurationError
+
+    monkeypatch.setattr(
+        "archive_sync_engine.cli.default_sync_pair_registry",
+        lambda: SyncPairRegistry(),
+    )
+
+    with pytest.raises(ConfigurationError, match="Unsupported sync adapter pair"):
+        _require_supported_sync_pair("fluxer", "fluxer")
