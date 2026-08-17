@@ -662,3 +662,44 @@ def test_iter_identities_reuses_historical_message_scan_for_message_import() -> 
     assert "discord:user:99" in {str(item.identity_key) for item in identities}
     assert len(messages) == 1
     assert channel.history_calls == 1
+
+
+def test_discord_source_uses_rest_channel_fetch_when_guild_channel_cache_is_empty() -> None:
+    class FakeChannel:
+        id = 10
+        type = SimpleNamespace(name="text")
+        name = "general"
+        position = 0
+        parent_id = None
+        category_id = None
+        archived_threads = None
+
+        def history(self, *, limit, oldest_first):
+            async def empty():
+                if False:
+                    yield None
+            return empty()
+
+    channel = FakeChannel()
+
+    class FakeGuild:
+        id = 123
+        members = []
+        channels = []
+        threads = []
+
+        async def fetch_channels(self):
+            return [channel]
+
+        async def fetch_active_threads(self):
+            return SimpleNamespace(threads=[])
+
+    class FakeClient:
+        def get_guild(self, guild_id):
+            return FakeGuild()
+
+    adapter = DiscordSourceAdapter(FakeClient(), (123,))
+    conversations = tuple(adapter.iter_conversations())
+
+    assert len(conversations) == 1
+    assert str(conversations[0].id).endswith(":10")

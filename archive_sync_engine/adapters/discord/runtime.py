@@ -14,7 +14,7 @@ from typing import Any, Mapping, Callable
 
 from archive_sync_engine.adapters.exceptions import AdapterError
 from archive_sync_engine.archive.paths import ArchivePaths
-from archive_sync_engine.importer.canonical_coordinator import CanonicalImportCoordinator
+from archive_sync_engine.importer.canonical_coordinator import CanonicalImportCoordinator, ImportReport
 
 from .source import DiscordSourceAdapter
 
@@ -158,7 +158,7 @@ class DiscordSourceRuntime:
         archive_paths: ArchivePaths,
         *,
         resume: bool = False,
-    ) -> None:
+    ) -> ImportReport:
         """Import the authenticated Discord source into an Archive Package.
 
         The runtime owns only the Discord client/source boundary.
@@ -170,7 +170,7 @@ class DiscordSourceRuntime:
                 "Cannot import from a closed Discord source runtime."
             )
 
-        CanonicalImportCoordinator(
+        return CanonicalImportCoordinator(
             archive_paths,
         ).run(
             self.adapter,

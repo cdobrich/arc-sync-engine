@@ -145,9 +145,19 @@ class DiscordSourceAdapter(SourceAdapter):
         conversations: dict[str, CanonicalConversation] = {}
 
         for guild in self._iter_guilds():
-            channels = list(self._message_bearing_channels(guild))
+            guild_channels = self._run(self._collect_guild_channels(guild))
+            channels = list(
+                self._message_bearing_channels(guild_channels)
+            )
+            active_threads = self._run(
+                self._collect_active_threads(guild),
+            )
+            channels.extend(active_threads)
             archived_threads = self._run(
-                self._collect_archived_threads(guild),
+                self._collect_archived_threads(
+                    guild,
+                    channels=guild_channels,
+                ),
             )
             channels.extend(archived_threads)
             channels.sort(key=self._channel_sort_key)
@@ -506,6 +516,46 @@ class DiscordSourceAdapter(SourceAdapter):
         )
 
     @staticmethod
+    async def _collect_guild_channels(guild: Any) -> list[Any]:
+        """Return guild channels, falling back to Discord's REST API.
+
+        A guild obtained through ``Client.fetch_guild`` does not necessarily
+        contain its channel cache.  The real source runtime is deliberately
+        authenticated through REST, so relying only on ``guild.channels``
+        would make an otherwise valid import silently archive nothing.
+        """
+        channels = getattr(guild, "channels", None)
+        if channels:
+            return list(channels)
+
+        fetch_channels = getattr(guild, "fetch_channels", None)
+        if fetch_channels is None:
+            return []
+
+        result = fetch_channels()
+        if hasattr(result, "__await__"):
+            result = await result
+        return list(result or ())
+
+    @staticmethod
+    async def _collect_active_threads(guild: Any) -> list[Any]:
+        """Fetch active guild threads when the library exposes the REST API."""
+        threads = getattr(guild, "threads", None)
+        if threads:
+            return list(threads)
+
+        fetch_active_threads = getattr(guild, "fetch_active_threads", None)
+        if fetch_active_threads is None:
+            return []
+
+        result = fetch_active_threads()
+        if hasattr(result, "__await__"):
+            result = await result
+        if hasattr(result, "threads"):
+            return list(result.threads)
+        return list(result or ())
+
+    @staticmethod
     def _message_bearing_channels(guild: Any) -> Iterable[Any]:
         """Return message-bearing channels and discovered active threads.
 
@@ -515,8 +565,12 @@ class DiscordSourceAdapter(SourceAdapter):
         archive sees each conversation exactly once.
         """
 
-        channels = getattr(guild, "channels", ())
-        threads = getattr(guild, "threads", ())
+        channels = (
+            getattr(guild, "channels", None)
+            if hasattr(guild, "channels")
+            else guild
+        ) or ()
+        threads = getattr(guild, "threads", ()) or ()
 
         candidates = (
             *channels,
@@ -545,6 +599,8 @@ class DiscordSourceAdapter(SourceAdapter):
     @staticmethod
     async def _collect_archived_threads(
         guild: Any,
+        *,
+        channels: Iterable[Any] | None = None,
     ) -> list[Any]:
         """Collect public and private archived threads from message channels.
 
@@ -557,7 +613,11 @@ class DiscordSourceAdapter(SourceAdapter):
         """
         archived: dict[str, Any] = {}
 
-        for channel in getattr(guild, "channels", ()):
+        for channel in (
+            list(channels)
+            if channels is not None
+            else list(getattr(guild, "channels", ()))
+        ):
             if DiscordSourceAdapter._is_thread(channel):
                 continue
 

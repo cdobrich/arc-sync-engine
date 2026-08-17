@@ -11,6 +11,7 @@ from typing import Any
 
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.adapters.source import SourceAdapter
+from archive_sync_engine.importer.canonical_coordinator import ImportReport
 
 
 class SourceImportRuntime(ABC):
@@ -25,8 +26,12 @@ class SourceImportRuntime(ABC):
         archive_paths: ArchivePaths,
         *,
         resume: bool = False,
-    ) -> None:
-        """Import the runtime's source into the supplied Archive Package."""
+    ) -> ImportReport:
+        """Import the runtime's source into the supplied Archive Package.
+
+        The returned report describes canonical Archive contents after the
+        import.  Concrete runtimes must not reinterpret the report.
+        """
         raise NotImplementedError
 
     @abstractmethod
