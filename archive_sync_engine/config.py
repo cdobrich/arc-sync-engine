@@ -130,7 +130,7 @@ class ResolvedSetupCredentials:
     Stable per-user mappings remain keyed by their external platform IDs.
     """
 
-    discord_token: str
+    discord_token: str | None
     fluxer_token: str
     discord_user_auth: Mapping[str, str]
     fluxer_user_auth: Mapping[str, str]
@@ -143,12 +143,12 @@ class SetupConfiguration:
 
     source_config_path: Path
     archive_path: Path
-    discord_token: SecretSource
+    input_adapter: str
+    input_scope: tuple[str, ...]
+    discord_token: SecretSource | None
     discord_guild_ids: tuple[int, ...]
-    fluxer_token: SecretSource
-    fluxer_guild_id: str
-    input_adapter: str = "discord"
-    input_scope: tuple[str, ...] = ()
+    fluxer_token: SecretSource | None
+    fluxer_guild_id: str | None
     identity_mappings: tuple[SetupUserMapping, ...] = ()
     fluxer_user_mappings: tuple[SetupUserMapping, ...] = ()
     between_messages_seconds: float = 0.0
@@ -161,7 +161,12 @@ class SetupConfiguration:
     def resolved_archive_path(self) -> Path:
         return _resolve_path(self.archive_path, self.config_directory)
 
-    def resolve_credentials(self) -> ResolvedSetupCredentials:
+    def resolve_credentials(
+        self,
+        *,
+        require_discord: bool = True,
+        require_fluxer: bool = True,
+    ) -> ResolvedSetupCredentials:
         """Resolve every configured authentication secret exactly once.
 
         This is the application boundary for turning human-authored secret
@@ -170,31 +175,52 @@ class SetupConfiguration:
         unchanged.
         """
         base_dir = self.config_directory
-        identity_mappings = tuple(
-            mapping.resolve(base_dir=base_dir)
-            for mapping in self.identity_mappings
-        )
-        discord_user_auth = {
-            mapping.discord_user_id: mapping.resolve_discord_auth(base_dir=base_dir)
-            for mapping in self.identity_mappings
-            if mapping.discord_auth is not None
-        }
-        fluxer_user_auth = {
-            mapping.fluxer_user_id: mapping.fluxer_auth.resolve(
-                base_dir=base_dir,
-                label=f"Fluxer auth for Fluxer user {mapping.fluxer_user_id}",
+        if not require_discord and not require_fluxer:
+            raise ConfigurationError(
+                "At least one adapter credential set must be requested."
             )
-            for mapping in self.fluxer_user_mappings
-        }
-        return ResolvedSetupCredentials(
-            discord_token=self.discord_token.resolve(
+
+        discord_token: str | None = None
+        fluxer_token = ""
+        discord_user_auth: dict[str, str] = {}
+        fluxer_user_auth: dict[str, str] = {}
+        identity_mappings: tuple[FluxerIdentityMapping, ...] = ()
+
+        if require_discord:
+            if self.discord_token is None:
+                raise ConfigurationError("Discord configuration is required for this workflow.")
+            discord_token = self.discord_token.resolve(
                 base_dir=base_dir,
                 label="Discord token",
-            ),
-            fluxer_token=self.fluxer_token.resolve(
+            )
+            discord_user_auth = {
+                mapping.discord_user_id: mapping.resolve_discord_auth(base_dir=base_dir)
+                for mapping in self.identity_mappings
+                if mapping.discord_auth is not None
+            }
+
+        if require_fluxer:
+            if self.fluxer_token is None:
+                raise ConfigurationError("Fluxer configuration is required for this workflow.")
+            fluxer_token = self.fluxer_token.resolve(
                 base_dir=base_dir,
                 label="Fluxer token",
-            ),
+            )
+            fluxer_user_auth = {
+                mapping.fluxer_user_id: mapping.fluxer_auth.resolve(
+                    base_dir=base_dir,
+                    label=f"Fluxer auth for Fluxer user {mapping.fluxer_user_id}",
+                )
+                for mapping in self.fluxer_user_mappings
+            }
+            identity_mappings = tuple(
+                mapping.resolve(base_dir=base_dir)
+                for mapping in self.identity_mappings
+            )
+
+        return ResolvedSetupCredentials(
+            discord_token=discord_token,
+            fluxer_token=fluxer_token,
             discord_user_auth=discord_user_auth,
             fluxer_user_auth=fluxer_user_auth,
             identity_mappings=identity_mappings,
@@ -218,8 +244,13 @@ class SetupConfiguration:
         return dict(self.resolve_credentials().fluxer_user_auth)
 
 
-def load_setup_configuration(path: str | Path) -> SetupConfiguration:
-    """Load and validate a user-authored YAML setup configuration."""
+def load_setup_configuration(
+    path: str | Path,
+    *,
+    require_discord: bool = True,
+    require_fluxer: bool = True,
+) -> SetupConfiguration:
+    """Load configuration, requiring only the adapter credentials a workflow needs."""
     config_path = Path(path).expanduser().resolve()
     try:
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -238,40 +269,54 @@ def load_setup_configuration(path: str | Path) -> SetupConfiguration:
         raise ConfigurationError("The configuration root must be a YAML mapping.")
 
     archive = _mapping(raw, "archive")
-    discord = _mapping(raw, "discord")
-    fluxer = _mapping(raw, "fluxer")
+    discord = _mapping(raw, "discord", required=require_discord)
+    fluxer = _mapping(raw, "fluxer", required=require_fluxer)
     delays = _mapping(raw, "delays", required=False)
-    mappings = _mapping(raw, "user_mappings", required=False)
     input_config = _mapping(raw, "input", required=False)
+    mappings = _mapping(raw, "user_mappings", required=False)
 
     archive_path = _required_string(archive, "path", "archive.path")
-    discord_token = _secret_source(discord, "token", "token_file", "discord")
-    fluxer_token = _secret_source(fluxer, "token", "token_file", "fluxer")
+
+    input_adapter_value = input_config.get("adapter")
+    if input_adapter_value is None:
+        input_adapter = "discord"
+    else:
+        input_adapter = _required_identifier(
+            input_config, "adapter", "input.adapter"
+        ).lower()
+
+    input_scope_value = input_config.get("scope")
+    if input_scope_value is None:
+        input_scope = tuple(str(value) for value in (
+            _guild_ids(discord.get("guild_id") if discord.get("guild_id") is not None else discord.get("guild_ids"), "discord.guild_id")
+            if require_discord and input_adapter == "discord" else ()
+        ))
+    else:
+        if not isinstance(input_scope_value, (list, tuple)):
+            raise ConfigurationError("input.scope must be a YAML sequence.")
+        input_scope = tuple(str(value).strip() for value in input_scope_value)
+        if any(not value for value in input_scope):
+            raise ConfigurationError("input.scope values must not be empty.")
+    discord_token = (
+        _secret_source(discord, "token", "token_file", "discord")
+        if require_discord else None
+    )
+    fluxer_token = (
+        _secret_source(fluxer, "token", "token_file", "fluxer")
+        if require_fluxer else None
+    )
 
     discord_guild_value = discord.get("guild_id")
     if discord_guild_value is None:
         discord_guild_value = discord.get("guild_ids")
-    discord_guild_ids = _guild_ids(discord_guild_value, "discord.guild_id")
+    discord_guild_ids = (
+        _guild_ids(discord_guild_value, "discord.guild_id")
+        if require_discord else ()
+    )
 
-    input_adapter = str(input_config.get("adapter", "discord")).strip().lower()
-    if not input_adapter:
-        raise ConfigurationError("input.adapter must not be empty.")
-    raw_input_scope = input_config.get("scope")
-    if raw_input_scope is None:
-        input_scope = ()
-    elif isinstance(raw_input_scope, (list, tuple)):
-        input_scope = tuple(str(value).strip() for value in raw_input_scope)
-        if any(not value for value in input_scope):
-            raise ConfigurationError("input.scope values must not be empty.")
-    else:
-        input_scope = (str(raw_input_scope).strip(),)
-        if not input_scope[0]:
-            raise ConfigurationError("input.scope values must not be empty.")
-
-    fluxer_guild_id = _required_identifier(
-        fluxer,
-        "server_id",
-        "fluxer.server_id",
+    fluxer_guild_id = (
+        _required_identifier(fluxer, "server_id", "fluxer.server_id")
+        if require_fluxer else None
     )
 
     identity_mappings, fluxer_user_mappings = _parse_user_mappings(mappings)
@@ -288,12 +333,12 @@ def load_setup_configuration(path: str | Path) -> SetupConfiguration:
     return SetupConfiguration(
         source_config_path=config_path,
         archive_path=Path(archive_path).expanduser(),
+        input_adapter=input_adapter,
+        input_scope=input_scope,
         discord_token=discord_token,
         discord_guild_ids=discord_guild_ids,
         fluxer_token=fluxer_token,
         fluxer_guild_id=fluxer_guild_id,
-        input_adapter=input_adapter,
-        input_scope=input_scope,
         identity_mappings=identity_mappings,
         fluxer_user_mappings=fluxer_user_mappings,
         between_messages_seconds=between_messages,

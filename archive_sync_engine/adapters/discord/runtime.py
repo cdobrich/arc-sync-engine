@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any, Mapping, Callable
 
 from archive_sync_engine.adapters.exceptions import AdapterError
 from archive_sync_engine.archive.paths import ArchivePaths
@@ -200,3 +200,19 @@ class DiscordSourceRuntime:
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.close()
+
+
+def build_discord_source_runtime_config(
+    credentials: Any,
+    scope: tuple[str, ...],
+    overrides: Mapping[str, Any],
+) -> DiscordClientConfig:
+    """Build Discord runtime configuration behind the source registry boundary."""
+    token = getattr(credentials, "discord_token", None)
+    if not token:
+        raise AdapterError("Discord source credentials are missing.")
+    try:
+        guild_ids = tuple(int(value) for value in scope)
+    except (TypeError, ValueError) as exc:
+        raise AdapterError("Discord source scope must contain numeric guild IDs.") from exc
+    return DiscordClientConfig(token=token, guild_ids=guild_ids)

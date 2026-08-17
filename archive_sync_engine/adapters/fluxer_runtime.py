@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any, Mapping, Callable
 
 from .destination import DestinationAdapter
 from .exceptions import AdapterError
@@ -397,3 +397,25 @@ class FluxerDestinationRuntime:
             "FluxerDestinationRuntime.close() cannot run inside an active "
             "asyncio event loop."
         )
+
+
+def build_fluxer_destination_runtime_config(
+    credentials: Any,
+    scope: tuple[str, ...],
+    overrides: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Build Fluxer destination configuration behind the destination registry boundary."""
+    token = getattr(credentials, "fluxer_token", None)
+    if not token:
+        raise AdapterError("Fluxer destination credentials are missing.")
+    if len(scope) != 1 or not scope[0]:
+        raise AdapterError("Fluxer destination scope must contain exactly one server ID.")
+    return {
+        "fluxer": FluxerClientConfig(
+            token=token,
+            is_bot=True,
+            api_url=overrides.get("api_url"),
+            max_retries=int(overrides.get("max_retries", 4)),
+        ),
+        "identity_mappings": tuple(getattr(credentials, "identity_mappings", ())),
+    }

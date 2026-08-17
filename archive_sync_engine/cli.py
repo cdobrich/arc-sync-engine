@@ -12,6 +12,9 @@ from archive_sync_engine.logging_support import (
     report_unexpected_error,
 )
 
+from archive_sync_engine.adapters.discord.runtime import DiscordClientConfig
+from archive_sync_engine.adapters.fluxer_runtime import FluxerClientConfig
+from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
 from archive_sync_engine.adapters import (
     DestinationRuntimeRequest,
     SourceRuntimeRequest,
@@ -21,9 +24,6 @@ from archive_sync_engine.adapters import (
     default_sync_pair_registry,
 )
 from archive_sync_engine.sync.runtime_registry import default_sync_runtime_registry
-from archive_sync_engine.adapters.discord.runtime import DiscordClientConfig
-from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
-from archive_sync_engine.adapters.fluxer_runtime import FluxerClientConfig
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.archive.package import ArchivePackage
 from archive_sync_engine.config import ConfigurationError, load_setup_configuration
@@ -303,15 +303,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="List adapter roles registered with the application.",
     )
     adapters.add_argument(
-        "--validate",
-        action="store_true",
-        help="Validate consistency between adapter roles and concrete runtimes.",
-    )
-    adapters.add_argument(
         "--json",
         action="store_true",
         dest="as_json",
         help="Emit machine-readable JSON.",
+    )
+    adapters.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate registered adapter/runtime capabilities.",
     )
     add_logging_options(adapters)
 
@@ -404,44 +404,26 @@ def _run_adapters(args: argparse.Namespace) -> int:
     ]
     if args.as_json:
         import json
-
-        print(
-            json.dumps(
-                {
-                    "adapters": [
-                        {
-                            "name": descriptor.name,
-                            "source": descriptor.source,
-                            "destination": descriptor.destination,
-                            "description": descriptor.description,
-                        }
-                        for descriptor in descriptors
-                    ],
-                    "source_runtimes": source_runtimes,
-                    "destination_runtimes": destination_runtimes,
-                    "sync_runtimes": sync_runtimes,
-                    "sync_pairs": [
-                        {
-                            "input_adapter": pair.input_adapter,
-                            "destination_adapter": pair.destination_adapter,
-                            "description": pair.description,
-                        }
-                        for pair in pairs
-                    ],
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        print(json.dumps({
+            "adapters": [{
+                "name": descriptor.name,
+                "source": descriptor.source,
+                "destination": descriptor.destination,
+                "description": descriptor.description,
+            } for descriptor in descriptors],
+            "source_runtimes": source_runtimes,
+            "destination_runtimes": destination_runtimes,
+            "sync_runtimes": sync_runtimes,
+            "sync_pairs": [{
+                "input_adapter": pair.input_adapter,
+                "destination_adapter": pair.destination_adapter,
+                "description": pair.description,
+            } for pair in pairs],
+        }, indent=2, sort_keys=True))
     else:
         print("NAME\tSOURCE\tDESTINATION\tDESCRIPTION")
         for descriptor in descriptors:
-            print(
-                f"{descriptor.name}\t"
-                f"{str(descriptor.source).lower()}\t"
-                f"{str(descriptor.destination).lower()}\t"
-                f"{descriptor.description}"
-            )
+            print(f"{descriptor.name}\t{str(descriptor.source).lower()}\t{str(descriptor.destination).lower()}\t{descriptor.description}")
         print("\nREGISTERED SOURCE RUNTIMES")
         for name in source_runtimes:
             print(name)
@@ -454,10 +436,7 @@ def _run_adapters(args: argparse.Namespace) -> int:
         print("\nSUPPORTED SYNC PAIRS")
         print("INPUT\tDESTINATION\tDESCRIPTION")
         for pair in pairs:
-            print(
-                f"{pair.input_adapter}\t{pair.destination_adapter}\t"
-                f"{pair.description}"
-            )
+            print(f"{pair.input_adapter}\t{pair.destination_adapter}\t{pair.description}")
     return 0
 
 
@@ -627,7 +606,6 @@ def _run_diagnostics_summary(args: argparse.Namespace) -> int:
 
 def _run_preflight(args: argparse.Namespace) -> int:
     """Validate all local prerequisites for a configured run without side effects."""
-    from archive_sync_engine.adapters.capability_validation import validate_adapter_capabilities
     setup = load_setup_configuration(args.config)
     archive_path = (
         args.archive.expanduser().resolve()
@@ -635,6 +613,7 @@ def _run_preflight(args: argparse.Namespace) -> int:
         else setup.resolved_archive_path().expanduser().resolve()
     )
 
+    from archive_sync_engine.adapters.capability_validation import validate_adapter_capabilities
     capability_report = validate_adapter_capabilities()
     checks: dict[str, object] = {
         "adapter_capabilities": {
@@ -793,7 +772,7 @@ def _run_init(args: argparse.Namespace) -> int:
 
 def _run_import(args: argparse.Namespace) -> int:
     """Import one registered source adapter into an Archive Package."""
-    setup = load_setup_configuration(args.config)
+    setup = load_setup_configuration(args.config, require_discord=True, require_fluxer=False)
     archive_path = (
         args.archive.expanduser().resolve()
         if args.archive is not None
@@ -811,7 +790,7 @@ def _run_import(args: argparse.Namespace) -> int:
             f"Archive Package is invalid: {'; '.join(report.errors)}"
         )
 
-    adapter_name = (args.input_adapter or setup.input_adapter).strip().lower()
+    adapter_name = args.input_adapter.strip().lower()
     try:
         descriptor = default_adapter_registry().require_source(adapter_name)
     except ValueError as exc:
@@ -821,8 +800,6 @@ def _run_import(args: argparse.Namespace) -> int:
         scope = tuple(value.strip() for value in args.input_scope)
         if any(not value for value in scope):
             raise ConfigurationError("Input scope values must not be empty.")
-    elif setup.input_scope:
-        scope = setup.input_scope
     elif adapter_name == "discord":
         scope = tuple(str(value) for value in setup.discord_guild_ids)
     else:
@@ -830,24 +807,17 @@ def _run_import(args: argparse.Namespace) -> int:
             f"Input scope must be provided for source adapter {descriptor.name!r}."
         )
 
-    if adapter_name != "discord":
-        raise ConfigurationError(
-            f"No concrete source runtime configuration is currently available "
-            f"for adapter {adapter_name!r}."
-        )
-
-    credentials = setup.resolve_credentials()
-    discord_config = DiscordClientConfig(
-        token=credentials.discord_token,
-        guild_ids=tuple(int(value) for value in scope),
-    )
+    credentials = setup.resolve_credentials(require_discord=True, require_fluxer=False)
+    source_registry = default_source_runtime_registry()
+    try:
+        source_config = source_registry.build_config(adapter_name, credentials, scope)
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
     runtime_request = SourceRuntimeRequest(
         adapter=adapter_name,
         scope=scope,
         archive_path=paths.root,
-        adapter_config={
-            "discord": discord_config,
-        },
+        adapter_config={adapter_name: source_config},
     )
 
     if not args.resume:
@@ -881,7 +851,7 @@ def _run_import(args: argparse.Namespace) -> int:
                 f"No importer checkpoint exists in Archive Package: {paths.root}."
             ) from exc
 
-    runtime = default_source_runtime_registry().create(
+    runtime = source_registry.create(
         adapter_name,
         runtime_request,
     )
@@ -893,7 +863,7 @@ def _run_import(args: argparse.Namespace) -> int:
 
 def _run_export(args: argparse.Namespace) -> int:
     """Export an existing Archive through a registered destination runtime."""
-    setup = load_setup_configuration(args.config)
+    setup = load_setup_configuration(args.config, require_discord=False, require_fluxer=True)
     archive_path = (
         args.archive.expanduser().resolve()
         if args.archive is not None
@@ -928,39 +898,33 @@ def _run_export(args: argparse.Namespace) -> int:
         if any(not value for value in destination_scope):
             raise ConfigurationError("Destination scope values must not be empty.")
 
-        if destination_adapter != "fluxer":
-            raise ConfigurationError(
-                f"No concrete destination runtime configuration is currently "
-                f"available for adapter {destination_adapter!r}."
-            )
-
-        credentials = setup.resolve_credentials()
+        credentials = setup.resolve_credentials(require_discord=False, require_fluxer=True)
+        destination_config = destination_registry.build_config(
+            destination_adapter,
+            credentials,
+            destination_scope,
+            {
+                "api_url": args.fluxer_api_url,
+                "max_retries": args.fluxer_max_retries,
+            },
+        )
         runtime_request = DestinationRuntimeRequest(
             adapter=destination_adapter,
             scope=destination_scope,
             archive_path=paths.root,
-            adapter_config={
-                "fluxer": FluxerClientConfig(
-                    token=credentials.fluxer_token,
-                    is_bot=True,
-                    api_url=args.fluxer_api_url,
-                    max_retries=args.fluxer_max_retries,
-                ),
-                "identity_mappings": credentials.identity_mappings,
-            },
+            adapter_config=destination_config,
         )
         runtime = destination_registry.create(destination_adapter, runtime_request)
     except ValueError as exc:
         raise ConfigurationError(str(exc)) from exc
 
     with Archive(paths) as archive, runtime:
-        report = CanonicalExporter().export(
+        CanonicalExporter().export(
             archive=archive,
             destination=runtime.adapter,
             asset_store=archive.asset_store,
         )
 
-    print(f"Export completed: {report.executed_operations} operations executed.")
     return 0
 
 

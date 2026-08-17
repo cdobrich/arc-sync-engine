@@ -340,7 +340,8 @@ user_mappings:
 
 def test_setup_configuration_accepts_generic_input_adapter_and_scope(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
-    config.write_text("""
+    config.write_text(
+        """
 archive:
   path: ./archive
 input:
@@ -354,16 +355,20 @@ discord:
 fluxer:
   token: fluxer-secret
   server_id: fluxer-server
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
 
     setup = load_setup_configuration(config)
+
     assert setup.input_adapter == "fluxer"
     assert setup.input_scope == ("server-1", "server-2")
 
 
 def test_setup_configuration_defaults_generic_input_to_discord_scope(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
-    config.write_text("""
+    config.write_text(
+        """
 archive:
   path: ./archive
 discord:
@@ -372,8 +377,51 @@ discord:
 fluxer:
   token: fluxer-secret
   server_id: fluxer-server
-""", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
 
     setup = load_setup_configuration(config)
+
     assert setup.input_adapter == "discord"
-    assert setup.input_scope == ()
+    assert setup.input_scope == ("123",)
+
+
+def test_load_yaml_setup_can_omit_discord_section_for_destination_only_workflow(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "export.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    setup = load_setup_configuration(config, require_discord=False)
+
+    assert setup.discord_token is None
+    assert setup.discord_guild_ids == ()
+    credentials = setup.resolve_credentials(require_discord=False)
+    assert credentials.discord_token is None
+
+
+def test_load_yaml_setup_still_requires_discord_by_default(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="discord"):
+        load_setup_configuration(config)

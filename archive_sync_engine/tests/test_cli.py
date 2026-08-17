@@ -560,6 +560,7 @@ fluxer:
 
     registry = MagicMock()
     registry.create.return_value = runtime
+    registry.build_config.return_value = type("DiscordConfig", (), {"token": "discord-secret"})()
 
     with patch(
         "archive_sync_engine.cli.default_source_runtime_registry",
@@ -633,6 +634,7 @@ fluxer:
     runtime.__exit__.return_value = None
     registry = MagicMock()
     registry.create.return_value = runtime
+    registry.build_config.return_value = type("DiscordConfig", (), {"token": "current-discord-secret"})()
 
     with patch(
         "archive_sync_engine.cli.default_source_runtime_registry",
@@ -737,6 +739,7 @@ fluxer:
 
     registry = MagicMock()
     registry.create.return_value = runtime
+    registry.build_config.return_value = {"fluxer": type("FluxerConfig", (), {"token": "fluxer-secret"})()}
 
     exporter = MagicMock()
 
@@ -790,6 +793,7 @@ fluxer:
     runtime.adapter = object()
     registry = MagicMock()
     registry.create.return_value = runtime
+    registry.build_config.return_value = {"fluxer": type("FluxerConfig", (), {"token": "fluxer-secret"})()}
 
     with (
         patch(
@@ -960,6 +964,45 @@ def test_config_example_cli_force_overwrites_existing_file(tmp_path: Path) -> No
     assert output.read_text(encoding="utf-8") == Path(
         "config-example.yaml"
     ).read_text(encoding="utf-8")
+
+def test_export_cli_does_not_require_discord_credentials(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.adapter = object()
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    registry.build_config.return_value = {
+        "fluxer": MagicMock(token="fluxer-secret"),
+        "identity_mappings": (),
+    }
+
+    with (
+        patch(
+            "archive_sync_engine.cli.default_destination_runtime_registry",
+            return_value=registry,
+        ),
+        patch("archive_sync_engine.cli.CanonicalExporter"),
+    ):
+        assert main(["export", "--config", str(config)]) == 0
+
+    registry.build_config.assert_called_once()
+    request = registry.create.call_args.args[1]
+    assert request.adapter_config["fluxer"].token == "fluxer-secret"
 
 
 def test_adapters_cli_text_reports_registered_runtime_implementations(capsys) -> None:

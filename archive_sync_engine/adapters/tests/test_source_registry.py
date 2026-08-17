@@ -31,3 +31,16 @@ def test_default_source_runtime_registry_uses_adapter_neutral_factory() -> None:
     ).default_source_runtime_registry(lambda request: request)
 
     assert registry.names() == ("discord",)
+
+
+def test_source_runtime_registry_builds_adapter_specific_config() -> None:
+    registry = SourceRuntimeRegistry(
+        {"example": lambda request: request},
+        {"example": lambda credentials, scope, overrides: (credentials, scope, overrides)},
+    )
+
+    assert registry.build_config("example", "credentials", ("scope",), {"option": 1}) == (
+        "credentials",
+        ("scope",),
+        {"option": 1},
+    )

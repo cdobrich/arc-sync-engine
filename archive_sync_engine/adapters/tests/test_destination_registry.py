@@ -53,3 +53,16 @@ def test_default_destination_runtime_registry_registers_fluxer() -> None:
     registry = default_destination_runtime_registry(fluxer_factory=lambda request: request)
 
     assert registry.names() == ("fluxer",)
+
+
+def test_destination_runtime_registry_builds_adapter_specific_config() -> None:
+    registry = DestinationRuntimeRegistry(
+        {"example": lambda request: request},
+        {"example": lambda credentials, scope, overrides: (credentials, scope, overrides)},
+    )
+
+    assert registry.build_config("example", "credentials", ("scope",), {"option": 1}) == (
+        "credentials",
+        ("scope",),
+        {"option": 1},
+    )
