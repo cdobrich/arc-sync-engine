@@ -1258,3 +1258,30 @@ def test_config_example_documents_discord_bot_configuration() -> None:
     assert "Discord bot account" in example
     assert 'token_file: "discord_bot.token"' in example
     assert "YOUR_DISCORD_BOT_TOKEN" in example
+
+
+def test_cli_expected_application_error_does_not_print_usage(capsys, tmp_path: Path) -> None:
+    config = tmp_path / "missing.yaml"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["import", "--config", str(config)])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "usage:" not in captured.err
+    assert "archive-sync-engine: error:" in captured.err
+
+
+def test_cli_unexpected_application_error_does_not_print_usage(capsys, monkeypatch) -> None:
+    def fail(_args):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("archive_sync_engine.cli._run_validate", fail)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["validate", "--archive", "/tmp/archive-sync-engine-test-missing"] )
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "usage:" not in captured.err
+    assert "Unexpected application error" in captured.err

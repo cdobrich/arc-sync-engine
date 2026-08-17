@@ -323,6 +323,7 @@ class FakeMessage:
         created_at: datetime,
         content: str,
         *,
+        system_content: str = "",
         edited_at: datetime | None = None,
         reference: FakeReference | None = None,
         attachments=(),
@@ -334,6 +335,7 @@ class FakeMessage:
         self.created_at = created_at
         self.edited_at = edited_at
         self.content = content
+        self.system_content = system_content
         self.reference = reference
         self.attachments = attachments
         self.reactions = reactions
@@ -720,3 +722,39 @@ def test_iter_conversations_fetches_active_threads_when_thread_cache_is_empty() 
         str(item.id) for item in conversations
     }
     assert fetch_calls == [()]
+
+
+def test_iter_messages_uses_discord_system_content_for_system_messages() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "first", 1, created)
+    message = FakeMessage(100, channel, user, created, "", system_content="Alice pinned a message.")
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    conversation = next(adapter.iter_conversations())
+    messages = list(adapter.iter_messages(conversation))
+
+    assert len(messages) == 1
+    assert messages[0].content == "Alice pinned a message."
+
+
+def test_iter_messages_rejects_unrepresentable_empty_discord_message() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "first", 1, created)
+    message = FakeMessage(101, channel, user, created, "")
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    conversation = next(adapter.iter_conversations())
+    with pytest.raises(ValueError, match="A message must contain text or at least one attachment"):
+        list(adapter.iter_messages(conversation))

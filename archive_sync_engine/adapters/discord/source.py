@@ -326,6 +326,17 @@ class DiscordSourceAdapter(SourceAdapter):
 
         reply_to = self._canonical_reply_to(message)
 
+        content = str(getattr(message, "content", "") or "")
+        if not content:
+            # Discord system messages may expose their canonical human-readable
+            # content through ``system_content`` even when ``content`` is empty.
+            # Preserve that source information rather than allowing the
+            # platform-specific message shape to violate the canonical message
+            # invariant.  Other empty messages remain invalid because the
+            # canonical model intentionally has no representation for embeds,
+            # stickers, or other non-text/non-attachment-only payloads yet.
+            content = str(getattr(message, "system_content", "") or "")
+
         return CanonicalMessage(
             id=MessageId(
                 self._message_key(message_id),
@@ -336,7 +347,7 @@ class DiscordSourceAdapter(SourceAdapter):
                 ),
             ),
             identity_key=self._canonical_identity(author).identity_key,
-            content=str(getattr(message, "content", "") or ""),
+            content=content,
             created_at=created_at,
             edited_at=getattr(message, "edited_at", None),
             reply_to=reply_to,

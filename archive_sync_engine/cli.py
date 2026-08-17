@@ -37,7 +37,7 @@ from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="archive-sync-engine",
-        description="Archive and synchronize Discord messages to Fluxer.",
+        description="Archive and synchronize messaging-platform data through the canonical Archive.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1342,10 +1342,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_diagnostics(args)
     except (ValueError, ConfigurationError) as exc:
         report_expected_error(exc)
-        parser.error(str(exc))
+        parser.exit(2, f"{parser.prog}: error: {exc}\n")
     except Exception as exc:
         report_unexpected_error(exc)
-        parser.error("Unexpected application error; consult the log for details.")
+        parser.exit(1, f"{parser.prog}: error: Unexpected application error; consult the log for details.\n")
 
-    parser.error("No command was selected.")
+    parser.exit(2, f"{parser.prog}: error: No command was selected.\n")
     return 2
