@@ -8,15 +8,18 @@ session.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any, Mapping, Callable
+from typing import Any, Mapping, Callable, Awaitable, TypeVar
 
 from archive_sync_engine.adapters.exceptions import AdapterError
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.importer.canonical_coordinator import CanonicalImportCoordinator, ImportReport
 
 from .source import DiscordSourceAdapter
+
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +51,12 @@ class DiscordClientFactory:
         self._importer = importer or self._import_discord
         self._client_builder = client_builder
 
-    def create(self, config: DiscordClientConfig) -> Any:
+    def create(
+        self,
+        config: DiscordClientConfig,
+        *,
+        runner: Callable[[Awaitable[_T]], _T] | None = None,
+    ) -> Any:
         """Create and authenticate one discord.py client."""
         module = self._load_discord()
 
@@ -75,7 +83,7 @@ class DiscordClientFactory:
 
         try:
             client = builder(intents=intents)
-            self._login(client, config.token)
+            self._login(client, config.token, runner=runner)
             return client
         except AdapterError:
             raise
@@ -85,7 +93,12 @@ class DiscordClientFactory:
             ) from exc
 
     @staticmethod
-    def _login(client: Any, token: str) -> None:
+    def _login(
+        client: Any,
+        token: str,
+        *,
+        runner: Callable[[Awaitable[Any]], Any] | None = None,
+    ) -> None:
         login = getattr(client, "login", None)
         if login is None:
             raise AdapterError("Discord client does not expose login().")
@@ -94,7 +107,10 @@ class DiscordClientFactory:
         # synchronous, so authentication is completed once at runtime setup.
         import asyncio
 
-        asyncio.run(login(token))
+        if runner is not None:
+            runner(login(token))
+        else:
+            asyncio.run(login(token))
 
     def _load_discord(self) -> ModuleType:
         try:
@@ -130,8 +146,28 @@ class DiscordSourceRuntime:
         factory = request.adapter_config.get("discord_client_factory")
         if factory is None:
             factory = DiscordClientFactory()
-        client = factory.create(config)
-        return cls(client, guild_ids=config.guild_ids)
+        loop = asyncio.new_event_loop()
+        previous_loop = None
+        try:
+            try:
+                previous_loop = asyncio.get_event_loop()
+            except RuntimeError:
+                previous_loop = None
+            asyncio.set_event_loop(loop)
+            client = factory.create(config, runner=loop.run_until_complete)
+            return cls(
+                client,
+                guild_ids=config.guild_ids,
+                loop=loop,
+                previous_loop=previous_loop,
+            )
+        except Exception:
+            loop.close()
+            if previous_loop is not None and not previous_loop.is_closed():
+                asyncio.set_event_loop(previous_loop)
+            else:
+                asyncio.set_event_loop(None)
+            raise
     """Own an authenticated Discord client and expose its canonical adapter."""
 
     def __init__(
@@ -139,6 +175,8 @@ class DiscordSourceRuntime:
         client: Any,
         *,
         guild_ids: tuple[int | str, ...],
+        loop: asyncio.AbstractEventLoop | None = None,
+        previous_loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         self._client = client
         self._guild_ids = tuple(guild_ids)
@@ -146,6 +184,10 @@ class DiscordSourceRuntime:
             client,
             self._guild_ids,
         )
+        self._loop = loop
+        self._previous_loop = previous_loop
+        if loop is not None:
+            self.adapter.set_runner(loop.run_until_complete)
         self._closed = False
 
     @property
@@ -178,7 +220,7 @@ class DiscordSourceRuntime:
         )
 
     def close(self) -> None:
-        """Close the discord.py HTTP/session resources synchronously."""
+        """Close the Discord client and its runtime-owned event loop."""
         if self._closed:
             return
 
@@ -186,14 +228,21 @@ class DiscordSourceRuntime:
         if close is None:
             raise AdapterError("Discord client does not expose close().")
 
-        import asyncio
-
         try:
-            asyncio.run(close())
+            if self._loop is not None:
+                self._loop.run_until_complete(close())
+            else:
+                asyncio.run(close())
         except Exception as exc:
             raise AdapterError("Failed to close the Discord client.") from exc
         finally:
             self._closed = True
+            if self._loop is not None:
+                self._loop.close()
+                if self._previous_loop is not None and not self._previous_loop.is_closed():
+                    asyncio.set_event_loop(self._previous_loop)
+                else:
+                    asyncio.set_event_loop(None)
 
     def __enter__(self) -> "DiscordSourceRuntime":
         return self

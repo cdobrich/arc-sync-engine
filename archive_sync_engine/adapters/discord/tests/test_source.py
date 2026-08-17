@@ -168,62 +168,6 @@ def test_iter_identities_rejects_missing_member_cache_and_fetch_api() -> None:
     assert isinstance(exc_info.value, AdapterError)
 
 
-
-def test_iter_conversations_fetches_channels_when_guild_cache_is_empty() -> None:
-    guild = FakeGuild()
-    guild.channels = []
-    guild.threads = []
-    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    fetched_channels = [
-        FakeChannel(40, "fetched", 1, created),
-    ]
-    fetch_calls: list[tuple[()]] = []
-
-    async def fetch_channels():
-        fetch_calls.append(())
-        return fetched_channels
-
-    guild.fetch_channels = fetch_channels
-
-    adapter = DiscordSourceAdapter(
-        FakeClient(guild),
-        [123],
-    )
-
-    conversations = list(adapter.iter_conversations())
-
-    assert [str(item.id) for item in conversations] == [
-        "discord:guild:123:channel:40",
-    ]
-    assert fetch_calls == [()]
-
-
-def test_iter_conversations_fetches_active_threads_when_thread_cache_is_empty() -> None:
-    guild = FakeGuild()
-    guild.threads = []
-    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    thread = FakeThread(50, "active", 20, 50, created)
-    fetch_calls: list[tuple[()]] = []
-
-    class ActiveThreads:
-        threads = [thread]
-
-    async def fetch_active_threads():
-        fetch_calls.append(())
-        return ActiveThreads()
-
-    guild.fetch_active_threads = fetch_active_threads
-
-    adapter = DiscordSourceAdapter(
-        FakeClient(guild),
-        [123],
-    )
-
-    conversations = list(adapter.iter_conversations())
-
-    assert "discord:guild:123:channel:50" in {str(item.id) for item in conversations}
-    assert fetch_calls == [()]
-
 def test_iter_conversations_maps_channels_and_threads() -> None:
     adapter = DiscordSourceAdapter(
         FakeClient(FakeGuild()),
@@ -718,3 +662,61 @@ def test_iter_identities_reuses_historical_message_scan_for_message_import() -> 
     assert "discord:user:99" in {str(item.identity_key) for item in identities}
     assert len(messages) == 1
     assert channel.history_calls == 1
+
+
+def test_iter_conversations_fetches_channels_when_guild_cache_is_empty() -> None:
+    guild = FakeGuild()
+    guild.channels = []
+    guild.threads = []
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    fetched_channels = [
+        FakeChannel(40, "fetched", 1, created),
+    ]
+    fetch_calls: list[tuple[()]] = []
+
+    async def fetch_channels():
+        fetch_calls.append(())
+        return fetched_channels
+
+    guild.fetch_channels = fetch_channels
+
+    adapter = DiscordSourceAdapter(
+        FakeClient(guild),
+        [123],
+    )
+
+    conversations = list(adapter.iter_conversations())
+
+    assert [str(item.id) for item in conversations] == [
+        "discord:guild:123:channel:40",
+    ]
+    assert fetch_calls == [()]
+
+
+def test_iter_conversations_fetches_active_threads_when_thread_cache_is_empty() -> None:
+    guild = FakeGuild()
+    guild.threads = []
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    thread = FakeThread(50, "active", 20, 50, created)
+    fetch_calls: list[tuple[()]] = []
+
+    class ActiveThreads:
+        threads = [thread]
+
+    async def fetch_active_threads():
+        fetch_calls.append(())
+        return ActiveThreads()
+
+    guild.fetch_active_threads = fetch_active_threads
+
+    adapter = DiscordSourceAdapter(
+        FakeClient(guild),
+        [123],
+    )
+
+    conversations = list(adapter.iter_conversations())
+
+    assert "discord:guild:123:channel:50" in {
+        str(item.id) for item in conversations
+    }
+    assert fetch_calls == [()]

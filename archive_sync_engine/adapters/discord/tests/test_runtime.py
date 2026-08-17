@@ -56,6 +56,60 @@ def test_discord_client_factory_normalizes_guild_ids_and_authenticates() -> None
     assert calls == [("login", "discord-token")]
 
 
+
+def test_discord_client_factory_uses_supplied_runner_for_login() -> None:
+    calls: list[object] = []
+
+    class FakeClient:
+        def __init__(self, *, intents: object) -> None:
+            self.intents = intents
+
+        async def login(self, token: str) -> None:
+            calls.append(("login", token))
+
+    class FakeIntents:
+        @classmethod
+        def none(cls) -> "FakeIntents":
+            return cls()
+
+    fake_module = SimpleNamespace(Client=FakeClient, Intents=FakeIntents)
+
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        factory = DiscordClientFactory(importer=lambda: fake_module)
+        factory.create(
+            DiscordClientConfig(token="discord-token", guild_ids=(1,)),
+            runner=loop.run_until_complete,
+        )
+    finally:
+        loop.close()
+
+    assert calls == [("login", "discord-token")]
+
+
+def test_discord_source_adapter_can_reuse_runtime_owned_event_loop() -> None:
+    import asyncio
+
+    loop = asyncio.new_event_loop()
+    try:
+        class FakeClient:
+            async def close(self) -> None:
+                pass
+
+        from archive_sync_engine.adapters.discord.source import DiscordSourceAdapter
+
+        adapter = DiscordSourceAdapter(FakeClient(), (1,))
+        adapter.set_runner(loop.run_until_complete)
+
+        async def identify() -> str:
+            return "same-loop"
+
+        assert adapter._run(identify()) == "same-loop"
+    finally:
+        loop.close()
+
 def test_discord_client_factory_wraps_client_construction_failure() -> None:
     class FakeIntents:
         def __init__(self) -> None:

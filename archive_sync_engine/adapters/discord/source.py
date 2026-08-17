@@ -25,7 +25,7 @@ import asyncio
 import hashlib
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Awaitable, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 
 from archive_sync_engine.adapters.exceptions import (
     AdapterError,
@@ -74,6 +74,7 @@ class DiscordSourceAdapter(SourceAdapter):
         self._conversation_channels: dict[str, Any] = {}
         self._message_cache: dict[str, tuple[Any, ...]] = {}
         self._attachment_bytes: dict[str, bytes] = {}
+        self._runner: Callable[[Awaitable[_T]], _T] | None = None
 
     @property
     def name(self) -> str:
@@ -145,11 +146,13 @@ class DiscordSourceAdapter(SourceAdapter):
         conversations: dict[str, CanonicalConversation] = {}
 
         for guild in self._iter_guilds():
-            channels = self._run(
-                self._collect_message_bearing_channels(guild),
+            channels = list(
+                self._run(
+                    self._collect_message_bearing_channels(guild),
+                )
             )
             archived_threads = self._run(
-                self._collect_archived_threads(channels),
+                self._collect_archived_threads(guild),
             )
             channels.extend(archived_threads)
             channels.sort(key=self._channel_sort_key)
@@ -507,39 +510,45 @@ class DiscordSourceAdapter(SourceAdapter):
             is_bot=bool(getattr(user, "bot", False)),
         )
 
-    @classmethod
-    async def _collect_message_bearing_channels(cls, guild: Any) -> list[Any]:
-        """Discover message-bearing channels without relying on cache state.
+    async def _collect_message_bearing_channels(
+        self,
+        guild: Any,
+    ) -> list[Any]:
+        """Collect message-bearing channels and active threads.
 
-        A guild returned by Discord's REST ``fetch_guild`` endpoint may not
-        contain the channel/member/thread cache that a gateway-populated
-        ``Guild`` normally has.  Prefer those cached collections when they
-        are populated, but fall back to Discord's explicit REST discovery
-        APIs when they are unavailable or empty.  The adapter remains the
-        only layer that knows these platform-specific APIs.
+        Prefer the normal discord.py guild caches. A freshly fetched guild
+        can have empty ``channels``/``threads`` collections, however, even
+        though the REST APIs can enumerate those resources. When a cache is
+        empty, use the corresponding explicit fetch API rather than treating
+        an empty cache as an empty guild.
         """
-        channels = getattr(guild, "channels", None)
-        if channels is None or not channels:
+        channels = list(getattr(guild, "channels", ()) or ())
+        if not channels:
             fetch_channels = getattr(guild, "fetch_channels", None)
-            if fetch_channels is None:
-                channels = () if channels is None else channels
-            else:
-                channels = await fetch_channels()
+            if fetch_channels is not None:
+                fetched_channels = await fetch_channels()
+                channels = list(fetched_channels or ())
 
-        threads = getattr(guild, "threads", None)
-        if threads is None or not threads:
-            fetch_active_threads = getattr(guild, "fetch_active_threads", None)
+        threads = list(getattr(guild, "threads", ()) or ())
+        if not threads:
+            fetch_active_threads = getattr(
+                guild,
+                "fetch_active_threads",
+                None,
+            )
             if fetch_active_threads is not None:
-                active = await fetch_active_threads()
-                threads = getattr(active, "threads", active)
-            else:
-                threads = () if threads is None else threads
+                active_threads = await fetch_active_threads()
+                threads = list(
+                    getattr(active_threads, "threads", active_threads)
+                    or ()
+                )
 
         candidates = (*channels, *threads)
         seen_ids: set[str] = set()
         result: list[Any] = []
+
         for channel in candidates:
-            if not cls._is_message_bearing_channel(channel):
+            if not self._is_message_bearing_channel(channel):
                 continue
             channel_id = getattr(channel, "id", None)
             if channel_id is None:
@@ -549,11 +558,12 @@ class DiscordSourceAdapter(SourceAdapter):
                 continue
             seen_ids.add(key)
             result.append(channel)
+
         return result
 
     @staticmethod
     async def _collect_archived_threads(
-        channels: Iterable[Any],
+        guild: Any,
     ) -> list[Any]:
         """Collect public and private archived threads from message channels.
 
@@ -566,7 +576,7 @@ class DiscordSourceAdapter(SourceAdapter):
         """
         archived: dict[str, Any] = {}
 
-        for channel in channels:
+        for channel in getattr(guild, "channels", ()):
             if DiscordSourceAdapter._is_thread(channel):
                 continue
 
@@ -708,9 +718,10 @@ class DiscordSourceAdapter(SourceAdapter):
             str(getattr(channel, "name", "")),
         )
 
-    @staticmethod
-    def _run(awaitable: Awaitable[_T]) -> _T:
-        """Execute one Discord coroutine for the synchronous SourceAdapter contract."""
+    def _run(self, awaitable: Awaitable[_T]) -> _T:
+        """Execute one Discord coroutine using the runtime-owned event loop."""
+        if self._runner is not None:
+            return self._runner(awaitable)
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -722,3 +733,7 @@ class DiscordSourceAdapter(SourceAdapter):
         raise AdapterError(
             "DiscordSourceAdapter synchronous methods cannot run inside an active event loop."
         )
+
+    def set_runner(self, runner: Callable[[Awaitable[_T]], _T] | None) -> None:
+        """Set the event-loop runner owned by the surrounding source runtime."""
+        self._runner = runner
