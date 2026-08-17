@@ -510,3 +510,46 @@ fluxer:
 
     with pytest.raises(ConfigurationError, match="discord"):
         load_setup_configuration(config)
+
+
+def test_setup_configuration_resolves_adapter_specific_input_scope() -> None:
+    config = Path("/tmp/archive-sync-test-config.yaml")
+    config.write_text(
+        """
+archive:
+  path: ./archive
+input:
+  adapter: future-source
+  scope:
+    - opaque-a
+    - opaque-b
+""",
+        encoding="utf-8",
+    )
+    try:
+        setup = load_setup_configuration(
+            config,
+            required_adapters=("future-source",),
+        )
+        assert setup.resolve_input_scope("FUTURE-SOURCE") == ("opaque-a", "opaque-b")
+    finally:
+        config.unlink(missing_ok=True)
+
+
+def test_setup_configuration_resolves_fluxer_destination_scope() -> None:
+    config = Path("/tmp/archive-sync-test-config-destination.yaml")
+    config.write_text(
+        """
+archive:
+  path: ./archive
+fluxer:
+  token: secret
+  server_id: server-123
+""",
+        encoding="utf-8",
+    )
+    try:
+        setup = load_setup_configuration(config, required_adapters=("fluxer",))
+        assert setup.resolve_destination_scope("fluxer") == ("server-123",)
+    finally:
+        config.unlink(missing_ok=True)

@@ -182,3 +182,16 @@ def test_discord_source_runtime_rejects_import_after_close(tmp_path: Path) -> No
 
     with pytest.raises(AdapterError, match="closed"):
         runtime.import_to_archive(ArchivePaths(tmp_path / "archive"))
+
+
+def test_build_discord_source_runtime_config_uses_override_token() -> None:
+    from archive_sync_engine.adapters.discord.runtime import build_discord_source_runtime_config
+
+    config = build_discord_source_runtime_config(
+        SimpleNamespace(discord_token="configured-token"),
+        ("123",),
+        {"token": "override-token"},
+    )
+
+    assert config.token == "override-token"
+    assert config.guild_ids == (123,)

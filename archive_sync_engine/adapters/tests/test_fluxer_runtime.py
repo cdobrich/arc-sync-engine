@@ -364,3 +364,16 @@ def test_runtime_rejects_ambiguous_attachment_filename() -> None:
     runtime.close()
 
 
+
+
+def test_build_fluxer_destination_runtime_config_uses_override_token() -> None:
+    from archive_sync_engine.adapters.fluxer_runtime import build_fluxer_destination_runtime_config
+
+    config = build_fluxer_destination_runtime_config(
+        SimpleNamespace(fluxer_token="configured-token", identity_mappings=()),
+        ("server-123",),
+        {"token": "override-token", "max_retries": 2},
+    )
+
+    assert config["fluxer"].token == "override-token"
+    assert config["fluxer"].max_retries == 2

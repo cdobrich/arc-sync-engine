@@ -162,22 +162,21 @@ class SetupConfiguration:
         return _resolve_path(self.archive_path, self.config_directory)
 
     def resolve_input_scope(self, adapter: str) -> tuple[str, ...]:
-        """Return the configured scope for a selected source adapter."""
-        normalized = adapter.strip().lower()
+        normalized = str(adapter).strip().lower()
+        if not normalized:
+            raise ConfigurationError("Input adapter must not be empty.")
         if self.input_adapter == normalized and self.input_scope:
             return self.input_scope
-        # Preserve the historical Discord config as an adapter-specific
-        # configuration fallback, rather than leaking that fallback into
-        # generic synchronization orchestration.
-        if normalized == "discord":
+        if normalized == "discord" and self.discord_guild_ids:
             return tuple(str(value) for value in self.discord_guild_ids)
         return ()
 
     def resolve_destination_scope(self, adapter: str) -> tuple[str, ...]:
-        """Return the configured scope for a selected destination adapter."""
-        normalized = adapter.strip().lower()
+        normalized = str(adapter).strip().lower()
+        if not normalized:
+            raise ConfigurationError("Destination adapter must not be empty.")
         if normalized == "fluxer" and self.fluxer_guild_id:
-            return (str(self.fluxer_guild_id),)
+            return (self.fluxer_guild_id,)
         return ()
 
     def resolve_credentials(
