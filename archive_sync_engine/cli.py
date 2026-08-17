@@ -772,7 +772,13 @@ def _run_init(args: argparse.Namespace) -> int:
 
 def _run_import(args: argparse.Namespace) -> int:
     """Import one registered source adapter into an Archive Package."""
-    setup = load_setup_configuration(args.config, require_discord=True, require_fluxer=False)
+    adapter_name = args.input_adapter.strip().lower()
+    try:
+        descriptor = default_adapter_registry().require_source(adapter_name)
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
+
+    setup = load_setup_configuration(args.config, required_adapters=(adapter_name,))
     archive_path = (
         args.archive.expanduser().resolve()
         if args.archive is not None
@@ -790,16 +796,12 @@ def _run_import(args: argparse.Namespace) -> int:
             f"Archive Package is invalid: {'; '.join(report.errors)}"
         )
 
-    adapter_name = args.input_adapter.strip().lower()
-    try:
-        descriptor = default_adapter_registry().require_source(adapter_name)
-    except ValueError as exc:
-        raise ConfigurationError(str(exc)) from exc
-
     if args.input_scope:
         scope = tuple(value.strip() for value in args.input_scope)
         if any(not value for value in scope):
             raise ConfigurationError("Input scope values must not be empty.")
+    elif setup.input_adapter == adapter_name and setup.input_scope:
+        scope = setup.input_scope
     elif adapter_name == "discord":
         scope = tuple(str(value) for value in setup.discord_guild_ids)
     else:
@@ -807,7 +809,7 @@ def _run_import(args: argparse.Namespace) -> int:
             f"Input scope must be provided for source adapter {descriptor.name!r}."
         )
 
-    credentials = setup.resolve_credentials(require_discord=True, require_fluxer=False)
+    credentials = setup.resolve_credentials(required_adapters=(adapter_name,))
     source_registry = default_source_runtime_registry()
     try:
         source_config = source_registry.build_config(adapter_name, credentials, scope)
@@ -863,7 +865,13 @@ def _run_import(args: argparse.Namespace) -> int:
 
 def _run_export(args: argparse.Namespace) -> int:
     """Export an existing Archive through a registered destination runtime."""
-    setup = load_setup_configuration(args.config, require_discord=False, require_fluxer=True)
+    destination_adapter = args.destination_adapter.strip().lower()
+    try:
+        default_adapter_registry().require_destination(destination_adapter)
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
+
+    setup = load_setup_configuration(args.config, required_adapters=(destination_adapter,))
     archive_path = (
         args.archive.expanduser().resolve()
         if args.archive is not None
@@ -881,14 +889,12 @@ def _run_export(args: argparse.Namespace) -> int:
             f"Archive Package is invalid: {'; '.join(report.errors)}"
         )
 
-    destination_adapter = args.destination_adapter.strip().lower()
     try:
-        default_adapter_registry().require_destination(destination_adapter)
         destination_registry = default_destination_runtime_registry()
         destination_scope = (
             tuple(value.strip() for value in args.destination_scope)
             if args.destination_scope
-            else ((setup.fluxer_guild_id,) if destination_adapter == "fluxer" else ())
+            else ((setup.fluxer_guild_id,) if destination_adapter == "fluxer" and setup.fluxer_guild_id else ())
         )
         if not destination_scope:
             raise ConfigurationError(
@@ -898,7 +904,7 @@ def _run_export(args: argparse.Namespace) -> int:
         if any(not value for value in destination_scope):
             raise ConfigurationError("Destination scope values must not be empty.")
 
-        credentials = setup.resolve_credentials(require_discord=False, require_fluxer=True)
+        credentials = setup.resolve_credentials(required_adapters=(destination_adapter,))
         destination_config = destination_registry.build_config(
             destination_adapter,
             credentials,

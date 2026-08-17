@@ -410,6 +410,91 @@ fluxer:
     assert credentials.discord_token is None
 
 
+def test_setup_configuration_resolves_only_selected_adapter_credentials(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+fluxer:
+  token_file: missing-fluxer.token
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    setup = load_setup_configuration(config, required_adapters=("discord",))
+    credentials = setup.resolve_credentials(required_adapters=("discord",))
+
+    assert credentials.discord_token == "discord-secret"
+    assert credentials.fluxer_token == ""
+
+
+def test_setup_configuration_resolves_only_selected_destination_credentials(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token_file: missing-discord.token
+  guild_id: 123
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    setup = load_setup_configuration(config, required_adapters=("fluxer",))
+    credentials = setup.resolve_credentials(required_adapters=("fluxer",))
+
+    assert credentials.discord_token is None
+    assert credentials.fluxer_token == "fluxer-secret"
+
+
+def test_setup_configuration_rejects_empty_required_adapter_selection(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="At least one adapter"):
+        load_setup_configuration(config, required_adapters=())
+
+    setup = load_setup_configuration(config, require_discord=False, require_fluxer=False)
+    with pytest.raises(ConfigurationError, match="At least one adapter"):
+        setup.resolve_credentials(require_discord=False, require_fluxer=False)
+
+
+def test_setup_configuration_rejects_mixed_requirement_apis(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="cannot be combined"):
+        load_setup_configuration(config, required_adapters=("discord",), require_fluxer=False)
+
+    setup = load_setup_configuration(config, required_adapters=("discord",))
+    with pytest.raises(ConfigurationError, match="cannot be combined"):
+        setup.resolve_credentials(required_adapters=("discord",), require_discord=True)
+
+
 def test_load_yaml_setup_still_requires_discord_by_default(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Iterable, Literal, Mapping
 import re
 
 import yaml
@@ -164,31 +164,53 @@ class SetupConfiguration:
     def resolve_credentials(
         self,
         *,
-        require_discord: bool = True,
-        require_fluxer: bool = True,
+        required_adapters: Iterable[str] | None = None,
+        require_discord: bool | None = None,
+        require_fluxer: bool | None = None,
     ) -> ResolvedSetupCredentials:
-        """Resolve every configured authentication secret exactly once.
+        """Resolve only the credentials required by the selected adapters.
 
-        This is the application boundary for turning human-authored secret
-        sources into runtime credentials. File-backed secrets are resolved
-        relative to the configuration file, while inline secrets are returned
-        unchanged.
+        ``required_adapters`` is the preferred adapter-neutral API.  The
+        legacy ``require_discord``/``require_fluxer`` switches remain for
+        existing workflows and callers.  Secrets belonging to adapters that
+        are not selected are deliberately not resolved.
         """
-        base_dir = self.config_directory
-        if not require_discord and not require_fluxer:
+        if required_adapters is not None and (
+            require_discord is not None or require_fluxer is not None
+        ):
             raise ConfigurationError(
-                "At least one adapter credential set must be requested."
+                "required_adapters cannot be combined with require_discord "
+                "or require_fluxer."
             )
+        if required_adapters is None:
+            required = set()
+            if require_discord is None:
+                require_discord = True
+            if require_fluxer is None:
+                require_fluxer = True
+            if require_discord:
+                required.add("discord")
+            if require_fluxer:
+                required.add("fluxer")
+            if not required:
+                raise ConfigurationError("At least one adapter must be selected.")
+        else:
+            required = {str(adapter).strip().lower() for adapter in required_adapters}
+            if not required:
+                raise ConfigurationError("At least one adapter must be selected.")
 
+        base_dir = self.config_directory
         discord_token: str | None = None
         fluxer_token = ""
         discord_user_auth: dict[str, str] = {}
         fluxer_user_auth: dict[str, str] = {}
         identity_mappings: tuple[FluxerIdentityMapping, ...] = ()
 
-        if require_discord:
+        if "discord" in required:
             if self.discord_token is None:
-                raise ConfigurationError("Discord configuration is required for this workflow.")
+                raise ConfigurationError(
+                    "Discord configuration is required but was not provided."
+                )
             discord_token = self.discord_token.resolve(
                 base_dir=base_dir,
                 label="Discord token",
@@ -199,9 +221,11 @@ class SetupConfiguration:
                 if mapping.discord_auth is not None
             }
 
-        if require_fluxer:
+        if "fluxer" in required:
             if self.fluxer_token is None:
-                raise ConfigurationError("Fluxer configuration is required for this workflow.")
+                raise ConfigurationError(
+                    "Fluxer configuration is required but was not provided."
+                )
             fluxer_token = self.fluxer_token.resolve(
                 base_dir=base_dir,
                 label="Fluxer token",
@@ -247,10 +271,15 @@ class SetupConfiguration:
 def load_setup_configuration(
     path: str | Path,
     *,
-    require_discord: bool = True,
-    require_fluxer: bool = True,
+    required_adapters: Iterable[str] | None = None,
+    require_discord: bool | None = None,
+    require_fluxer: bool | None = None,
 ) -> SetupConfiguration:
-    """Load configuration, requiring only the adapter credentials a workflow needs."""
+    """Load configuration with adapter-specific requirements.
+
+    ``required_adapters`` is the preferred adapter-neutral API.  The legacy
+    concrete-platform switches remain supported for compatibility.
+    """
     config_path = Path(path).expanduser().resolve()
     try:
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -268,9 +297,31 @@ def load_setup_configuration(
     if not isinstance(raw, Mapping):
         raise ConfigurationError("The configuration root must be a YAML mapping.")
 
+    if required_adapters is not None and (
+        require_discord is not None or require_fluxer is not None
+    ):
+        raise ConfigurationError(
+            "required_adapters cannot be combined with require_discord "
+            "or require_fluxer."
+        )
+    if required_adapters is None:
+        if require_discord is None:
+            require_discord = True
+        if require_fluxer is None:
+            require_fluxer = True
+        required = set()
+        if require_discord:
+            required.add("discord")
+        if require_fluxer:
+            required.add("fluxer")
+    else:
+        required = {str(adapter).strip().lower() for adapter in required_adapters}
+        if not required:
+            raise ConfigurationError("At least one adapter must be selected.")
+
     archive = _mapping(raw, "archive")
-    discord = _mapping(raw, "discord", required=require_discord)
-    fluxer = _mapping(raw, "fluxer", required=require_fluxer)
+    discord = _mapping(raw, "discord", required="discord" in required)
+    fluxer = _mapping(raw, "fluxer", required="fluxer" in required)
     delays = _mapping(raw, "delays", required=False)
     input_config = _mapping(raw, "input", required=False)
     mappings = _mapping(raw, "user_mappings", required=False)
@@ -289,7 +340,7 @@ def load_setup_configuration(
     if input_scope_value is None:
         input_scope = tuple(str(value) for value in (
             _guild_ids(discord.get("guild_id") if discord.get("guild_id") is not None else discord.get("guild_ids"), "discord.guild_id")
-            if require_discord and input_adapter == "discord" else ()
+            if "discord" in required and input_adapter == "discord" else ()
         ))
     else:
         if not isinstance(input_scope_value, (list, tuple)):
@@ -299,11 +350,15 @@ def load_setup_configuration(
             raise ConfigurationError("input.scope values must not be empty.")
     discord_token = (
         _secret_source(discord, "token", "token_file", "discord")
-        if require_discord else None
+        if "discord" in required else _optional_secret_source(
+            discord, "token", "token_file", "discord"
+        )
     )
     fluxer_token = (
         _secret_source(fluxer, "token", "token_file", "fluxer")
-        if require_fluxer else None
+        if "fluxer" in required else _optional_secret_source(
+            fluxer, "token", "token_file", "fluxer"
+        )
     )
 
     discord_guild_value = discord.get("guild_id")
@@ -311,12 +366,14 @@ def load_setup_configuration(
         discord_guild_value = discord.get("guild_ids")
     discord_guild_ids = (
         _guild_ids(discord_guild_value, "discord.guild_id")
-        if require_discord else ()
+        if "discord" in required else ()
     )
 
     fluxer_guild_id = (
         _required_identifier(fluxer, "server_id", "fluxer.server_id")
-        if require_fluxer else None
+        if "fluxer" in required else (
+            str(fluxer.get("server_id")) if fluxer.get("server_id") is not None else None
+        )
     )
 
     identity_mappings, fluxer_user_mappings = _parse_user_mappings(mappings)
