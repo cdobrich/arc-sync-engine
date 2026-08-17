@@ -158,7 +158,7 @@ class DiscordSourceRuntime:
         archive_paths: ArchivePaths,
         *,
         resume: bool = False,
-    ) -> None:
+    ) -> Any:
         """Import the authenticated Discord source into an Archive Package.
 
         The runtime owns only the Discord client/source boundary.
@@ -170,7 +170,7 @@ class DiscordSourceRuntime:
                 "Cannot import from a closed Discord source runtime."
             )
 
-        CanonicalImportCoordinator(
+        return CanonicalImportCoordinator(
             archive_paths,
         ).run(
             self.adapter,

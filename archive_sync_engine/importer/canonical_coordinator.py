@@ -23,6 +23,7 @@ Package separately from canonical archive data.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -38,6 +39,17 @@ from archive_sync_engine.sync.session import (
     SyncDirection,
     SyncSession,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ImportReport:
+    """Summary of one completed canonical import."""
+
+    session_id: str
+    identities: int
+    conversations: int
+    messages: int
+    attachments: int
 
 
 class CanonicalImportCoordinator:
@@ -59,7 +71,7 @@ class CanonicalImportCoordinator:
         source: SourceAdapter,
         *,
         resume: bool = False,
-    ) -> None:
+    ) -> ImportReport:
         """
         Execute a complete canonical import.
 
@@ -122,6 +134,17 @@ class CanonicalImportCoordinator:
             self._package.save_session(
                 session,
             )
+
+            from archive_sync_engine.archive import Archive
+
+            with Archive(self._paths) as archive:
+                return ImportReport(
+                    session_id=session.id,
+                    identities=sum(1 for _ in archive.iter_identities()),
+                    conversations=sum(1 for _ in archive.iter_conversations()),
+                    messages=sum(1 for _ in archive.iter_messages()),
+                    attachments=sum(1 for _ in archive.iter_attachments()),
+                )
 
         except Exception as exc:
 

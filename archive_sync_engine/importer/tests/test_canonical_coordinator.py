@@ -10,6 +10,7 @@ from archive_sync_engine.archive import Archive
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.importer.canonical_coordinator import (
     CanonicalImportCoordinator,
+    ImportReport,
 )
 from archive_sync_engine.models import (
     CanonicalConversation,
@@ -106,9 +107,15 @@ def test_canonical_import_coordinator_imports_source(
         paths,
     )
 
-    coordinator.run(
+    report = coordinator.run(
         source,
     )
+
+    assert isinstance(report, ImportReport)
+    assert report.identities == 1
+    assert report.conversations == 1
+    assert report.messages == 1
+    assert report.attachments == 0
 
     with Archive(
         paths,
@@ -175,6 +182,7 @@ from archive_sync_engine.archive.package import ArchivePackage
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.importer.canonical_coordinator import (
     CanonicalImportCoordinator,
+    ImportReport,
 )
 from archive_sync_engine.sync.session import SyncSession, SyncDirection
 

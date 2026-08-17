@@ -557,6 +557,58 @@ fluxer:
     assert persisted.destination_scope == ()
 
 
+def test_import_cli_reports_archive_counts_after_successful_import(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.import_to_archive.return_value = type(
+        "ImportReport",
+        (),
+        {
+            "identities": 4,
+            "conversations": 2,
+            "messages": 17,
+            "attachments": 3,
+        },
+    )()
+
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    registry.build_config.return_value = type(
+        "DiscordConfig",
+        (),
+        {"token": "discord-secret"},
+    )()
+
+    with patch(
+        "archive_sync_engine.cli.default_source_runtime_registry",
+        return_value=registry,
+    ):
+        assert main(["import", "--config", str(config)]) == 0
+
+    assert (
+        capsys.readouterr().out
+        == "Import completed: 4 identities, 2 conversations, 17 messages, 3 attachments.\n"
+    )
+
+
 def test_import_cli_resume_uses_persisted_scope_and_current_credentials(
     tmp_path: Path,
 ) -> None:

@@ -876,7 +876,15 @@ def _run_import(args: argparse.Namespace) -> int:
         runtime_request,
     )
     with runtime:
-        runtime.import_to_archive(paths, resume=args.resume)
+        import_report = runtime.import_to_archive(paths, resume=args.resume)
+
+    print(
+        "Import completed: "
+        f"{import_report.identities} identities, "
+        f"{import_report.conversations} conversations, "
+        f"{import_report.messages} messages, "
+        f"{import_report.attachments} attachments."
+    )
 
     return 0
 
