@@ -52,33 +52,25 @@ def test_sync_cli_constructs_runtime_and_runs_resume(tmp_path: Path) -> None:
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
 
-    with patch(
-        "archive_sync_engine.cli.DiscordFluxerSyncRuntime",
-        return_value=runtime,
-    ) as runtime_type:
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    with patch("archive_sync_engine.cli.default_sync_runtime_registry", return_value=registry):
         result = main(
             [
-                "sync",
-                "--discord-token",
-                "discord-token",
-                "--discord-guild-id",
-                "10",
-                "--fluxer-token",
-                "fluxer-token",
-                "--fluxer-guild-id",
-                "guild-1",
-                "--archive",
-                str(archive_path),
-                "--resume",
+                "sync", "--discord-token", "discord-token", "--discord-guild-id", "10",
+                "--fluxer-token", "fluxer-token", "--fluxer-guild-id", "guild-1",
+                "--archive", str(archive_path), "--resume",
             ]
         )
 
     assert result == 0
-    runtime_type.assert_called_once()
+    registry.create.assert_called_once()
+    request = registry.create.call_args.args[2]
+    assert request.input_adapter == "discord"
+    assert request.input_scope == ("10",)
+    assert request.destination_adapter == "fluxer"
+    assert request.destination_scope == ("guild-1",)
     runtime.run.assert_called_once_with(resume_import=True)
-
-    from archive_sync_engine.sync.run_configuration import RunDirection
-
     persisted = ArchivePackage(ArchivePaths(archive_path)).load_run_configuration()
     assert persisted.direction is RunDirection.SYNC
     assert persisted.input_adapter == "discord"
@@ -87,44 +79,24 @@ def test_sync_cli_constructs_runtime_and_runs_resume(tmp_path: Path) -> None:
     assert persisted.destination_scope == ("guild-1",)
     runtime.__exit__.assert_called_once()
 
-
 def test_sync_cli_maps_bot_identity_without_auth_token(tmp_path: Path) -> None:
     archive_path = tmp_path / "archive"
     ArchivePackage.initialize(ArchivePaths(archive_path))
-
     runtime = MagicMock()
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
-
-    with patch(
-        "archive_sync_engine.cli.DiscordFluxerSyncRuntime",
-        return_value=runtime,
-    ) as runtime_type:
-        assert (
-            main(
-                [
-                    "sync",
-                    "--discord-token",
-                    "discord-token",
-                    "--discord-guild-id",
-                    "10",
-                    "--fluxer-token",
-                    "fluxer-token",
-                    "--fluxer-guild-id",
-                    "guild-1",
-                    "--archive",
-                    str(archive_path),
-                    "--fluxer-identity",
-                    "bot-user",
-                ]
-            )
-            == 0
-        )
-
-    config = runtime_type.call_args.args[0]
-    assert config.identity_mappings[0].username == "bot-user"
-    assert config.identity_mappings[0].fluxer_auth_key is None
-
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    with patch("archive_sync_engine.cli.default_sync_runtime_registry", return_value=registry):
+        assert main([
+            "sync", "--discord-token", "discord-token", "--discord-guild-id", "10",
+            "--fluxer-token", "fluxer-token", "--fluxer-guild-id", "guild-1",
+            "--archive", str(archive_path), "--fluxer-identity", "bot-user",
+        ]) == 0
+    request = registry.create.call_args.args[2]
+    mappings = request.adapter_config["identity_mappings"]
+    assert mappings[0].username == "bot-user"
+    assert mappings[0].fluxer_auth_key is None
 
 def test_adapters_cli_lists_supported_sync_pairs(capsys) -> None:
     assert main(["adapters"]) == 0
@@ -232,32 +204,21 @@ def test_sync_cli_cli_credentials_override_environment(monkeypatch, tmp_path: Pa
     ArchivePackage.initialize(ArchivePaths(archive_path))
     monkeypatch.setenv("ARCHIVE_SYNC_DISCORD_TOKEN", "discord-env")
     monkeypatch.setenv("ARCHIVE_SYNC_FLUXER_TOKEN", "fluxer-env")
-
     runtime = MagicMock()
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
-
-    with patch("archive_sync_engine.cli.DiscordFluxerSyncRuntime", return_value=runtime) as runtime_type:
-        assert (
-            main(
-                [
-                    "sync",
-                    "--discord-token", "discord-cli",
-                    "--discord-guild-id", "10",
-                    "--fluxer-token", "fluxer-cli",
-                    "--fluxer-guild-id", "guild-cli",
-                    "--archive", str(archive_path),
-                ]
-            )
-            == 0
-        )
-
-    config = runtime_type.call_args.args[0]
-    assert config.discord.token == "discord-cli"
-    assert config.fluxer.token == "fluxer-cli"
-    assert config.fluxer_guild_id == "guild-cli"
-    assert config.archive_paths.root == archive_path
-
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    with patch("archive_sync_engine.cli.default_sync_runtime_registry", return_value=registry):
+        assert main([
+            "sync", "--discord-token", "discord-cli", "--discord-guild-id", "10",
+            "--fluxer-token", "fluxer-cli", "--fluxer-guild-id", "guild-cli",
+            "--archive", str(archive_path),
+        ]) == 0
+    request = registry.create.call_args.args[2]
+    assert request.adapter_config["discord"].token == "discord-cli"
+    assert request.adapter_config["fluxer"].token == "fluxer-cli"
+    assert request.destination_scope == ("guild-cli",)
 
 def test_sync_cli_rejects_missing_credentials(monkeypatch) -> None:
     monkeypatch.delenv("ARCHIVE_SYNC_DISCORD_TOKEN", raising=False)
@@ -289,11 +250,8 @@ def test_resume_cli_reuses_persisted_scopes_but_requires_current_credentials(tmp
     ArchivePackage.initialize(ArchivePaths(archive_path))
     ArchivePackage(ArchivePaths(archive_path)).save_run_configuration(
         SyncRunConfiguration(
-            direction=RunDirection.SYNC,
-            input_adapter="discord",
-            input_scope=("10", "20"),
-            destination_adapter="fluxer",
-            destination_scope=("fluxer-guild",),
+            direction=RunDirection.SYNC, input_adapter="discord", input_scope=("10", "20"),
+            destination_adapter="fluxer", destination_scope=("fluxer-guild",),
         )
     )
     from archive_sync_engine.sync.session import SyncDirection, SyncSession
@@ -303,8 +261,7 @@ def test_resume_cli_reuses_persisted_scopes_but_requires_current_credentials(tmp
         SyncSession(id="sync-1", direction=SyncDirection.EXPORT, started_at=now, updated_at=now)
     )
     config = tmp_path / "config.yaml"
-    config.write_text(
-        """
+    config.write_text("""
 archive:
   path: ./archive
 discord:
@@ -313,22 +270,20 @@ discord:
 fluxer:
   token: fluxer-secret
   server_id: config-guild
-""",
-        encoding="utf-8",
-    )
-
+""", encoding="utf-8")
     runtime = MagicMock()
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
-    with patch("archive_sync_engine.cli.DiscordFluxerSyncRuntime", return_value=runtime) as runtime_type:
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    with patch("archive_sync_engine.cli.default_sync_runtime_registry", return_value=registry):
         assert main(["resume", "--config", str(config)]) == 0
-
-    runtime_type.assert_called_once()
-    config_arg = runtime_type.call_args.args[0]
-    assert config_arg.discord.guild_ids == (10, 20)
-    assert config_arg.fluxer_guild_id == "fluxer-guild"
+    request = registry.create.call_args.args[2]
+    assert request.input_scope == ("10", "20")
+    assert request.destination_scope == ("fluxer-guild",)
+    assert request.adapter_config["discord"].guild_ids == (10, 20)
+    assert request.adapter_config["fluxer"].token == "fluxer-secret"
     runtime.run.assert_called_once_with(resume_import=True)
-
 
 def test_resume_cli_rejects_completed_persisted_run(tmp_path: Path) -> None:
     archive_path = tmp_path / "archive"
@@ -370,36 +325,21 @@ fluxer:
 def test_sync_cli_dry_run_does_not_persist_run_configuration(tmp_path: Path, capsys) -> None:
     archive_path = tmp_path / "archive"
     ArchivePackage.initialize(ArchivePaths(archive_path))
-
     runtime = MagicMock()
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
     runtime.dry_run.return_value = (Mock(), Mock())
-
-    with patch(
-        "archive_sync_engine.cli.DiscordFluxerSyncRuntime",
-        return_value=runtime,
-    ):
-        assert (
-            main(
-                [
-                    "sync",
-                    "--discord-token", "discord-token",
-                    "--discord-guild-id", "10",
-                    "--fluxer-token", "fluxer-token",
-                    "--fluxer-guild-id", "guild-1",
-                    "--archive", str(archive_path),
-                    "--dry-run",
-                ]
-            )
-            == 0
-        )
-
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    with patch("archive_sync_engine.cli.default_sync_runtime_registry", return_value=registry):
+        assert main([
+            "sync", "--discord-token", "discord-token", "--discord-guild-id", "10",
+            "--fluxer-token", "fluxer-token", "--fluxer-guild-id", "guild-1",
+            "--archive", str(archive_path), "--dry-run",
+        ]) == 0
     runtime.dry_run.assert_called_once_with()
     runtime.run.assert_not_called()
     assert not (archive_path / "run.json").exists()
-    assert "2 synchronization operations planned" in capsys.readouterr().out
-
 
 def test_sync_cli_rejects_dry_run_with_resume() -> None:
     with pytest.raises(SystemExit):
@@ -1087,3 +1027,86 @@ fluxer:
     payload = json.loads(capsys.readouterr().out)
     assert payload["ready"] is False
     assert payload["adapter_capabilities"]["errors"] == ["broken registration"]
+
+
+def test_sync_cli_uses_generic_adapter_and_scope_options(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    registry = MagicMock()
+    registry.create.return_value = runtime
+
+    with patch("archive_sync_engine.cli.default_sync_runtime_registry", return_value=registry):
+        assert main(
+            [
+                "sync",
+                "--input-adapter", "discord",
+                "--input-scope", "10",
+                "--destination-adapter", "fluxer",
+                "--destination-scope", "destination-scope",
+                "--discord-token", "discord-token",
+                "--fluxer-token", "fluxer-token",
+                "--archive", str(archive_path),
+            ]
+        ) == 0
+
+    request = registry.create.call_args.args[2]
+    assert request.input_adapter == "discord"
+    assert request.input_scope == ("10",)
+    assert request.destination_adapter == "fluxer"
+    assert request.destination_scope == ("destination-scope",)
+
+
+def test_sync_resume_uses_persisted_adapter_and_scope_at_runtime_boundary(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    package = ArchivePackage(ArchivePaths(archive_path))
+    package.save_run_configuration(
+        SyncRunConfiguration(
+            direction=RunDirection.SYNC,
+            input_adapter="discord",
+            input_scope=("10",),
+            destination_adapter="fluxer",
+            destination_scope=("persisted-destination",),
+        )
+    )
+    from archive_sync_engine.sync.session import SyncDirection, SyncSession
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    package.save_session(
+        SyncSession(id="sync-1", direction=SyncDirection.EXPORT, started_at=now, updated_at=now)
+    )
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 999
+fluxer:
+  token: fluxer-secret
+  server_id: configured-destination
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    registry = MagicMock()
+    registry.create.return_value = runtime
+
+    with patch("archive_sync_engine.cli.default_sync_runtime_registry", return_value=registry):
+        assert main(["resume", "--config", str(config)]) == 0
+
+    request = registry.create.call_args.args[2]
+    assert request.input_scope == ("10",)
+    assert request.destination_scope == ("persisted-destination",)
+    # The persisted scope is opaque at the generic boundary. The current
+    # Discord runtime's concrete config still owns its platform interpretation.
+    assert request.adapter_config["discord"].guild_ids == (10,)

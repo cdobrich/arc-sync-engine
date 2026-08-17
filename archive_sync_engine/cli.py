@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Sequence
 
 from archive_sync_engine.logging_support import (
@@ -12,8 +13,6 @@ from archive_sync_engine.logging_support import (
     report_unexpected_error,
 )
 
-from archive_sync_engine.adapters.discord.runtime import DiscordClientConfig
-from archive_sync_engine.adapters.fluxer_runtime import FluxerClientConfig
 from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
 from archive_sync_engine.adapters import (
     DestinationRuntimeRequest,
@@ -32,10 +31,6 @@ from archive_sync_engine.exporter import CanonicalExporter
 from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
 from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
 from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
-from archive_sync_engine.sync.discord_fluxer_runtime import (
-    DiscordFluxerSyncConfig,
-    DiscordFluxerSyncRuntime,
-)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -88,8 +83,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_command.add_argument(
         "--input-adapter",
-        default="discord",
-        help="Registered source adapter to import from (default: discord).",
+        default=None,
+        help="Registered source adapter to import from (defaults to config or discord).",
     )
     import_command.add_argument(
         "--input-scope",
@@ -176,6 +171,28 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Human-authored YAML setup configuration.",
+    )
+    sync.add_argument(
+        "--input-adapter",
+        default=None,
+        help="Registered source adapter (defaults to configured input adapter or discord).",
+    )
+    sync.add_argument(
+        "--input-scope",
+        action="append",
+        default=[],
+        help="Opaque source scope value; repeat as needed to override configuration.",
+    )
+    sync.add_argument(
+        "--destination-adapter",
+        default=None,
+        help="Registered destination adapter (defaults to fluxer).",
+    )
+    sync.add_argument(
+        "--destination-scope",
+        action="append",
+        default=[],
+        help="Opaque destination scope value; repeat as needed to override configuration.",
     )
     sync.add_argument(
         "--discord-token",
@@ -772,7 +789,7 @@ def _run_init(args: argparse.Namespace) -> int:
 
 def _run_import(args: argparse.Namespace) -> int:
     """Import one registered source adapter into an Archive Package."""
-    adapter_name = args.input_adapter.strip().lower()
+    adapter_name = (args.input_adapter or "discord").strip().lower()
     try:
         descriptor = default_adapter_registry().require_source(adapter_name)
     except ValueError as exc:
@@ -914,6 +931,10 @@ def _run_export(args: argparse.Namespace) -> int:
                 "max_retries": args.fluxer_max_retries,
             },
         )
+        if isinstance(destination_config, dict) and destination_adapter in destination_config:
+            destination_runtime_config = destination_config[destination_adapter]
+        else:
+            destination_runtime_config = destination_config
         runtime_request = DestinationRuntimeRequest(
             adapter=destination_adapter,
             scope=destination_scope,
@@ -935,18 +956,16 @@ def _run_export(args: argparse.Namespace) -> int:
 
 
 def _run_resume(args: argparse.Namespace) -> int:
-    """Resume the persisted run using current human-authored credentials.
-
-    Persisted run configuration supplies the source/destination adapters and
-    scopes. Secrets are deliberately read again from config.yaml and are never
-    recovered from run.json.
-    """
+    """Resume the persisted run using current human-authored credentials."""
     setup = load_setup_configuration(args.config)
-    configured_archive = setup.resolved_archive_path()
-    archive_path = args.archive.expanduser().resolve() if args.archive is not None else configured_archive
+    archive_path = (
+        args.archive.expanduser().resolve()
+        if args.archive is not None
+        else setup.resolved_archive_path()
+    )
     paths = ArchivePaths(archive_path)
-
     package = ArchivePackage(paths)
+
     try:
         run_configuration = package.load_run_configuration()
     except FileNotFoundError as exc:
@@ -966,40 +985,34 @@ def _run_resume(args: argparse.Namespace) -> int:
         raise ConfigurationError("The persisted run is already completed; it cannot be resumed.")
     if session.cancelled:
         raise ConfigurationError("The persisted run was cancelled and cannot be resumed.")
+
     if run_configuration.direction is RunDirection.IMPORT:
-        if args.archive is not None:
-            archive_path = args.archive.expanduser().resolve()
         try:
             package.load_import_state()
         except FileNotFoundError as exc:
             raise ConfigurationError(
                 f"No importer checkpoint exists in Archive Package: {paths.root}."
             ) from exc
-        if run_configuration.input_adapter != "discord":
-            raise ConfigurationError(
-                f"No concrete source runtime is currently available for "
-                f"adapter {run_configuration.input_adapter!r}."
-            )
+
+        adapter_name = run_configuration.input_adapter
+        registry = default_source_runtime_registry()
         try:
-            scope = tuple(str(value) for value in run_configuration.input_scope)
-            discord_config = DiscordClientConfig(
-                token=setup.resolve_discord_token(),
-                guild_ids=tuple(int(value) for value in scope),
-            )
+            default_adapter_registry().require_source(adapter_name)
+            credentials = setup.resolve_credentials(required_adapters=(adapter_name,))
+            scope = tuple(run_configuration.input_scope)
+            source_config = registry.build_config(adapter_name, credentials, scope)
         except ValueError as exc:
-            raise ConfigurationError(
-                "The persisted Discord input scope contains a non-numeric guild ID."
-            ) from exc
+            raise ConfigurationError(str(exc)) from exc
         request = SourceRuntimeRequest(
-            adapter=run_configuration.input_adapter,
+            adapter=adapter_name,
             scope=scope,
             archive_path=paths.root,
-            adapter_config={"discord": discord_config},
+            adapter_config={adapter_name: source_config},
         )
-        runtime = default_source_runtime_registry().create(
-            run_configuration.input_adapter,
-            request,
-        )
+        try:
+            runtime = registry.create(adapter_name, request)
+        except ValueError as exc:
+            raise ConfigurationError(str(exc)) from exc
         with runtime:
             runtime.import_to_archive(paths, resume=True)
         return 0
@@ -1009,85 +1022,78 @@ def _run_resume(args: argparse.Namespace) -> int:
             f"Unsupported persisted run direction: {run_configuration.direction.value!r}."
         )
     if run_configuration.destination_adapter is None:
-        raise ConfigurationError(
-            "The persisted sync run has no destination adapter."
+        raise ConfigurationError("The persisted sync run has no destination adapter.")
+
+    return _run_sync(
+        argparse.Namespace(
+            config=args.config,
+            input_adapter=run_configuration.input_adapter,
+            input_scope=list(run_configuration.input_scope),
+            destination_adapter=run_configuration.destination_adapter,
+            destination_scope=list(run_configuration.destination_scope),
+            discord_token=None,
+            discord_guild_id=[],
+            fluxer_token=None,
+            fluxer_guild_id=None,
+            archive=archive_path,
+            fluxer_api_url=None,
+            fluxer_max_retries=4,
+            resume=True,
+            dry_run=False,
+            fluxer_identity=[],
         )
-    _require_supported_sync_pair(
-        run_configuration.input_adapter,
-        run_configuration.destination_adapter,
     )
-    if not run_configuration.input_scope or not run_configuration.destination_scope:
-        raise ConfigurationError("The persisted run configuration has no source/destination scope.")
-
-    try:
-        discord_guild_ids = tuple(int(value) for value in run_configuration.input_scope)
-    except ValueError as exc:
-        raise ConfigurationError(
-            "The persisted Discord input scope contains a non-numeric guild ID."
-        ) from exc
-
-    resume_args = argparse.Namespace(
-        config=args.config,
-        discord_token=None,
-        discord_guild_id=list(discord_guild_ids),
-        fluxer_token=None,
-        fluxer_guild_id=run_configuration.destination_scope[0],
-        archive=archive_path,
-        fluxer_api_url=None,
-        fluxer_max_retries=4,
-        resume=True,
-        dry_run=False,
-        fluxer_identity=[],
-    )
-    return _run_sync(resume_args)
-
 
 def _run_sync(args: argparse.Namespace) -> int:
-    setup = load_setup_configuration(args.config) if args.config is not None else None
-
     if args.dry_run and args.resume:
         raise ConfigurationError("--dry-run cannot be combined with --resume.")
 
-    discord_token = (
-        args.discord_token
-        if args.discord_token is not None
-        else (setup.resolve_discord_token() if setup is not None else None)
+    initial_setup = load_setup_configuration(args.config) if args.config is not None else None
+    input_adapter = (
+        args.input_adapter.strip().lower()
+        if args.input_adapter is not None
+        else (initial_setup.input_adapter if initial_setup is not None else "discord")
     )
-    if not discord_token:
+    destination_adapter = (
+        args.destination_adapter.strip().lower()
+        if args.destination_adapter is not None
+        else "fluxer"
+    )
+    _require_supported_sync_pair(input_adapter, destination_adapter)
+
+    setup = (
+        load_setup_configuration(
+            args.config,
+            required_adapters=(input_adapter, destination_adapter),
+        )
+        if args.config is not None
+        else None
+    )
+
+    input_scope = tuple(str(value).strip() for value in (args.input_scope or ()))
+    if any(not value for value in input_scope):
+        raise ConfigurationError("Input scope values must not be empty.")
+    if not input_scope and input_adapter == "discord":
+        input_scope = tuple(str(value) for value in (args.discord_guild_id or ()))
+    if not input_scope and setup is not None:
+        input_scope = setup.input_scope
+    if not input_scope and input_adapter == "discord" and setup is not None:
+        input_scope = tuple(str(value) for value in setup.discord_guild_ids)
+    if not input_scope:
         raise ConfigurationError(
-            "Discord authentication token is required; provide --discord-token "
-            "or configure discord.token/token_file in --config."
+            f"At least one input scope value is required for adapter {input_adapter!r}."
         )
 
-    discord_guild_ids = tuple(args.discord_guild_id or ())
-    if not discord_guild_ids and setup is not None:
-        discord_guild_ids = setup.discord_guild_ids
-    if not discord_guild_ids:
+    destination_scope = tuple(str(value).strip() for value in (args.destination_scope or ()))
+    if any(not value for value in destination_scope):
+        raise ConfigurationError("Destination scope values must not be empty.")
+    if not destination_scope and args.fluxer_guild_id is not None:
+        destination_scope = (str(args.fluxer_guild_id),)
+    if not destination_scope and setup is not None and destination_adapter == "fluxer" and setup.fluxer_guild_id:
+        destination_scope = (str(setup.fluxer_guild_id),)
+    if not destination_scope:
         raise ConfigurationError(
-            "At least one Discord guild ID is required; provide "
-            "--discord-guild-id or configure discord.guild_id in --config."
-        )
-
-    fluxer_token = (
-        args.fluxer_token
-        if args.fluxer_token is not None
-        else (setup.resolve_fluxer_token() if setup is not None else None)
-    )
-    if not fluxer_token:
-        raise ConfigurationError(
-            "Fluxer authentication token is required; provide --fluxer-token "
-            "or configure fluxer.token/token_file in --config."
-        )
-
-    fluxer_guild_id = (
-        args.fluxer_guild_id
-        if args.fluxer_guild_id is not None
-        else (setup.fluxer_guild_id if setup is not None else None)
-    )
-    if not fluxer_guild_id:
-        raise ConfigurationError(
-            "Fluxer server ID is required; provide --fluxer-guild-id or configure "
-            "fluxer.server_id in --config."
+            f"At least one destination scope value is required for adapter {destination_adapter!r}."
         )
 
     archive_path = (
@@ -1097,20 +1103,8 @@ def _run_sync(args: argparse.Namespace) -> int:
     )
     if archive_path is None:
         raise ConfigurationError(
-            "Archive path is required; provide --archive or configure archive.path "
-            "in --config."
+            "Archive path is required; provide --archive or configure archive.path in --config."
         )
-
-    identity_mappings = (
-        _parse_identity_mappings(args.fluxer_identity)
-        if args.fluxer_identity
-        else (setup.resolve_identity_mappings() if setup is not None else ())
-    )
-
-    input_adapter = "discord"
-    destination_adapter = "fluxer"
-    _require_supported_sync_pair(input_adapter, destination_adapter)
-
     paths = ArchivePaths(archive_path.expanduser().resolve())
     if not paths.database.is_file() or not paths.manifest.is_file():
         raise ConfigurationError(
@@ -1123,66 +1117,95 @@ def _run_sync(args: argparse.Namespace) -> int:
             f"Archive Package is invalid: {'; '.join(report.errors)}"
         )
 
-    config = DiscordFluxerSyncConfig(
-        discord=DiscordClientConfig(
-            token=discord_token,
-            guild_ids=discord_guild_ids,
-        ),
-        fluxer=FluxerClientConfig(
-            token=fluxer_token,
-            is_bot=True,
-            api_url=args.fluxer_api_url,
-            max_retries=args.fluxer_max_retries,
-        ),
-        fluxer_guild_id=fluxer_guild_id,
-        archive_paths=paths,
-        identity_mappings=identity_mappings,
-    )
+    identity_mappings = ()
+    if destination_adapter == "fluxer":
+        identity_mappings = (
+            _parse_identity_mappings(args.fluxer_identity)
+            if args.fluxer_identity
+            else (setup.resolve_identity_mappings() if setup is not None else ())
+        )
+
+    # CLI credential overrides are currently concrete-platform options. They
+    # are translated into the opaque credential object consumed by the
+    # registered adapter-specific configuration factories. Future adapters can
+    # provide their own configuration keys without changing this workflow.
+    if setup is not None:
+        resolved = setup.resolve_credentials(required_adapters=(input_adapter, destination_adapter))
+        credentials = SimpleNamespace(
+            discord_token=(
+                args.discord_token if input_adapter == "discord" and args.discord_token is not None
+                else resolved.discord_token
+            ),
+            fluxer_token=(
+                args.fluxer_token if destination_adapter == "fluxer" and args.fluxer_token is not None
+                else resolved.fluxer_token
+            ),
+            discord_user_auth=resolved.discord_user_auth,
+            fluxer_user_auth=resolved.fluxer_user_auth,
+            identity_mappings=resolved.identity_mappings,
+        )
+    else:
+        credentials = SimpleNamespace(
+            discord_token=args.discord_token,
+            fluxer_token=args.fluxer_token,
+            discord_user_auth={},
+            fluxer_user_auth={},
+            identity_mappings=(),
+        )
+
+    source_registry = default_source_runtime_registry()
+    destination_registry = default_destination_runtime_registry()
+    try:
+        source_config = source_registry.build_config(input_adapter, credentials, input_scope)
+        destination_config = destination_registry.build_config(
+            destination_adapter,
+            credentials,
+            destination_scope,
+            {
+                "api_url": args.fluxer_api_url,
+                "max_retries": args.fluxer_max_retries,
+            },
+        )
+        if isinstance(destination_config, dict) and destination_adapter in destination_config:
+            destination_runtime_config = destination_config[destination_adapter]
+        else:
+            destination_runtime_config = destination_config
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
 
     if not args.dry_run:
         ArchivePackage(paths).save_run_configuration(
             SyncRunConfiguration(
                 direction=RunDirection.SYNC,
-                input_adapter="discord",
-                input_scope=tuple(str(value) for value in discord_guild_ids),
-                destination_adapter="fluxer",
-                destination_scope=(str(fluxer_guild_id),),
+                input_adapter=input_adapter,
+                input_scope=input_scope,
+                destination_adapter=destination_adapter,
+                destination_scope=destination_scope,
             )
         )
 
-    def build_discord_fluxer_runtime(request: SyncRuntimeRequest) -> DiscordFluxerSyncRuntime:
-        if request.input_adapter != "discord" or request.destination_adapter != "fluxer":
-            raise ConfigurationError("The current Discord/Fluxer runtime cannot handle this adapter pair.")
-        if len(request.destination_scope) != 1:
-            raise ConfigurationError("Fluxer destination scope must contain exactly one server ID.")
-        try:
-            discord_config = request.adapter_config["discord"]
-            fluxer_config = request.adapter_config["fluxer"]
-        except KeyError as exc:
-            raise ConfigurationError(f"Missing runtime configuration for adapter {exc.args[0]!r}.") from exc
-        runtime_config = DiscordFluxerSyncConfig(
-            discord=discord_config,
-            fluxer=fluxer_config,
-            fluxer_guild_id=request.destination_scope[0],
-            archive_paths=ArchivePaths(request.archive_path),
-            identity_mappings=tuple(request.adapter_config.get("identity_mappings", ())),
-        )
-        return DiscordFluxerSyncRuntime(runtime_config)
-
-    runtime_registry = default_sync_runtime_registry(build_discord_fluxer_runtime)
     runtime_request = SyncRuntimeRequest(
         input_adapter=input_adapter,
-        input_scope=tuple(str(value) for value in discord_guild_ids),
+        input_scope=input_scope,
         destination_adapter=destination_adapter,
-        destination_scope=(str(fluxer_guild_id),),
+        destination_scope=destination_scope,
         archive_path=paths.root,
         adapter_config={
-            "discord": config.discord,
-            "fluxer": config.fluxer,
+            input_adapter: source_config,
+            destination_adapter: destination_runtime_config,
             "identity_mappings": identity_mappings,
         },
     )
-    runtime = runtime_registry.create(input_adapter, destination_adapter, runtime_request)
+    runtime_registry = default_sync_runtime_registry()
+    try:
+        runtime = runtime_registry.create(
+            input_adapter,
+            destination_adapter,
+            runtime_request,
+        )
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
+
     with runtime:
         if args.dry_run:
             operations = runtime.dry_run()
@@ -1191,7 +1214,6 @@ def _run_sync(args: argparse.Namespace) -> int:
             runtime.run(resume_import=args.resume)
 
     return 0
-
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
