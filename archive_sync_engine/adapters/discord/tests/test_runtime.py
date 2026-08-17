@@ -12,6 +12,7 @@ from archive_sync_engine.adapters.discord import (
     DiscordSourceRuntime,
 )
 from archive_sync_engine.archive.paths import ArchivePaths
+from archive_sync_engine.importer.canonical_coordinator import ImportReport
 
 
 def test_discord_client_factory_normalizes_guild_ids_and_authenticates() -> None:
@@ -112,46 +113,10 @@ def test_discord_source_runtime_exposes_canonical_adapter() -> None:
     assert runtime.input_scope == ("1",)
 
 
-def test_discord_source_runtime_propagates_import_report(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from archive_sync_engine.importer.canonical_coordinator import ImportReport
-
-    report = ImportReport(
-        session_id="import-1",
-        identities=1,
-        conversations=2,
-        messages=3,
-        attachments=4,
-    )
-
-    class FakeCoordinator:
-        def __init__(self, paths: ArchivePaths) -> None:
-            pass
-
-        def run(self, source, *, resume: bool = False) -> ImportReport:
-            return report
-
-    monkeypatch.setattr(
-        "archive_sync_engine.adapters.discord.runtime.CanonicalImportCoordinator",
-        FakeCoordinator,
-    )
-
-    class FakeClient:
-        async def close(self) -> None:
-            pass
-
-    runtime = DiscordSourceRuntime(FakeClient(), guild_ids=(1,))
-    assert runtime.import_to_archive(ArchivePaths(tmp_path / "archive")) is report
-
-
 def test_discord_source_runtime_imports_through_canonical_coordinator(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from archive_sync_engine.importer.canonical_coordinator import ImportReport
-
     captured: dict[str, object] = {}
 
     class FakeCoordinator:
@@ -161,7 +126,7 @@ def test_discord_source_runtime_imports_through_canonical_coordinator(
         def run(self, source, *, resume: bool = False) -> ImportReport:
             captured["source"] = source
             captured["resume"] = resume
-            return ImportReport("import-test", 0, 0, 0, 0)
+            return ImportReport("import-test", 1, 2, 3, 4)
 
     monkeypatch.setattr(
         "archive_sync_engine.adapters.discord.runtime.CanonicalImportCoordinator",
@@ -180,6 +145,33 @@ def test_discord_source_runtime_imports_through_canonical_coordinator(
     assert captured["paths"] == paths
     assert captured["source"] is runtime.adapter
     assert captured["resume"] is True
+
+
+def test_discord_source_runtime_propagates_import_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report = ImportReport("import-test", 1, 2, 3, 4)
+
+    class FakeCoordinator:
+        def __init__(self, paths: ArchivePaths) -> None:
+            pass
+
+        def run(self, source, *, resume: bool = False) -> ImportReport:
+            return report
+
+    monkeypatch.setattr(
+        "archive_sync_engine.adapters.discord.runtime.CanonicalImportCoordinator",
+        FakeCoordinator,
+    )
+
+    class FakeClient:
+        async def close(self) -> None:
+            pass
+
+    runtime = DiscordSourceRuntime(FakeClient(), guild_ids=(1,))
+
+    assert runtime.import_to_archive(ArchivePaths(tmp_path / "archive")) is report
 
 
 def test_discord_source_runtime_can_import_empty_scope_into_archive(

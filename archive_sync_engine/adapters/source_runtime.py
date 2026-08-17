@@ -27,11 +27,7 @@ class SourceImportRuntime(ABC):
         *,
         resume: bool = False,
     ) -> ImportReport:
-        """Import the runtime's source into the supplied Archive Package.
-
-        The returned report describes canonical Archive contents after the
-        import.  Concrete runtimes must not reinterpret the report.
-        """
+        """Import the runtime's source and return the resulting Archive report."""
         raise NotImplementedError
 
     @abstractmethod
