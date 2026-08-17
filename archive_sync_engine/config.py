@@ -66,8 +66,8 @@ class SetupUserMapping:
 
     platform: Literal["discord", "fluxer"]
     external_user_id: str
-    fluxer_username: str
-    fluxer_auth: SecretSource
+    fluxer_username: str | None
+    fluxer_auth: SecretSource | None
     discord_auth: SecretSource | None = None
 
     @property
@@ -95,13 +95,22 @@ class SetupUserMapping:
                 "Only Discord source user mappings can currently be resolved "
                 "into Fluxer destination identity mappings."
             )
+        if self.fluxer_auth is None:
+            raise ConfigurationError(
+                f"No Fluxer authentication is configured for Discord user "
+                f"{self.external_user_id}."
+            )
+        fluxer_username = _required_fluxer_username(
+            {"fluxer_username": self.fluxer_username},
+            f"Fluxer username for Discord user {self.external_user_id}",
+        )
         return FluxerIdentityMapping(
             username=self.canonical_identity_key,
             fluxer_auth_key=self.fluxer_auth.resolve(
                 base_dir=base_dir,
                 label=f"Fluxer auth for Discord user {self.external_user_id}",
             ),
-            fluxer_username=self.fluxer_username,
+            fluxer_username=fluxer_username,
         )
 
     def resolve_discord_auth(self, *, base_dir: Path) -> str:
@@ -248,13 +257,17 @@ class SetupConfiguration:
                 base_dir=base_dir,
                 label="Fluxer token",
             )
-            fluxer_user_auth = {
-                mapping.fluxer_user_id: mapping.fluxer_auth.resolve(
+            fluxer_user_auth = {}
+            for mapping in self.fluxer_user_mappings:
+                if mapping.fluxer_auth is None:
+                    raise ConfigurationError(
+                        f"No Fluxer authentication is configured for Fluxer user "
+                        f"{mapping.fluxer_user_id}."
+                    )
+                fluxer_user_auth[mapping.fluxer_user_id] = mapping.fluxer_auth.resolve(
                     base_dir=base_dir,
                     label=f"Fluxer auth for Fluxer user {mapping.fluxer_user_id}",
                 )
-                for mapping in self.fluxer_user_mappings
-            }
             identity_mappings = tuple(
                 mapping.resolve(base_dir=base_dir)
                 for mapping in self.identity_mappings
@@ -394,7 +407,10 @@ def load_setup_configuration(
         )
     )
 
-    identity_mappings, fluxer_user_mappings = _parse_user_mappings(mappings)
+    identity_mappings, fluxer_user_mappings = _parse_user_mappings(
+        mappings,
+        validate_fluxer_fields="fluxer" in required,
+    )
 
     between_messages = _nonnegative_float(
         delays.get("between_messages_seconds", 0.0),
@@ -423,6 +439,8 @@ def load_setup_configuration(
 
 def _parse_user_mappings(
     value: Mapping[str, Any],
+    *,
+    validate_fluxer_fields: bool = True,
 ) -> tuple[tuple[SetupUserMapping, ...], tuple[SetupUserMapping, ...]]:
     if not value:
         return (), ()
@@ -446,15 +464,31 @@ def _parse_user_mappings(
                 f"user_mappings.discord.{user_id} must be a YAML mapping."
             )
 
-        fluxer_username = _required_fluxer_username(
-            raw_mapping,
-            f"user_mappings.discord.{user_id}.fluxer_username",
-        )
-        fluxer_auth = _secret_source(
-            raw_mapping,
-            "fluxer_auth_key",
-            "fluxer_auth_key_file",
-            f"user_mappings.discord.{user_id}",
+        if validate_fluxer_fields:
+            fluxer_username = _required_fluxer_username(
+                raw_mapping,
+                f"user_mappings.discord.{user_id}.fluxer_username",
+            )
+        else:
+            fluxer_username = _optional_string(
+                raw_mapping,
+                "fluxer_username",
+                f"user_mappings.discord.{user_id}.fluxer_username",
+            )
+        fluxer_auth = (
+            _secret_source(
+                raw_mapping,
+                "fluxer_auth_key",
+                "fluxer_auth_key_file",
+                f"user_mappings.discord.{user_id}",
+            )
+            if validate_fluxer_fields
+            else _optional_secret_source(
+                raw_mapping,
+                "fluxer_auth_key",
+                "fluxer_auth_key_file",
+                f"user_mappings.discord.{user_id}",
+            )
         )
         discord_auth = _optional_secret_source(
             raw_mapping,
@@ -484,15 +518,31 @@ def _parse_user_mappings(
                 f"user_mappings.fluxer.{user_id} must be a YAML mapping."
             )
 
-        fluxer_username = _required_fluxer_username(
-            raw_mapping,
-            f"user_mappings.fluxer.{user_id}.fluxer_username",
-        )
-        fluxer_auth = _secret_source(
-            raw_mapping,
-            "fluxer_auth_key",
-            "fluxer_auth_key_file",
-            f"user_mappings.fluxer.{user_id}",
+        if validate_fluxer_fields:
+            fluxer_username = _required_fluxer_username(
+                raw_mapping,
+                f"user_mappings.fluxer.{user_id}.fluxer_username",
+            )
+        else:
+            fluxer_username = _optional_string(
+                raw_mapping,
+                "fluxer_username",
+                f"user_mappings.fluxer.{user_id}.fluxer_username",
+            )
+        fluxer_auth = (
+            _secret_source(
+                raw_mapping,
+                "fluxer_auth_key",
+                "fluxer_auth_key_file",
+                f"user_mappings.fluxer.{user_id}",
+            )
+            if validate_fluxer_fields
+            else _optional_secret_source(
+                raw_mapping,
+                "fluxer_auth_key",
+                "fluxer_auth_key_file",
+                f"user_mappings.fluxer.{user_id}",
+            )
         )
         fluxer_mappings.append(
             SetupUserMapping(
@@ -516,6 +566,19 @@ def _stable_user_id(value: Any, label: str, *, platform: str) -> str:
             f"Received {user_id!r}."
         )
     return user_id
+
+
+def _optional_string(
+    mapping: Mapping[str, Any],
+    key: str,
+    label: str,
+) -> str | None:
+    value = mapping.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigurationError(f"{label} must be a non-empty string when provided.")
+    return value.strip()
 
 
 def _required_fluxer_username(

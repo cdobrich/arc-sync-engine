@@ -553,3 +553,62 @@ fluxer:
         assert setup.resolve_destination_scope("fluxer") == ("server-123",)
     finally:
         config.unlink(missing_ok=True)
+
+
+def test_load_yaml_setup_source_only_does_not_validate_unused_fluxer_mapping(tmp_path: Path) -> None:
+    (tmp_path / "discord.token").write_text("discord\n", encoding="utf-8")
+    config = tmp_path / "source-only.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token_file: discord.token
+  guild_id: 123
+fluxer:
+  token: fluxer
+  server_id: server
+user_mappings:
+  discord:
+    "123456789":
+      fluxer_username: BobOnFluxer
+      fluxer_auth_key: fluxer-secret
+""",
+        encoding="utf-8",
+    )
+
+    setup = load_setup_configuration(config, required_adapters=("discord",))
+
+    assert setup.resolve_credentials(required_adapters=("discord",)).discord_token == "discord"
+
+    with pytest.raises(ConfigurationError, match="four digits"):
+        setup.resolve_credentials(required_adapters=("fluxer",))
+
+
+def test_setup_secret_file_paths_are_relative_to_configuration_directory(tmp_path: Path) -> None:
+    secrets = tmp_path / "dist"
+    secrets.mkdir()
+    (secrets / "fluxer_user.key").write_text("fluxer-user-secret\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord
+  guild_id: 123
+fluxer:
+  token: fluxer
+  server_id: server
+user_mappings:
+  discord:
+    "123456789":
+      fluxer_username: Bob#0909
+      fluxer_auth_key_file: ./dist/fluxer_user.key
+""",
+        encoding="utf-8",
+    )
+
+    setup = load_setup_configuration(config)
+
+    assert setup.resolve_identity_mappings()[0].fluxer_auth_key == "fluxer-user-secret"

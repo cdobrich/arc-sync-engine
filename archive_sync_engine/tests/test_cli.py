@@ -1191,3 +1191,70 @@ fluxer:
     # The persisted scope is opaque at the generic boundary. The current
     # Discord runtime's concrete config still owns its platform interpretation.
     assert request.adapter_config["discord"].guild_ids == (10,)
+
+
+def test_preflight_can_validate_only_selected_source_adapter(tmp_path: Path, capsys) -> None:
+    (tmp_path / "discord.token").write_text("discord-secret\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token_file: discord.token
+  guild_id: 123
+user_mappings:
+  discord:
+    "123456789":
+      fluxer_username: BobOnFluxer
+""",
+        encoding="utf-8",
+    )
+    ArchivePackage.initialize(ArchivePaths(tmp_path / "archive"))
+
+    assert main([
+        "preflight",
+        "--config", str(config),
+        "--input-adapter", "discord",
+    ]) == 0
+
+    output = capsys.readouterr().out
+    assert "Input adapter: discord" in output
+    assert "Credentials: RESOLVED" in output
+
+
+
+def test_preflight_source_only_does_not_validate_unused_fluxer_mappings(
+    tmp_path: Path, capsys
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+user_mappings:
+  discord:
+    "123":
+      fluxer_username: InvalidFluxerName
+      fluxer_auth_key: fluxer-secret
+""",
+        encoding="utf-8",
+    )
+    ArchivePackage.initialize(ArchivePaths(tmp_path / "archive"))
+
+    assert main(["preflight", "--config", str(config)]) == 0
+    assert "Configuration: VALID" in capsys.readouterr().out
+
+def test_config_example_documents_discord_bot_configuration() -> None:
+    from pathlib import Path
+
+    example = (Path(__file__).resolve().parents[2] / "config-example.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Discord bot account" in example
+    assert 'token_file: "discord_bot.token"' in example
+    assert "YOUR_DISCORD_BOT_TOKEN" in example

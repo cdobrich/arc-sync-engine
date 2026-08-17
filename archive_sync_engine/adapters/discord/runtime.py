@@ -14,10 +14,7 @@ from typing import Any, Mapping, Callable
 
 from archive_sync_engine.adapters.exceptions import AdapterError
 from archive_sync_engine.archive.paths import ArchivePaths
-from archive_sync_engine.importer.canonical_coordinator import (
-    CanonicalImportCoordinator,
-    ImportReport,
-)
+from archive_sync_engine.importer.canonical_coordinator import CanonicalImportCoordinator, ImportReport
 
 from .source import DiscordSourceAdapter
 

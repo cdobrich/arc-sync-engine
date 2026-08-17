@@ -27,7 +27,7 @@ class SourceImportRuntime(ABC):
         *,
         resume: bool = False,
     ) -> ImportReport:
-        """Import the runtime's source and return the resulting Archive report."""
+        """Import the runtime's source into the supplied Archive Package."""
         raise NotImplementedError
 
     @abstractmethod

@@ -285,6 +285,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Human-authored YAML setup configuration.",
     )
     preflight.add_argument(
+        "--input-adapter",
+        default=None,
+        help="Registered source adapter whose credentials/readiness should be checked.",
+    )
+    preflight.add_argument(
+        "--destination-adapter",
+        default=None,
+        help="Registered destination adapter whose credentials/readiness should be checked.",
+    )
+    preflight.add_argument(
         "--archive",
         type=Path,
         default=None,
@@ -623,8 +633,35 @@ def _run_diagnostics_summary(args: argparse.Namespace) -> int:
 
 
 def _run_preflight(args: argparse.Namespace) -> int:
-    """Validate all local prerequisites for a configured run without side effects."""
-    setup = load_setup_configuration(args.config)
+    """Validate selected adapter prerequisites and Archive readiness without side effects."""
+    requested_adapters: set[str] = set()
+    if args.input_adapter:
+        requested_adapters.add(args.input_adapter.strip().lower())
+    if args.destination_adapter:
+        requested_adapters.add(args.destination_adapter.strip().lower())
+
+    # Preflight is workflow-oriented.  First parse the human configuration
+    # without requiring platform credentials so that the configured input
+    # adapter can be discovered without hard-coding Discord.  Then reload with
+    # exactly the adapters needed by this preflight.  This keeps a source-only
+    # Discord -> Archive check independent of unused Fluxer identity mappings,
+    # while preserving the same behavior for future source adapters.
+    if not requested_adapters:
+        discovery = load_setup_configuration(
+            args.config, require_discord=False, require_fluxer=False
+        )
+        requested_adapters.add(discovery.input_adapter)
+
+    setup = load_setup_configuration(
+        args.config, required_adapters=tuple(sorted(requested_adapters))
+    )
+    selected_input_adapter = (
+        args.input_adapter.strip().lower() if args.input_adapter else setup.input_adapter
+    )
+    selected_destination_adapter = (
+        args.destination_adapter.strip().lower() if args.destination_adapter else None
+    )
+
     archive_path = (
         args.archive.expanduser().resolve()
         if args.archive is not None
@@ -641,8 +678,14 @@ def _run_preflight(args: argparse.Namespace) -> int:
         "configuration": {
             "valid": True,
             "path": str(setup.source_config_path),
-            "discord_guild_ids": list(setup.discord_guild_ids),
-            "fluxer_guild_id": setup.fluxer_guild_id,
+            "input_adapter": selected_input_adapter,
+            "destination_adapter": selected_destination_adapter,
+            "input_scope": list(setup.resolve_input_scope(selected_input_adapter)),
+            "destination_scope": (
+                list(setup.resolve_destination_scope(selected_destination_adapter))
+                if selected_destination_adapter
+                else []
+            ),
             "identity_mappings": len(setup.identity_mappings),
             "credentials_resolved": False,
         },
@@ -654,10 +697,13 @@ def _run_preflight(args: argparse.Namespace) -> int:
         },
     }
 
-    # Resolve every configured secret only to verify availability. Never emit it.
-    setup.resolve_discord_token()
-    setup.resolve_fluxer_token()
-    setup.resolve_identity_mappings()
+    # Resolve only credentials belonging to explicitly selected adapters.
+    # This is important for source-only imports: unused destination credentials
+    # and mappings must not block a Discord -> Archive preflight.
+    required = {selected_input_adapter}
+    if selected_destination_adapter:
+        required.add(selected_destination_adapter)
+    setup.resolve_credentials(required_adapters=tuple(sorted(required)))
     checks["configuration"]["credentials_resolved"] = True
 
     if not archive_path.is_dir():
@@ -690,6 +736,9 @@ def _run_preflight(args: argparse.Namespace) -> int:
         for error in checks["adapter_capabilities"]["errors"]:
             print(f"ERROR: {error}")
         print(f"Configuration: VALID ({configuration['path']})")
+        print(f"Input adapter: {configuration['input_adapter']}")
+        if configuration["destination_adapter"]:
+            print(f"Destination adapter: {configuration['destination_adapter']}")
         print(f"Credentials: {'RESOLVED' if configuration['credentials_resolved'] else 'INVALID'}")
         print(f"Identity mappings: {configuration['identity_mappings']}")
         print(f"Archive: {'VALID' if archive['valid'] else 'INVALID'} ({archive['path']})")
@@ -698,7 +747,6 @@ def _run_preflight(args: argparse.Namespace) -> int:
         print(f"Ready: {'YES' if ready else 'NO'}")
 
     return 0 if ready else 1
-
 
 def _run_validate(args: argparse.Namespace) -> int:
     report = validate_archive_package(

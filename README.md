@@ -186,8 +186,9 @@ This program reads a `config.yaml` file, in its root program directory. This is 
       between_messages_seconds: 0.5
       between_channels_seconds: 5.0
 
+---
       
-## Run the Setup.sh Script
+## Automatically Install: Run the Setup.sh Script
 
 To automatically install the program, open a command terminal at the location where you have `Arc-Sync-Engine` code files. Run:
 
@@ -195,13 +196,60 @@ To automatically install the program, open a command terminal at the location wh
   
 This will create a virtual python environment and install the program's dependency files.
 
-## Run the Exporter
+## Verify Program is Available -- Display the Help Output
 
 Finally, you are ready. To run the exporter, open a command terminal at the location where you have `Arc-Sync-Engine` code files. Run:
 
     source .venv/bin/python
     archive-sync-engine -h
 
+## Documentation / Guide / Help for Commands
+
+To see a top level summary of options, run:
+
+    archive-sync-engine -h
+
+To see more specific info about a command, use the format `archive-sync-engine SELECTED_OPTION -h`. Example:
+
+    archive-sync-engine preflight -h
+
+## Create Configuration for an Archive (1st Step)
+
+Nearly all options can be configured into a YAML file (such as `config.yaml`).
+
+### Config Example Output Save
+
+To get an example of a configuration file, run command:
+
+    archive-sync-engine config-example --output ./config.yaml
+
+This would create a generic template output of the config.yaml file, which the user must edit.
+
+Rule when defining usernames:
+> “For this Discord user, which Fluxer identity should represent them when the Archive is exported to Fluxer?”
+
+Example section:
+
+    user_mappings:
+      discord:
+        "123456789012345678":
+          fluxer_username: "BobsFluxerAccount#0909"
+          fluxer_auth_key_file: "bob_fluxer_auth.key"
+          # Optional source-side Discord credential for this user, if applicable.
+          # discord_auth_key_file: "./dist/discord_user-Bob.key"
+
+## Initialize an Archive (2nd Step)
+
+Assuming your config-yaml file is locally stored and named `config.yaml`.
+
+    archive-sync-engine init --config ./config.yaml
+
+Do not skip this step.
+
+The architecture deliberately does not have `import` silently initialize an Archive, because an incorrect Archive path should not accidentally cause data to be written somewhere unintended.
+
+
+---
 
 # Developer Notes
 

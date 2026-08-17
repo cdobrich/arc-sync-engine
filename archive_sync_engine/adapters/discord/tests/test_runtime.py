@@ -123,10 +123,9 @@ def test_discord_source_runtime_imports_through_canonical_coordinator(
         def __init__(self, paths: ArchivePaths) -> None:
             captured["paths"] = paths
 
-        def run(self, source, *, resume: bool = False) -> ImportReport:
+        def run(self, source, *, resume: bool = False) -> None:
             captured["source"] = source
             captured["resume"] = resume
-            return ImportReport("import-test", 1, 2, 3, 4)
 
     monkeypatch.setattr(
         "archive_sync_engine.adapters.discord.runtime.CanonicalImportCoordinator",

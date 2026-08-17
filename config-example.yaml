@@ -11,9 +11,16 @@ archive:
 
 # --- Discord source configuration ---
 discord:
+  # The source runtime currently authenticates as a Discord bot account.
+  # Put the bot token here (or use token_file below); do not put a user
+  # password or a Fluxer user credential here.
   # Use either token or token_file, not both.
-  token_file: "discord_token.token"
+  token_file: "discord_bot.token"
   guild_id: "YOUR_DISCORD_SERVER_ID"
+
+  # Example equivalent inline bot configuration:
+  # token_file: "YOUR_DISCORD_BOT_TOKEN"
+  # guild_id: "YOUR_DISCORD_SERVER_ID"
 
 # --- Fluxer destination configuration ---
 fluxer:
@@ -29,23 +36,32 @@ delays:
 # --- External identity mappings ---
 # Stable Discord user IDs are used instead of display names. The application
 # derives the current canonical Discord identity key from the external ID.
+# These mappings connect a stable source-platform user ID to a destination
+# Fluxer identity. The fluxer_* names are intentional: they describe the
+# destination identity, not Discord authentication. Optional discord_auth_key
+# / discord_auth_key_file values are only needed when a future/source runtime
+# requires per-user Discord credentials; the bot import above does not.
 # Each mapping may use fluxer_auth_key OR fluxer_auth_key_file. Different
 # mappings may use different forms.
 user_mappings:
   discord:
     "123456789012345678":
+      # Destination Fluxer account for this Discord user.
       fluxer_username: "BobsFluxerAccount#0909"
       fluxer_auth_key_file: "bob_fluxer_auth.key"
 
     "234567890123456789":
+      # Destination Fluxer account for this Discord user.
       fluxer_username: "AliceOnFluxer#1136"
       fluxer_auth_key: "auth_key_for_alice_goes_here"
 
   fluxer:
     "1375567890027713164":
+      # Destination Fluxer account for this Fluxer user.
       fluxer_username: "BobsFluxerAccount#0909"
       fluxer_auth_key_file: "bob_fluxer_auth.key"
 
     "1613177200987655731":
+      # Destination Fluxer account for this Fluxer user.
       fluxer_username: "AliceOnFluxer#1136"
       fluxer_auth_key: "auth_key_for_alice_goes_here"
