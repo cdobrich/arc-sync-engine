@@ -208,7 +208,7 @@ def build_discord_source_runtime_config(
     overrides: Mapping[str, Any],
 ) -> DiscordClientConfig:
     """Build Discord runtime configuration behind the source registry boundary."""
-    token = getattr(credentials, "discord_token", None)
+    token = overrides.get("token") or getattr(credentials, "discord_token", None)
     if not token:
         raise AdapterError("Discord source credentials are missing.")
     try:

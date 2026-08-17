@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from archive_sync_engine.logging_support import (
     configure_logging,
@@ -955,6 +956,64 @@ def _run_export(args: argparse.Namespace) -> int:
     return 0
 
 
+@dataclass(frozen=True, slots=True)
+class _SyncInvocation:
+    """Adapter-neutral synchronization invocation assembled at the CLI boundary."""
+
+    config: Path | None
+    input_adapter: str | None
+    input_scope: tuple[str, ...] = ()
+    destination_adapter: str | None = None
+    destination_scope: tuple[str, ...] = ()
+    archive: Path | None = None
+    adapter_config_overrides: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    input_scope_overrides: tuple[str, ...] = ()
+    destination_scope_overrides: tuple[str, ...] = ()
+    resume: bool = False
+    dry_run: bool = False
+
+
+def _sync_invocation_from_args(args: argparse.Namespace) -> _SyncInvocation:
+    """Translate parser-specific arguments into an adapter-neutral invocation."""
+    return _SyncInvocation(
+        config=args.config,
+        input_adapter=(
+            args.input_adapter
+            if args.input_adapter is not None
+            else ("discord" if args.config is None else None)
+        ),
+        input_scope=tuple(args.input_scope or ()),
+        destination_adapter=(
+            args.destination_adapter
+            if args.destination_adapter is not None
+            else "fluxer"
+        ),
+        destination_scope=tuple(args.destination_scope or ()),
+        archive=args.archive,
+        adapter_config_overrides={
+            "discord": {"token": args.discord_token},
+            "fluxer": {
+                "token": args.fluxer_token,
+                "api_url": args.fluxer_api_url,
+                "max_retries": args.fluxer_max_retries,
+                **(
+                    {"identity_mappings": _parse_identity_mappings(args.fluxer_identity)}
+                    if args.fluxer_identity
+                    else {}
+                ),
+            },
+        },
+        input_scope_overrides=tuple(args.discord_guild_id or ()),
+        destination_scope_overrides=(
+            (str(args.fluxer_guild_id),)
+            if args.fluxer_guild_id is not None
+            else ()
+        ),
+        resume=args.resume,
+        dry_run=args.dry_run,
+    )
+
+
 def _run_resume(args: argparse.Namespace) -> int:
     """Resume the persisted run using current human-authored credentials."""
     setup = load_setup_configuration(args.config)
@@ -1025,80 +1084,79 @@ def _run_resume(args: argparse.Namespace) -> int:
         raise ConfigurationError("The persisted sync run has no destination adapter.")
 
     return _run_sync(
-        argparse.Namespace(
+        _SyncInvocation(
             config=args.config,
             input_adapter=run_configuration.input_adapter,
-            input_scope=list(run_configuration.input_scope),
+            input_scope=tuple(run_configuration.input_scope),
             destination_adapter=run_configuration.destination_adapter,
-            destination_scope=list(run_configuration.destination_scope),
-            discord_token=None,
-            discord_guild_id=[],
-            fluxer_token=None,
-            fluxer_guild_id=None,
+            destination_scope=tuple(run_configuration.destination_scope),
             archive=archive_path,
-            fluxer_api_url=None,
-            fluxer_max_retries=4,
             resume=True,
             dry_run=False,
-            fluxer_identity=[],
         )
     )
 
-def _run_sync(args: argparse.Namespace) -> int:
-    if args.dry_run and args.resume:
+def _run_sync(invocation: _SyncInvocation) -> int:
+    if invocation.dry_run and invocation.resume:
         raise ConfigurationError("--dry-run cannot be combined with --resume.")
 
-    initial_setup = load_setup_configuration(args.config) if args.config is not None else None
+    initial_setup = load_setup_configuration(invocation.config) if invocation.config is not None else None
     input_adapter = (
-        args.input_adapter.strip().lower()
-        if args.input_adapter is not None
-        else (initial_setup.input_adapter if initial_setup is not None else "discord")
+        invocation.input_adapter.strip().lower()
+        if invocation.input_adapter is not None
+        else (initial_setup.input_adapter if initial_setup is not None else None)
     )
     destination_adapter = (
-        args.destination_adapter.strip().lower()
-        if args.destination_adapter is not None
-        else "fluxer"
+        invocation.destination_adapter.strip().lower()
+        if invocation.destination_adapter is not None
+        else None
     )
+    if input_adapter is None:
+        raise ConfigurationError(
+            "Input adapter is required; provide --input-adapter or configure input.adapter in --config."
+        )
+    if destination_adapter is None:
+        raise ConfigurationError(
+            "Destination adapter is required; provide --destination-adapter."
+        )
     _require_supported_sync_pair(input_adapter, destination_adapter)
 
     setup = (
         load_setup_configuration(
-            args.config,
+            invocation.config,
             required_adapters=(input_adapter, destination_adapter),
         )
-        if args.config is not None
+        if invocation.config is not None
         else None
     )
 
-    input_scope = tuple(str(value).strip() for value in (args.input_scope or ()))
+    input_scope = tuple(str(value).strip() for value in (invocation.input_scope or ()))
     if any(not value for value in input_scope):
         raise ConfigurationError("Input scope values must not be empty.")
-    if not input_scope and input_adapter == "discord":
-        input_scope = tuple(str(value) for value in (args.discord_guild_id or ()))
+    if not input_scope:
+        input_scope = tuple(str(value) for value in invocation.input_scope_overrides)
     if not input_scope and setup is not None:
-        input_scope = setup.input_scope
-    if not input_scope and input_adapter == "discord" and setup is not None:
-        input_scope = tuple(str(value) for value in setup.discord_guild_ids)
+        input_scope = setup.resolve_input_scope(input_adapter)
     if not input_scope:
         raise ConfigurationError(
             f"At least one input scope value is required for adapter {input_adapter!r}."
         )
 
-    destination_scope = tuple(str(value).strip() for value in (args.destination_scope or ()))
+    destination_scope = tuple(str(value).strip() for value in (invocation.destination_scope or ()))
     if any(not value for value in destination_scope):
         raise ConfigurationError("Destination scope values must not be empty.")
-    if not destination_scope and args.fluxer_guild_id is not None:
-        destination_scope = (str(args.fluxer_guild_id),)
-    if not destination_scope and setup is not None and destination_adapter == "fluxer" and setup.fluxer_guild_id:
-        destination_scope = (str(setup.fluxer_guild_id),)
+    if not destination_scope:
+        destination_scope = tuple(str(value) for value in invocation.destination_scope_overrides)
+    if not destination_scope and setup is not None:
+        destination_scope = setup.resolve_destination_scope(destination_adapter)
     if not destination_scope:
         raise ConfigurationError(
             f"At least one destination scope value is required for adapter {destination_adapter!r}."
         )
 
     archive_path = (
-        args.archive
-        if args.archive is not None
+        invocation.archive
+        if invocation.archive is not None
         else (setup.resolved_archive_path() if setup is not None else None)
     )
     if archive_path is None:
@@ -1117,54 +1175,27 @@ def _run_sync(args: argparse.Namespace) -> int:
             f"Archive Package is invalid: {'; '.join(report.errors)}"
         )
 
-    identity_mappings = ()
-    if destination_adapter == "fluxer":
-        identity_mappings = (
-            _parse_identity_mappings(args.fluxer_identity)
-            if args.fluxer_identity
-            else (setup.resolve_identity_mappings() if setup is not None else ())
-        )
-
-    # CLI credential overrides are currently concrete-platform options. They
-    # are translated into the opaque credential object consumed by the
-    # registered adapter-specific configuration factories. Future adapters can
-    # provide their own configuration keys without changing this workflow.
     if setup is not None:
         resolved = setup.resolve_credentials(required_adapters=(input_adapter, destination_adapter))
-        credentials = SimpleNamespace(
-            discord_token=(
-                args.discord_token if input_adapter == "discord" and args.discord_token is not None
-                else resolved.discord_token
-            ),
-            fluxer_token=(
-                args.fluxer_token if destination_adapter == "fluxer" and args.fluxer_token is not None
-                else resolved.fluxer_token
-            ),
-            discord_user_auth=resolved.discord_user_auth,
-            fluxer_user_auth=resolved.fluxer_user_auth,
-            identity_mappings=resolved.identity_mappings,
-        )
     else:
-        credentials = SimpleNamespace(
-            discord_token=args.discord_token,
-            fluxer_token=args.fluxer_token,
-            discord_user_auth={},
-            fluxer_user_auth={},
-            identity_mappings=(),
-        )
+        resolved = SimpleNamespace()
 
     source_registry = default_source_runtime_registry()
     destination_registry = default_destination_runtime_registry()
+    source_overrides = dict(invocation.adapter_config_overrides.get(input_adapter, {}))
+    destination_overrides = dict(
+        invocation.adapter_config_overrides.get(destination_adapter, {})
+    )
     try:
-        source_config = source_registry.build_config(input_adapter, credentials, input_scope)
+        source_config = source_registry.build_config(input_adapter, resolved, input_scope, source_overrides)
+        if setup is not None and "identity_mappings" not in destination_overrides:
+            destination_overrides["identity_mappings"] = resolved.identity_mappings
+        identity_mappings = tuple(destination_overrides.get("identity_mappings", ()))
         destination_config = destination_registry.build_config(
             destination_adapter,
-            credentials,
+            resolved,
             destination_scope,
-            {
-                "api_url": args.fluxer_api_url,
-                "max_retries": args.fluxer_max_retries,
-            },
+            destination_overrides,
         )
         if isinstance(destination_config, dict) and destination_adapter in destination_config:
             destination_runtime_config = destination_config[destination_adapter]
@@ -1173,7 +1204,7 @@ def _run_sync(args: argparse.Namespace) -> int:
     except ValueError as exc:
         raise ConfigurationError(str(exc)) from exc
 
-    if not args.dry_run:
+    if not invocation.dry_run:
         ArchivePackage(paths).save_run_configuration(
             SyncRunConfiguration(
                 direction=RunDirection.SYNC,
@@ -1207,11 +1238,11 @@ def _run_sync(args: argparse.Namespace) -> int:
         raise ConfigurationError(str(exc)) from exc
 
     with runtime:
-        if args.dry_run:
+        if invocation.dry_run:
             operations = runtime.dry_run()
             print(f"Dry run: {len(operations)} synchronization operations planned.")
         else:
-            runtime.run(resume_import=args.resume)
+            runtime.run(resume_import=invocation.resume)
 
     return 0
 
@@ -1248,7 +1279,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "resume":
             return _run_resume(args)
         if args.command == "sync":
-            return _run_sync(args)
+            return _run_sync(_sync_invocation_from_args(args))
         if args.command == "adapters":
             return _run_adapters(args)
         if args.command == "diagnostics":

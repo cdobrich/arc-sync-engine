@@ -405,7 +405,7 @@ def build_fluxer_destination_runtime_config(
     overrides: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     """Build Fluxer destination configuration behind the destination registry boundary."""
-    token = getattr(credentials, "fluxer_token", None)
+    token = overrides.get("token") or getattr(credentials, "fluxer_token", None)
     if not token:
         raise AdapterError("Fluxer destination credentials are missing.")
     if len(scope) != 1 or not scope[0]:

@@ -12,6 +12,35 @@ from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.archive import validate_archive_package
 
 
+
+def test_sync_invocation_translates_platform_cli_flags_at_boundary() -> None:
+    from archive_sync_engine.cli import _sync_invocation_from_args, _SyncInvocation
+
+    args = build_parser().parse_args([
+        "sync",
+        "--input-adapter", "discord",
+        "--input-scope", "123",
+        "--destination-adapter", "fluxer",
+        "--destination-scope", "456",
+        "--discord-token", "discord-secret",
+        "--fluxer-token", "fluxer-secret",
+        "--fluxer-api-url", "https://example.test",
+        "--fluxer-max-retries", "7",
+    ])
+
+    invocation = _sync_invocation_from_args(args)
+
+    assert isinstance(invocation, _SyncInvocation)
+    assert invocation.input_adapter == "discord"
+    assert invocation.destination_adapter == "fluxer"
+    assert invocation.input_scope == ("123",)
+    assert invocation.destination_scope == ("456",)
+    assert invocation.adapter_config_overrides["discord"]["token"] == "discord-secret"
+    assert invocation.adapter_config_overrides["fluxer"]["token"] == "fluxer-secret"
+    assert invocation.adapter_config_overrides["fluxer"]["api_url"] == "https://example.test"
+    assert invocation.adapter_config_overrides["fluxer"]["max_retries"] == 7
+
+
 def test_sync_cli_builds_runtime_configuration() -> None:
     parser = build_parser()
     args = parser.parse_args(
