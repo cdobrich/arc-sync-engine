@@ -1,6 +1,6 @@
 # Archive-Sync Engine (for Discord & Fluxer)
 
-Archive-Sync Engine can _archive_, _export_, and _migrate_ (synchronizing) servers from Discord Chat to [Fluxer](https://github.com/fluxerapp/fluxer) chat. Or from Fluxer Server to Fluxer.
+Archive-Sync Engine can _archive_ (import), _export_, and _migrate_ (synchronizing) servers from Discord Chat to [Fluxer](https://github.com/fluxerapp/fluxer) chat. Or from Fluxer Server to Fluxer.
 
 ## No Regrets Walking Away from Discord
 
@@ -157,6 +157,8 @@ In your web-browser:
 
 #### Example config.yaml masquerade configuration
 
+FIXME: DOCUMENTATION UPDATE PENDING.
+
 ```
 user_mappings:
     "discord_username1234":
@@ -187,7 +189,7 @@ This program reads a `config.yaml` file, in its root program directory. This is 
       
 ## Run the Setup.sh Script
 
-Open a command terminal at the location where you have `Discord-to-Fluxer` code files. Run:
+To automatically install the program, open a command terminal at the location where you have `Arc-Sync-Engine` code files. Run:
 
     sh setup.sh
   
@@ -195,10 +197,10 @@ This will create a virtual python environment and install the program's dependen
 
 ## Run the Exporter
 
-Finally you are ready. To run the exporter, open a command terminal at the location where you have `Discord-to-Fluxer` code files. Run:
+Finally, you are ready. To run the exporter, open a command terminal at the location where you have `Arc-Sync-Engine` code files. Run:
 
     source .venv/bin/python
-    python main.py
+    archive-sync-engine -h
 
 
 # Developer Notes
@@ -295,7 +297,7 @@ During the migration process, dedicated suffixed `-thread` channels could be cre
 
 # Version Support
 
-Tested with Python 3.11, but in theory should work for older versions of Python.
+Tested with Python 3.11, but in theory should work for versions 3.10.
 
 
 # Future Roadmap / Pending Tasks
@@ -309,19 +311,6 @@ Tested with Python 3.11, but in theory should work for older versions of Python.
 - Pinned threads within channels
 - Implement and verify Thread preservation
 
-### Roadmap
-
-1. For the project's use-case, there are very few threads which need to be migrated. Therefore, an intermediary migration option will be:
-  - Create flattened-pseudo-threads. Architecture as follows:
-  - For every channel which contains any threads, create fluxer-channel with the `original-channel-name + - + threads` format. Example: `#links` -> `#links-threads`
-  - Migrate a thread like a normal fluxer-message, but group all message top lines including a unique thread-id + ##/### position counter.
-    - Thread-ids must have a derivable relationship, meaning a discord-thread must be able to match to a target fluxer-pseudo-thread.
-      - It is not necessary for a fluxer-pseudo-thread be able to look up its original discord-thread, though this might be useful for syncing both ways.
-      - IMPLEMENTATION APPROACH: Store the original discord-thread ID in the fluxer-thread headers. 
-  - LIMITATIONS: Any new posts to the original source thread after initial migration-stage cannot be later-added to any fluxer-
-  - FUTURE: When threading is eventually added to Fluxer, these flattened-pseudo-threads can be converted into proper threads later.
-1. An attempt will be made, investigating how difficult it will be to implement threading within the backend of Fluxer.
-
 # Testing / Unit Tests
 
 Run the following:
@@ -330,10 +319,3 @@ Run the following:
 
 There are many warnings from the Discord sub-libraries, which is why we suppress them.
 
-## More Testing to Add
-
-- make sure to export first post in channel
-- reply-to message preservation
-- avoid duplicating existing messages
-- avoid duplicating existing emoji reactions
-- add total number of messages checking during export? 

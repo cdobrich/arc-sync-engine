@@ -2,9 +2,15 @@
 
 set -e
 
-PROJECT_DIR=$(dirname "$0")
+PROJECT_DIR=$(cd "$(dirname "$0")" && pwd)
 VENV_DIR="$PROJECT_DIR/.venv"
-REQUIREMENTS_FILE="$PROJECT_DIR/requirements.txt"
+PYPROJECT_FILE="$PROJECT_DIR/pyproject.toml"
+
+# Verify pyproject.toml exists before proceeding
+if [ ! -f "$PYPROJECT_FILE" ]; then
+  echo "Error: $PYPROJECT_FILE not found."
+  exit 1
+fi
 
 # Check if a virtual environment already exists
 if [ -d "$VENV_DIR" ]; then
@@ -42,14 +48,19 @@ else
   exit 1
 fi
 
-echo "Installing dependencies from $REQUIREMENTS_FILE..."
-pip install -r "$REQUIREMENTS_FILE"
+echo "Upgrading pip and build tools..."
+pip install --upgrade pip setuptools wheel
 
+echo "Installing project dependencies from pyproject.toml..."
+# -e installs in editable mode so changes to source code reflect without reinstalling
+pip install -e "$PROJECT_DIR"
+
+echo ""
 echo "Setup complete!"
-echo "You can now run 'main.py --help' in this terminal."
-echo "  source $VENV_DIR/bin/activate"
+echo "To activate the virtual environment, run:"
+echo "   source $VENV_DIR/bin/activate"
 echo "or"
-echo "  . $VENV_DIR/bin/activate"
-echo "depending on your shell."
-echo "To deactivate the virtual environment, run:"
+echo "   . $VENV_DIR/bin/activate"
+echo ""
+echo "To deactivate, run:"
 echo "  deactivate"
