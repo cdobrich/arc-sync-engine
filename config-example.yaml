@@ -9,14 +9,6 @@
 archive:
   path: "./archive"
 
-# --- Generic import source selection ---
-# The adapter name and scope are opaque to the generic application layer.
-# If omitted, import defaults to the Discord configuration below.
-input:
-  adapter: "discord"
-  scope:
-    - "YOUR_DISCORD_SERVER_ID"
-
 # --- Discord source configuration ---
 discord:
   # Use either token or token_file, not both.
@@ -42,11 +34,11 @@ delays:
 user_mappings:
   discord:
     "123456789012345678":
-      fluxer_username: "BobsFluxerAccount"
+      fluxer_username: "BobsFluxerAccount#0909"
       fluxer_auth_key_file: "bob_fluxer_auth.key"
 
     "234567890123456789":
-      fluxer_username: "AliceOnFluxer"
+      fluxer_username: "AliceOnFluxer#1136"
       fluxer_auth_key: "auth_key_for_alice_goes_here"
 
   fluxer:

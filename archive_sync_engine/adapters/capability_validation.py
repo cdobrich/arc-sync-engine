@@ -1,21 +1,32 @@
-"""Validation of registered adapter roles and concrete runtime capabilities."""
+"""Validate consistency between adapter roles and concrete runtimes."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from .destination_registry import default_destination_runtime_registry
-from .registry import AdapterRegistry, default_adapter_registry
+from .registry import default_adapter_registry
 from .source_registry import default_source_runtime_registry
-from .sync_registry import SyncPairRegistry, default_sync_pair_registry
-from typing import TYPE_CHECKING
+from .sync_registry import default_sync_pair_registry
 
-if TYPE_CHECKING:
-    from archive_sync_engine.sync.runtime_registry import SyncRuntimeRegistry
+
+def default_sync_runtime_registry():
+    """Lazily resolve the synchronization runtime registry.
+
+    Keeping this import behind a function boundary prevents importing the
+    adapters package from eagerly initializing the synchronization subsystem,
+    whose executor depends on adapter interfaces. The indirection also keeps
+    this dependency patchable for capability-validation tests.
+    """
+    from archive_sync_engine.sync.runtime_registry import (
+        default_sync_runtime_registry as _default_sync_runtime_registry,
+    )
+
+    return _default_sync_runtime_registry()
 
 
 @dataclass(frozen=True, slots=True)
 class AdapterCapabilityReport:
-    """Read-only consistency report for adapter/runtime registration."""
+    """Result of validating registered adapter/runtime capabilities."""
 
     errors: tuple[str, ...] = ()
 
@@ -24,83 +35,40 @@ class AdapterCapabilityReport:
         return not self.errors
 
 
-def validate_adapter_capabilities(
-    *,
-    adapters: AdapterRegistry | None = None,
-    source_runtimes=None,
-    destination_runtimes=None,
-    sync_pairs: SyncPairRegistry | None = None,
-    sync_runtimes: SyncRuntimeRegistry | None = None,
-) -> AdapterCapabilityReport:
-    """Validate consistency across adapter roles and concrete runtimes.
-
-    This performs registration-only checks. It does not instantiate runtimes,
-    resolve credentials, contact external services, or modify an Archive.
-    """
-    adapters = adapters or default_adapter_registry()
-    source_runtimes = source_runtimes or default_source_runtime_registry()
-    destination_runtimes = destination_runtimes or default_destination_runtime_registry()
-    sync_pairs = sync_pairs or default_sync_pair_registry()
-    if sync_runtimes is None:
-        from archive_sync_engine.sync.runtime_registry import default_sync_runtime_registry
-
-        sync_runtimes = default_sync_runtime_registry()
-
+def validate_adapter_capabilities() -> AdapterCapabilityReport:
+    """Ensure role, runtime, pair, and synchronization registrations agree."""
+    adapters = default_adapter_registry().list()
+    sources = set(default_source_runtime_registry().names())
+    destinations = set(default_destination_runtime_registry().names())
+    pairs = {pair.key for pair in default_sync_pair_registry().list()}
+    runtimes = set(default_sync_runtime_registry().keys())
     errors: list[str] = []
-    descriptors = {descriptor.name: descriptor for descriptor in adapters.list()}
-    source_names = set(source_runtimes.list())
-    destination_names = set(destination_runtimes.list())
-    pair_keys = {pair.key for pair in sync_pairs.list()}
-    runtime_keys = set(sync_runtimes.list())
 
-    for name, descriptor in descriptors.items():
-        if descriptor.source and name not in source_names:
-            errors.append(f"Adapter {name!r} is source-enabled but has no source runtime.")
-        if descriptor.destination and name not in destination_names:
+    for descriptor in adapters:
+        if descriptor.source and descriptor.name not in sources:
             errors.append(
-                f"Adapter {name!r} is destination-enabled but has no destination runtime."
+                f"Adapter {descriptor.name!r} supports source/import use but has no source runtime."
+            )
+        if descriptor.destination and descriptor.name not in destinations:
+            errors.append(
+                f"Adapter {descriptor.name!r} supports destination use but has no destination runtime."
             )
 
-    for name in sorted(source_names):
-        descriptor = descriptors.get(name)
-        if descriptor is None:
+    adapter_names = {descriptor.name for descriptor in adapters}
+    for name in sorted(sources):
+        if name not in adapter_names:
             errors.append(f"Source runtime {name!r} has no registered adapter descriptor.")
-        elif not descriptor.source:
-            errors.append(f"Source runtime {name!r} is registered for a non-source adapter.")
+    for name in sorted(destinations):
+        if name not in adapter_names:
+            errors.append(f"Destination runtime {name!r} has no registered adapter descriptor.")
 
-    for name in sorted(destination_names):
-        descriptor = descriptors.get(name)
-        if descriptor is None:
+    for source, destination in sorted(pairs):
+        if (source, destination) not in runtimes:
             errors.append(
-                f"Destination runtime {name!r} has no registered adapter descriptor."
+                f"Supported sync pair {source!r} -> {destination!r} has no synchronization runtime."
             )
-        elif not descriptor.destination:
-            errors.append(
-                f"Destination runtime {name!r} is registered for a non-destination adapter."
-            )
-
-    for source, destination in sorted(pair_keys):
-        source_descriptor = descriptors.get(source)
-        destination_descriptor = descriptors.get(destination)
-        if source_descriptor is None:
-            errors.append(f"Sync pair {source!r} -> {destination!r} has no source adapter descriptor.")
-        elif not source_descriptor.source:
-            errors.append(f"Sync pair {source!r} -> {destination!r} uses a non-source adapter.")
-        if destination_descriptor is None:
-            errors.append(
-                f"Sync pair {source!r} -> {destination!r} has no destination adapter descriptor."
-            )
-        elif not destination_descriptor.destination:
-            errors.append(
-                f"Sync pair {source!r} -> {destination!r} uses a non-destination adapter."
-            )
-        if (source, destination) not in runtime_keys:
-            errors.append(
-                f"Sync pair {source!r} -> {destination!r} has no synchronization runtime."
-            )
-
-    for source, destination in sorted(runtime_keys):
-        if (source, destination) not in pair_keys:
+    for source, destination in sorted(runtimes):
+        if (source, destination) not in pairs:
             errors.append(
                 f"Synchronization runtime {source!r} -> {destination!r} has no supported sync pair."
             )

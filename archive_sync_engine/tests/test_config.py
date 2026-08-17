@@ -338,51 +338,42 @@ user_mappings:
         setup.resolve_credentials()
 
 
-def test_load_yaml_setup_supports_adapter_neutral_input_selection(tmp_path: Path) -> None:
+def test_setup_configuration_accepts_generic_input_adapter_and_scope(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
-    config.write_text(
-        """
+    config.write_text("""
 archive:
   path: ./archive
 input:
-  adapter: fluxer
+  adapter: Fluxer
   scope:
-    - "1375567890027713164"
+    - "server-1"
+    - "server-2"
 discord:
-  token: discord
+  token: discord-secret
   guild_id: 123
 fluxer:
-  token: fluxer
-  server_id: 456
-""",
-        encoding="utf-8",
-    )
+  token: fluxer-secret
+  server_id: fluxer-server
+""", encoding="utf-8")
 
     setup = load_setup_configuration(config)
-
     assert setup.input_adapter == "fluxer"
-    assert setup.input_scope == ("1375567890027713164",)
+    assert setup.input_scope == ("server-1", "server-2")
 
 
-def test_load_yaml_setup_defaults_input_selection_to_discord_configuration(
-    tmp_path: Path,
-) -> None:
+def test_setup_configuration_defaults_generic_input_to_discord_scope(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
-    config.write_text(
-        """
+    config.write_text("""
 archive:
   path: ./archive
 discord:
-  token: discord
+  token: discord-secret
   guild_id: 123
 fluxer:
-  token: fluxer
-  server_id: 456
-""",
-        encoding="utf-8",
-    )
+  token: fluxer-secret
+  server_id: fluxer-server
+""", encoding="utf-8")
 
     setup = load_setup_configuration(config)
-
     assert setup.input_adapter == "discord"
     assert setup.input_scope == ()

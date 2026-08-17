@@ -143,12 +143,12 @@ class SetupConfiguration:
 
     source_config_path: Path
     archive_path: Path
-    input_adapter: str
-    input_scope: tuple[str, ...]
     discord_token: SecretSource
     discord_guild_ids: tuple[int, ...]
     fluxer_token: SecretSource
     fluxer_guild_id: str
+    input_adapter: str = "discord"
+    input_scope: tuple[str, ...] = ()
     identity_mappings: tuple[SetupUserMapping, ...] = ()
     fluxer_user_mappings: tuple[SetupUserMapping, ...] = ()
     between_messages_seconds: float = 0.0
@@ -242,17 +242,9 @@ def load_setup_configuration(path: str | Path) -> SetupConfiguration:
     fluxer = _mapping(raw, "fluxer")
     delays = _mapping(raw, "delays", required=False)
     mappings = _mapping(raw, "user_mappings", required=False)
+    input_config = _mapping(raw, "input", required=False)
 
     archive_path = _required_string(archive, "path", "archive.path")
-
-    input_config = _mapping(raw, "input", required=False)
-    input_adapter = _optional_identifier(input_config, "adapter", "input.adapter") or "discord"
-    input_scope_value = input_config.get("scope")
-    if input_scope_value is None:
-        input_scope: tuple[str, ...] = ()
-    else:
-        input_scope = _scope_values(input_scope_value, "input.scope")
-
     discord_token = _secret_source(discord, "token", "token_file", "discord")
     fluxer_token = _secret_source(fluxer, "token", "token_file", "fluxer")
 
@@ -260,6 +252,21 @@ def load_setup_configuration(path: str | Path) -> SetupConfiguration:
     if discord_guild_value is None:
         discord_guild_value = discord.get("guild_ids")
     discord_guild_ids = _guild_ids(discord_guild_value, "discord.guild_id")
+
+    input_adapter = str(input_config.get("adapter", "discord")).strip().lower()
+    if not input_adapter:
+        raise ConfigurationError("input.adapter must not be empty.")
+    raw_input_scope = input_config.get("scope")
+    if raw_input_scope is None:
+        input_scope = ()
+    elif isinstance(raw_input_scope, (list, tuple)):
+        input_scope = tuple(str(value).strip() for value in raw_input_scope)
+        if any(not value for value in input_scope):
+            raise ConfigurationError("input.scope values must not be empty.")
+    else:
+        input_scope = (str(raw_input_scope).strip(),)
+        if not input_scope[0]:
+            raise ConfigurationError("input.scope values must not be empty.")
 
     fluxer_guild_id = _required_identifier(
         fluxer,
@@ -281,45 +288,17 @@ def load_setup_configuration(path: str | Path) -> SetupConfiguration:
     return SetupConfiguration(
         source_config_path=config_path,
         archive_path=Path(archive_path).expanduser(),
-        input_adapter=input_adapter,
-        input_scope=input_scope,
         discord_token=discord_token,
         discord_guild_ids=discord_guild_ids,
         fluxer_token=fluxer_token,
         fluxer_guild_id=fluxer_guild_id,
+        input_adapter=input_adapter,
+        input_scope=input_scope,
         identity_mappings=identity_mappings,
         fluxer_user_mappings=fluxer_user_mappings,
         between_messages_seconds=between_messages,
         between_channels_seconds=between_channels,
     )
-
-
-def _optional_identifier(
-    mapping: Mapping[str, Any],
-    key: str,
-    label: str,
-) -> str | None:
-    value = mapping.get(key)
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ConfigurationError(f"{label} must be a non-empty string.")
-    value = value.strip().lower()
-    if not value:
-        raise ConfigurationError(f"{label} must be a non-empty string.")
-    return value
-
-
-def _scope_values(value: Any, label: str) -> tuple[str, ...]:
-    if isinstance(value, (str, int)):
-        values = (str(value),)
-    elif isinstance(value, (list, tuple)):
-        values = tuple(str(item).strip() for item in value)
-    else:
-        raise ConfigurationError(f"{label} must be a string, integer, or YAML sequence.")
-    if not values or any(not item for item in values):
-        raise ConfigurationError(f"{label} values must not be empty.")
-    return values
 
 
 def _parse_user_mappings(

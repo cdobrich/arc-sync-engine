@@ -85,7 +85,7 @@ class SyncCoordinator:
             )
         )
 
-    def synchronize(self) -> None:
+    def synchronize(self) -> tuple[ExecutionResult, ...]:
         """
         Perform one synchronization run.
 
@@ -98,6 +98,8 @@ class SyncCoordinator:
 
         If execution raises an exception, the exception propagates and no
         execution result is recorded for that operation.
+
+        Returns the successful execution results in planner order.
         """
 
         synchronization_state: SynchronizationState = (
@@ -107,6 +109,8 @@ class SyncCoordinator:
         execution_context = ExecutionContext.from_synchronization_state(
             synchronization_state,
         )
+
+        results: list[ExecutionResult] = []
 
         operations: Iterator[SyncOperation] = self._planner.plan(
             archive=self._archive,
@@ -133,3 +137,6 @@ class SyncCoordinator:
                 result=result,
                 synchronization_state=synchronization_state,
             )
+            results.append(result)
+
+        return tuple(results)

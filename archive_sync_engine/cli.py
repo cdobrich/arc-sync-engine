@@ -13,7 +13,6 @@ from archive_sync_engine.logging_support import (
 )
 
 from archive_sync_engine.adapters import (
-    validate_adapter_capabilities,
     DestinationRuntimeRequest,
     SourceRuntimeRequest,
     default_adapter_registry,
@@ -33,7 +32,10 @@ from archive_sync_engine.exporter import CanonicalExporter
 from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
 from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
 from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
-from archive_sync_engine.sync.discord_fluxer_runtime import DiscordFluxerSyncConfig
+from archive_sync_engine.sync.discord_fluxer_runtime import (
+    DiscordFluxerSyncConfig,
+    DiscordFluxerSyncRuntime,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -86,8 +88,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     import_command.add_argument(
         "--input-adapter",
-        default=None,
-        help="Registered source adapter to import from (defaults to input.adapter in YAML).",
+        default="discord",
+        help="Registered source adapter to import from (default: discord).",
     )
     import_command.add_argument(
         "--input-scope",
@@ -301,15 +303,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="List adapter roles registered with the application.",
     )
     adapters.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate consistency between adapter roles and concrete runtimes.",
+    )
+    adapters.add_argument(
         "--json",
         action="store_true",
         dest="as_json",
         help="Emit machine-readable JSON.",
-    )
-    adapters.add_argument(
-        "--validate",
-        action="store_true",
-        help="Validate adapter roles, runtimes, and synchronization pairs without executing work.",
     )
     add_logging_options(adapters)
 
@@ -378,33 +380,28 @@ def _parse_identity_mappings(values: Sequence[str]) -> tuple[FluxerIdentityMappi
 
 
 def _run_adapters(args: argparse.Namespace) -> int:
-    """List adapter roles, runtime implementations, and sync combinations."""
+    """List registered adapters/runtimes or validate their consistency."""
+    from archive_sync_engine.adapters.capability_validation import validate_adapter_capabilities
+
+    capability_report = validate_adapter_capabilities()
     if args.validate:
-        report = validate_adapter_capabilities()
         if args.as_json:
             import json
-
-            print(
-                json.dumps(
-                    {"valid": report.valid, "errors": list(report.errors)},
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
-        elif report.valid:
-            print("Adapter capability validation: OK")
+            print(json.dumps({"valid": capability_report.valid, "errors": list(capability_report.errors)}, sort_keys=True))
         else:
-            print("Adapter capability validation: FAILED")
-            for error in report.errors:
-                print(f"- {error}")
-        return 0 if report.valid else 2
+            print("Adapter capability validation: " + ("OK" if capability_report.valid else "FAILED"))
+            for error in capability_report.errors:
+                print(f"ERROR: {error}")
+        return 0 if capability_report.valid else 2
 
     descriptors = default_adapter_registry().list()
-    source_runtimes = default_source_runtime_registry().list()
-    destination_runtimes = default_destination_runtime_registry().list()
-    sync_pairs = default_sync_pair_registry().list()
-    sync_runtimes = default_sync_runtime_registry().list()
-
+    pairs = default_sync_pair_registry().list()
+    source_runtimes = list(default_source_runtime_registry().names())
+    destination_runtimes = list(default_destination_runtime_registry().names())
+    sync_runtimes = [
+        {"input_adapter": source, "destination_adapter": destination}
+        for source, destination in default_sync_runtime_registry().keys()
+    ]
     if args.as_json:
         import json
 
@@ -420,22 +417,16 @@ def _run_adapters(args: argparse.Namespace) -> int:
                         }
                         for descriptor in descriptors
                     ],
-                    "source_runtimes": list(source_runtimes),
-                    "destination_runtimes": list(destination_runtimes),
+                    "source_runtimes": source_runtimes,
+                    "destination_runtimes": destination_runtimes,
+                    "sync_runtimes": sync_runtimes,
                     "sync_pairs": [
                         {
                             "input_adapter": pair.input_adapter,
                             "destination_adapter": pair.destination_adapter,
                             "description": pair.description,
                         }
-                        for pair in sync_pairs
-                    ],
-                    "sync_runtimes": [
-                        {
-                            "input_adapter": source,
-                            "destination_adapter": destination,
-                        }
-                        for source, destination in sync_runtimes
+                        for pair in pairs
                     ],
                 },
                 indent=2,
@@ -457,17 +448,16 @@ def _run_adapters(args: argparse.Namespace) -> int:
         print("\nREGISTERED DESTINATION RUNTIMES")
         for name in destination_runtimes:
             print(name)
+        print("\nREGISTERED SYNC RUNTIMES")
+        for runtime in sync_runtimes:
+            print(f"{runtime['input_adapter']}\t{runtime['destination_adapter']}")
         print("\nSUPPORTED SYNC PAIRS")
         print("INPUT\tDESTINATION\tDESCRIPTION")
-        for pair in sync_pairs:
+        for pair in pairs:
             print(
                 f"{pair.input_adapter}\t{pair.destination_adapter}\t"
                 f"{pair.description}"
             )
-        print("\nREGISTERED SYNC RUNTIMES")
-        print("INPUT\tDESTINATION")
-        for source, destination in sync_runtimes:
-            print(f"{source}\t{destination}")
     return 0
 
 
@@ -637,6 +627,7 @@ def _run_diagnostics_summary(args: argparse.Namespace) -> int:
 
 def _run_preflight(args: argparse.Namespace) -> int:
     """Validate all local prerequisites for a configured run without side effects."""
+    from archive_sync_engine.adapters.capability_validation import validate_adapter_capabilities
     setup = load_setup_configuration(args.config)
     archive_path = (
         args.archive.expanduser().resolve()
@@ -644,7 +635,12 @@ def _run_preflight(args: argparse.Namespace) -> int:
         else setup.resolved_archive_path().expanduser().resolve()
     )
 
+    capability_report = validate_adapter_capabilities()
     checks: dict[str, object] = {
+        "adapter_capabilities": {
+            "valid": capability_report.valid,
+            "errors": list(capability_report.errors),
+        },
         "configuration": {
             "valid": True,
             "path": str(setup.source_config_path),
@@ -682,6 +678,7 @@ def _run_preflight(args: argparse.Namespace) -> int:
         and checks["configuration"]["credentials_resolved"]
         and checks["archive"]["initialized"]
         and checks["archive"]["valid"]
+        and checks["adapter_capabilities"]["valid"]
     )
     checks["ready"] = ready
 
@@ -691,6 +688,10 @@ def _run_preflight(args: argparse.Namespace) -> int:
     else:
         configuration = checks["configuration"]
         archive = checks["archive"]
+        capability_status = "VALID" if checks["adapter_capabilities"]["valid"] else "INVALID"
+        print(f"Adapter capabilities: {capability_status}")
+        for error in checks["adapter_capabilities"]["errors"]:
+            print(f"ERROR: {error}")
         print(f"Configuration: VALID ({configuration['path']})")
         print(f"Credentials: {'RESOLVED' if configuration['credentials_resolved'] else 'INVALID'}")
         print(f"Identity mappings: {configuration['identity_mappings']}")
@@ -821,7 +822,7 @@ def _run_import(args: argparse.Namespace) -> int:
         if any(not value for value in scope):
             raise ConfigurationError("Input scope values must not be empty.")
     elif setup.input_scope:
-        scope = tuple(setup.input_scope)
+        scope = setup.input_scope
     elif adapter_name == "discord":
         scope = tuple(str(value) for value in setup.discord_guild_ids)
     else:
@@ -953,12 +954,13 @@ def _run_export(args: argparse.Namespace) -> int:
         raise ConfigurationError(str(exc)) from exc
 
     with Archive(paths) as archive, runtime:
-        CanonicalExporter().export(
+        report = CanonicalExporter().export(
             archive=archive,
             destination=runtime.adapter,
             asset_store=archive.asset_store,
         )
 
+    print(f"Export completed: {report.executed_operations} operations executed.")
     return 0
 
 
@@ -1178,7 +1180,26 @@ def _run_sync(args: argparse.Namespace) -> int:
             )
         )
 
-    runtime_registry = default_sync_runtime_registry()
+    def build_discord_fluxer_runtime(request: SyncRuntimeRequest) -> DiscordFluxerSyncRuntime:
+        if request.input_adapter != "discord" or request.destination_adapter != "fluxer":
+            raise ConfigurationError("The current Discord/Fluxer runtime cannot handle this adapter pair.")
+        if len(request.destination_scope) != 1:
+            raise ConfigurationError("Fluxer destination scope must contain exactly one server ID.")
+        try:
+            discord_config = request.adapter_config["discord"]
+            fluxer_config = request.adapter_config["fluxer"]
+        except KeyError as exc:
+            raise ConfigurationError(f"Missing runtime configuration for adapter {exc.args[0]!r}.") from exc
+        runtime_config = DiscordFluxerSyncConfig(
+            discord=discord_config,
+            fluxer=fluxer_config,
+            fluxer_guild_id=request.destination_scope[0],
+            archive_paths=ArchivePaths(request.archive_path),
+            identity_mappings=tuple(request.adapter_config.get("identity_mappings", ())),
+        )
+        return DiscordFluxerSyncRuntime(runtime_config)
+
+    runtime_registry = default_sync_runtime_registry(build_discord_fluxer_runtime)
     runtime_request = SyncRuntimeRequest(
         input_adapter=input_adapter,
         input_scope=tuple(str(value) for value in discord_guild_ids),

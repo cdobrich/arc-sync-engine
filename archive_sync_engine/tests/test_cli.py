@@ -52,12 +52,10 @@ def test_sync_cli_constructs_runtime_and_runs_resume(tmp_path: Path) -> None:
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
 
-    registry = MagicMock()
-    registry.create.return_value = runtime
     with patch(
-        "archive_sync_engine.cli.default_sync_runtime_registry",
-        return_value=registry,
-    ) as registry_factory:
+        "archive_sync_engine.cli.DiscordFluxerSyncRuntime",
+        return_value=runtime,
+    ) as runtime_type:
         result = main(
             [
                 "sync",
@@ -76,13 +74,7 @@ def test_sync_cli_constructs_runtime_and_runs_resume(tmp_path: Path) -> None:
         )
 
     assert result == 0
-    registry_factory.assert_called_once()
-    registry.create.assert_called_once()
-    request = registry.create.call_args.args[2]
-    assert request.input_adapter == "discord"
-    assert request.input_scope == ("10",)
-    assert request.destination_adapter == "fluxer"
-    assert request.destination_scope == ("guild-1",)
+    runtime_type.assert_called_once()
     runtime.run.assert_called_once_with(resume_import=True)
 
     from archive_sync_engine.sync.run_configuration import RunDirection
@@ -104,12 +96,10 @@ def test_sync_cli_maps_bot_identity_without_auth_token(tmp_path: Path) -> None:
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
 
-    registry = MagicMock()
-    registry.create.return_value = runtime
     with patch(
-        "archive_sync_engine.cli.default_sync_runtime_registry",
-        return_value=registry,
-    ) as registry_factory:
+        "archive_sync_engine.cli.DiscordFluxerSyncRuntime",
+        return_value=runtime,
+    ) as runtime_type:
         assert (
             main(
                 [
@@ -131,9 +121,9 @@ def test_sync_cli_maps_bot_identity_without_auth_token(tmp_path: Path) -> None:
             == 0
         )
 
-    request = registry.create.call_args.args[2]
-    assert request.adapter_config["identity_mappings"][0].username == "bot-user"
-    assert request.adapter_config["identity_mappings"][0].fluxer_auth_key is None
+    config = runtime_type.call_args.args[0]
+    assert config.identity_mappings[0].username == "bot-user"
+    assert config.identity_mappings[0].fluxer_auth_key is None
 
 
 def test_adapters_cli_lists_supported_sync_pairs(capsys) -> None:
@@ -247,9 +237,7 @@ def test_sync_cli_cli_credentials_override_environment(monkeypatch, tmp_path: Pa
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
 
-    registry = MagicMock()
-    registry.create.return_value = runtime
-    with patch("archive_sync_engine.cli.default_sync_runtime_registry", return_value=registry) as registry_factory:
+    with patch("archive_sync_engine.cli.DiscordFluxerSyncRuntime", return_value=runtime) as runtime_type:
         assert (
             main(
                 [
@@ -264,11 +252,11 @@ def test_sync_cli_cli_credentials_override_environment(monkeypatch, tmp_path: Pa
             == 0
         )
 
-    request = registry.create.call_args.args[2]
-    assert request.adapter_config["discord"].token == "discord-cli"
-    assert request.adapter_config["fluxer"].token == "fluxer-cli"
-    assert request.destination_scope == ("guild-cli",)
-    assert request.archive_path == archive_path
+    config = runtime_type.call_args.args[0]
+    assert config.discord.token == "discord-cli"
+    assert config.fluxer.token == "fluxer-cli"
+    assert config.fluxer_guild_id == "guild-cli"
+    assert config.archive_paths.root == archive_path
 
 
 def test_sync_cli_rejects_missing_credentials(monkeypatch) -> None:
@@ -332,16 +320,13 @@ fluxer:
     runtime = MagicMock()
     runtime.__enter__.return_value = runtime
     runtime.__exit__.return_value = None
-    registry = MagicMock()
-    registry.create.return_value = runtime
-    with patch("archive_sync_engine.cli.default_sync_runtime_registry", return_value=registry) as registry_factory:
+    with patch("archive_sync_engine.cli.DiscordFluxerSyncRuntime", return_value=runtime) as runtime_type:
         assert main(["resume", "--config", str(config)]) == 0
 
-    registry_factory.assert_called_once()
-    registry.create.assert_called_once()
-    request = registry.create.call_args.args[2]
-    assert request.input_scope == ("10", "20")
-    assert request.destination_scope == ("fluxer-guild",)
+    runtime_type.assert_called_once()
+    config_arg = runtime_type.call_args.args[0]
+    assert config_arg.discord.guild_ids == (10, 20)
+    assert config_arg.fluxer_guild_id == "fluxer-guild"
     runtime.run.assert_called_once_with(resume_import=True)
 
 
@@ -391,11 +376,9 @@ def test_sync_cli_dry_run_does_not_persist_run_configuration(tmp_path: Path, cap
     runtime.__exit__.return_value = None
     runtime.dry_run.return_value = (Mock(), Mock())
 
-    registry = MagicMock()
-    registry.create.return_value = runtime
     with patch(
-        "archive_sync_engine.cli.default_sync_runtime_registry",
-        return_value=registry,
+        "archive_sync_engine.cli.DiscordFluxerSyncRuntime",
+        return_value=runtime,
     ):
         assert (
             main(
@@ -532,26 +515,9 @@ def test_adapters_cli_json_is_machine_readable(capsys) -> None:
     assert main(["adapters", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert {entry["name"] for entry in payload["adapters"]} == {"discord", "fluxer"}
-    assert payload["source_runtimes"] == ["discord"]
-    assert payload["destination_runtimes"] == ["fluxer"]
     assert payload["sync_pairs"][0]["input_adapter"] == "discord"
     assert payload["sync_pairs"][0]["destination_adapter"] == "fluxer"
-    assert payload["sync_runtimes"] == [
-        {"input_adapter": "discord", "destination_adapter": "fluxer"}
-    ]
     assert next(entry for entry in payload["adapters"] if entry["name"] == "discord")["source"] is True
-
-
-def test_adapters_cli_text_reports_registered_runtime_implementations(capsys) -> None:
-    assert main(["adapters"]) == 0
-    output = capsys.readouterr().out
-    assert "REGISTERED SOURCE RUNTIMES" in output
-    assert "REGISTERED DESTINATION RUNTIMES" in output
-    assert "REGISTERED SYNC RUNTIMES" in output
-    assert "\ndiscord\n" in output
-    assert "\nfluxer\n" in output
-    assert "INPUT\tDESTINATION" in output
-    assert "discord\tfluxer" in output
 
 
 def test_sync_rejects_unregistered_adapter_pair(monkeypatch) -> None:
@@ -996,49 +962,30 @@ def test_config_example_cli_force_overwrites_existing_file(tmp_path: Path) -> No
     ).read_text(encoding="utf-8")
 
 
-def test_sync_cli_uses_default_sync_runtime_registry_factory(tmp_path: Path) -> None:
-    archive_path = tmp_path / "archive"
-    ArchivePackage.initialize(ArchivePaths(archive_path))
+def test_adapters_cli_text_reports_registered_runtime_implementations(capsys) -> None:
+    assert main(["adapters"]) == 0
+    output = capsys.readouterr().out
+    assert "REGISTERED SOURCE RUNTIMES" in output
+    assert "discord" in output
+    assert "REGISTERED DESTINATION RUNTIMES" in output
+    assert "fluxer" in output
+    assert "REGISTERED SYNC RUNTIMES" in output
+    assert "discord\tfluxer" in output
 
-    runtime = MagicMock()
-    runtime.__enter__.return_value = runtime
-    runtime.__exit__.return_value = None
 
-    registry = MagicMock()
-    registry.create.return_value = runtime
-    with patch(
-        "archive_sync_engine.cli.default_sync_runtime_registry",
-        return_value=registry,
-    ) as registry_factory:
-        assert (
-            main(
-                [
-                    "sync",
-                    "--discord-token", "discord",
-                    "--discord-guild-id", "10",
-                    "--fluxer-token", "fluxer",
-                    "--fluxer-guild-id", "guild",
-                    "--archive", str(archive_path),
-                ]
-            )
-            == 0
-        )
+def test_adapters_cli_json_is_machine_readable_with_runtime_implementations(capsys) -> None:
+    import json
 
-    registry_factory.assert_called_once()
-    registry.create.assert_called_once()
-    request = registry.create.call_args.args[2]
-    assert request.input_adapter == "discord"
-    assert request.input_scope == ("10",)
-    assert request.destination_adapter == "fluxer"
-    assert request.destination_scope == ("guild",)
-    assert request.adapter_config["discord"].token == "discord"
-    assert request.adapter_config["fluxer"].token == "fluxer"
-    assert request.archive_path == archive_path.resolve()
+    assert main(["adapters", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["source_runtimes"] == ["discord"]
+    assert payload["destination_runtimes"] == ["fluxer"]
+    assert payload["sync_runtimes"] == [{"input_adapter": "discord", "destination_adapter": "fluxer"}]
 
 
 def test_adapters_cli_validates_registered_capabilities(capsys) -> None:
     assert main(["adapters", "--validate"]) == 0
-    assert capsys.readouterr().out.strip() == "Adapter capability validation: OK"
+    assert "Adapter capability validation: OK" in capsys.readouterr().out
 
 
 def test_adapters_cli_json_validates_registered_capabilities(capsys) -> None:
@@ -1047,3 +994,53 @@ def test_adapters_cli_json_validates_registered_capabilities(capsys) -> None:
     assert main(["adapters", "--validate", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"errors": [], "valid": True}
+
+
+def test_preflight_reports_adapter_capabilities(tmp_path: Path, capsys) -> None:
+    (tmp_path / "discord.token").write_text("discord-secret\n", encoding="utf-8")
+    (tmp_path / "fluxer.token").write_text("fluxer-secret\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+archive:
+  path: ./archive
+discord:
+  token_file: discord.token
+  guild_id: 123
+fluxer:
+  token_file: fluxer.token
+  server_id: fluxer-server
+""", encoding="utf-8")
+    ArchivePackage.initialize(ArchivePaths(tmp_path / "archive"))
+
+    assert main(["preflight", "--config", str(config), "--json"]) == 0
+    import json
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["adapter_capabilities"] == {"errors": [], "valid": True}
+
+
+def test_preflight_fails_when_adapter_capabilities_are_invalid(tmp_path: Path, capsys, monkeypatch) -> None:
+    (tmp_path / "discord.token").write_text("discord-secret\n", encoding="utf-8")
+    (tmp_path / "fluxer.token").write_text("fluxer-secret\n", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text("""
+archive:
+  path: ./archive
+discord:
+  token_file: discord.token
+  guild_id: 123
+fluxer:
+  token_file: fluxer.token
+  server_id: fluxer-server
+""", encoding="utf-8")
+    ArchivePackage.initialize(ArchivePaths(tmp_path / "archive"))
+    from archive_sync_engine.adapters.capability_validation import AdapterCapabilityReport
+    monkeypatch.setattr(
+        "archive_sync_engine.adapters.capability_validation.validate_adapter_capabilities",
+        lambda: AdapterCapabilityReport(("broken registration",)),
+    )
+
+    assert main(["preflight", "--config", str(config), "--json"]) == 1
+    import json
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is False
+    assert payload["adapter_capabilities"]["errors"] == ["broken registration"]

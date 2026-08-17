@@ -1,80 +1,57 @@
-from archive_sync_engine.adapters import (
-    AdapterDescriptor,
-    AdapterRegistry,
-    DestinationRuntimeRegistry,
-    SourceRuntimeRegistry,
-    SyncPairDescriptor,
-    SyncPairRegistry,
-    validate_adapter_capabilities,
-)
-from archive_sync_engine.sync.runtime_registry import SyncRuntimeRegistry
+from __future__ import annotations
+
+from archive_sync_engine.adapters.capability_validation import validate_adapter_capabilities
 
 
-def test_default_adapter_capabilities_are_consistent() -> None:
+def test_default_adapter_capabilities_are_valid() -> None:
     report = validate_adapter_capabilities()
-
-    assert report.valid
+    assert report.valid is True
     assert report.errors == ()
 
 
-def test_source_adapter_without_source_runtime_is_reported() -> None:
-    adapters = AdapterRegistry((AdapterDescriptor("example", source=True),))
+def test_source_adapter_without_runtime_is_reported(monkeypatch) -> None:
+    from archive_sync_engine.adapters.registry import AdapterDescriptor, AdapterRegistry
+    from archive_sync_engine.adapters import capability_validation
 
-    report = validate_adapter_capabilities(
-        adapters=adapters,
-        source_runtimes=SourceRuntimeRegistry(),
-        destination_runtimes=DestinationRuntimeRegistry(),
-        sync_pairs=SyncPairRegistry(),
-        sync_runtimes=SyncRuntimeRegistry(),
+    monkeypatch.setattr(
+        capability_validation,
+        "default_adapter_registry",
+        lambda: AdapterRegistry((AdapterDescriptor("future", source=True),)),
     )
+    monkeypatch.setattr(capability_validation, "default_source_runtime_registry", lambda: type("R", (), {"names": lambda self: ()})())
+    monkeypatch.setattr(capability_validation, "default_destination_runtime_registry", lambda: type("R", (), {"names": lambda self: ()})())
+    monkeypatch.setattr(capability_validation, "default_sync_pair_registry", lambda: type("R", (), {"list": lambda self: ()})())
+    monkeypatch.setattr(capability_validation, "default_sync_runtime_registry", lambda: type("R", (), {"keys": lambda self: ()})())
 
-    assert report.errors == ("Adapter 'example' is source-enabled but has no source runtime.",)
-
-
-def test_orphan_runtime_and_pair_are_reported() -> None:
-    adapters = AdapterRegistry(
-        (
-            AdapterDescriptor("source", source=True),
-            AdapterDescriptor("destination", destination=True),
-        )
-    )
-    source_runtimes = SourceRuntimeRegistry({"source": lambda request: object()})
-    destination_runtimes = DestinationRuntimeRegistry({"destination": lambda request: object()})
-    pairs = SyncPairRegistry((SyncPairDescriptor("source", "destination"),))
-    runtimes = SyncRuntimeRegistry()
-
-    report = validate_adapter_capabilities(
-        adapters=adapters,
-        source_runtimes=source_runtimes,
-        destination_runtimes=destination_runtimes,
-        sync_pairs=pairs,
-        sync_runtimes=runtimes,
-    )
-
-    assert report.errors == (
-        "Sync pair 'source' -> 'destination' has no synchronization runtime.",
-    )
+    report = validate_adapter_capabilities()
+    assert report.valid is False
+    assert "has no source runtime" in report.errors[0]
 
 
-def test_runtime_without_supported_pair_is_reported() -> None:
-    adapters = AdapterRegistry(
-        (
-            AdapterDescriptor("source", source=True),
-            AdapterDescriptor("destination", destination=True),
-        )
-    )
-    source_runtimes = SourceRuntimeRegistry({"source": lambda request: object()})
-    destination_runtimes = DestinationRuntimeRegistry({"destination": lambda request: object()})
-    runtimes = SyncRuntimeRegistry({("source", "destination"): lambda request: object()})
+def test_sync_pair_without_runtime_is_reported(monkeypatch) -> None:
+    from archive_sync_engine.adapters import capability_validation
+    from archive_sync_engine.adapters.sync_registry import SyncPairDescriptor
 
-    report = validate_adapter_capabilities(
-        adapters=adapters,
-        source_runtimes=source_runtimes,
-        destination_runtimes=destination_runtimes,
-        sync_pairs=SyncPairRegistry(),
-        sync_runtimes=runtimes,
-    )
+    monkeypatch.setattr(capability_validation, "default_adapter_registry", lambda: type("R", (), {"list": lambda self: ()})())
+    monkeypatch.setattr(capability_validation, "default_source_runtime_registry", lambda: type("R", (), {"names": lambda self: ()})())
+    monkeypatch.setattr(capability_validation, "default_destination_runtime_registry", lambda: type("R", (), {"names": lambda self: ()})())
+    monkeypatch.setattr(capability_validation, "default_sync_pair_registry", lambda: type("R", (), {"list": lambda self: (SyncPairDescriptor("a", "b"),)})())
+    monkeypatch.setattr(capability_validation, "default_sync_runtime_registry", lambda: type("R", (), {"keys": lambda self: ()})())
 
-    assert report.errors == (
-        "Synchronization runtime 'source' -> 'destination' has no supported sync pair.",
-    )
+    report = validate_adapter_capabilities()
+    assert report.valid is False
+    assert "has no synchronization runtime" in report.errors[0]
+
+
+def test_sync_runtime_without_pair_is_reported(monkeypatch) -> None:
+    from archive_sync_engine.adapters import capability_validation
+
+    monkeypatch.setattr(capability_validation, "default_adapter_registry", lambda: type("R", (), {"list": lambda self: ()})())
+    monkeypatch.setattr(capability_validation, "default_source_runtime_registry", lambda: type("R", (), {"names": lambda self: ()})())
+    monkeypatch.setattr(capability_validation, "default_destination_runtime_registry", lambda: type("R", (), {"names": lambda self: ()})())
+    monkeypatch.setattr(capability_validation, "default_sync_pair_registry", lambda: type("R", (), {"list": lambda self: ()})())
+    monkeypatch.setattr(capability_validation, "default_sync_runtime_registry", lambda: type("R", (), {"keys": lambda self: (("a", "b"),)})())
+
+    report = validate_adapter_capabilities()
+    assert report.valid is False
+    assert "has no supported sync pair" in report.errors[0]

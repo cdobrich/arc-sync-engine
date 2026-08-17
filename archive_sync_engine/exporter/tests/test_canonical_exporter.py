@@ -141,12 +141,13 @@ def test_canonical_exporter_uses_current_operation_pipeline(
     archive, asset_store = _write_archive(paths)
     destination = RecordingDestination()
 
-    CanonicalExporter().export(
+    report = CanonicalExporter().export(
         archive,
         destination,
         asset_store,
     )
 
+    assert report.executed_operations == 3
     assert [name for name, _ in destination.calls] == [
         "create_conversation",
         "create_identity",
