@@ -31,7 +31,7 @@ from archive_sync_engine.adapters import SourceAdapter
 from archive_sync_engine.archive.package import ArchivePackage
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.archive.writer import ArchiveWriter
-from archive_sync_engine.importer import ImportState
+from archive_sync_engine.importer import ImportProgress, ImportState
 from archive_sync_engine.importer.canonical_importer import (
     CanonicalImporter,
 )
@@ -71,6 +71,7 @@ class CanonicalImportCoordinator:
         source: SourceAdapter,
         *,
         resume: bool = False,
+        on_status: Callable[[ImportProgress], None] | None = None,
     ) -> ImportReport:
         """
         Execute a complete canonical import.
@@ -121,6 +122,7 @@ class CanonicalImportCoordinator:
                     writer=writer,
                     asset_store=self._package.asset_store,
                     on_progress=checkpoint,
+                    on_status=on_status,
                     resume_state=resume_state,
                 )
 

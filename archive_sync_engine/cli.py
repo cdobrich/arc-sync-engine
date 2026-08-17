@@ -32,6 +32,7 @@ from archive_sync_engine.exporter import CanonicalExporter
 from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
 from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
 from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
+from archive_sync_engine.importer.progress import ImportProgress
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -836,6 +837,57 @@ def _run_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_import_progress(progress: ImportProgress) -> None:
+    """Render adapter-neutral import progress without exposing secrets."""
+    if progress.phase == "identities":
+        if progress.current == 0:
+            print("Importing identities...", flush=True)
+        elif progress.detail:
+            print(
+                f"Importing identity {progress.current}"
+                f" ({progress.detail})...",
+                flush=True,
+            )
+        else:
+            print(f"Importing identity {progress.current}...", flush=True)
+        return
+
+    if progress.phase == "conversations":
+        label = "Importing conversations"
+        if progress.total is not None:
+            label += f" {progress.current} of {progress.total}"
+        elif progress.current is not None:
+            label += f" {progress.current}"
+        if progress.detail:
+            label += f": {progress.detail}"
+        print(f"{label}...", flush=True)
+        return
+
+    if progress.phase == "messages":
+        label = "Importing messages"
+        if progress.total is not None:
+            label += f" {progress.current} of {progress.total}"
+        elif progress.current is not None:
+            label += f" {progress.current}"
+        if progress.detail:
+            label += f" [{progress.detail}]"
+        print(f"{label}...", flush=True)
+        return
+
+    if progress.phase == "attachments":
+        label = "Importing attachment"
+        if progress.total is not None:
+            label += f" {progress.current} of {progress.total}"
+        elif progress.current is not None:
+            label += f" {progress.current}"
+        if progress.detail:
+            label += f": {progress.detail}"
+        print(f"{label}...", flush=True)
+        return
+
+    print(f"Import phase: {progress.phase}", flush=True)
+
+
 def _run_import(args: argparse.Namespace) -> int:
     """Import one registered source adapter into an Archive Package."""
     adapter_name = (args.input_adapter or "discord").strip().lower()
@@ -919,12 +971,26 @@ def _run_import(args: argparse.Namespace) -> int:
                 f"No importer checkpoint exists in Archive Package: {paths.root}."
             ) from exc
 
+    print(
+        f"Attempting to connect to source adapter '{adapter_name}' "
+        f"(scope: {', '.join(scope)}; archive: {paths.root})...",
+        flush=True,
+    )
     runtime = source_registry.create(
         adapter_name,
         runtime_request,
     )
+    print("Connected successfully.", flush=True)
+    print(
+        f"Initiating phase: import {adapter_name} → Archive.",
+        flush=True,
+    )
     with runtime:
-        import_report = runtime.import_to_archive(paths, resume=args.resume)
+        import_report = runtime.import_to_archive(
+            paths,
+            resume=args.resume,
+            on_status=_print_import_progress,
+        )
 
     print(
         "Import completed: "

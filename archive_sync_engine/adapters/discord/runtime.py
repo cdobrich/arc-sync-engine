@@ -18,6 +18,7 @@ from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.importer.canonical_coordinator import CanonicalImportCoordinator, ImportReport
 
 from .source import DiscordSourceAdapter
+from ...importer import ImportProgress
 
 _T = TypeVar("_T")
 
@@ -200,6 +201,7 @@ class DiscordSourceRuntime:
         archive_paths: ArchivePaths,
         *,
         resume: bool = False,
+        on_status: Callable[[ImportProgress], None] | None = None,
     ) -> ImportReport:
         """Import the authenticated Discord source into an Archive Package.
 
@@ -217,6 +219,7 @@ class DiscordSourceRuntime:
         ).run(
             self.adapter,
             resume=resume,
+            on_status=on_status,
         )
 
     def close(self) -> None:

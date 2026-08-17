@@ -300,3 +300,32 @@ def test_canonical_import_coordinator_persists_import_progress(
         "conversation_id": "conversation-001",
         "message_id": "message-001",
     }
+
+def test_canonical_importer_reports_user_facing_status_without_source_specific_fields(
+    tmp_path: Path,
+) -> None:
+    paths = ArchivePaths(root=tmp_path)
+    source = FakeSourceAdapter(b"attachment-content")
+    statuses = []
+
+    with ArchiveWriter(paths) as writer:
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=AssetStore(paths.root),
+            on_status=statuses.append,
+        )
+
+    assert [(item.phase, item.current, item.total) for item in statuses] == [
+        ("identities", 0, None),
+        ("identities", 1, None),
+        ("conversations", 0, None),
+        ("conversations", 1, None),
+        ("messages", 0, None),
+        ("attachments", 1, 1),
+        ("messages", 1, None),
+    ]
+    assert statuses[1].detail == "user-001"
+    assert statuses[3].detail == "Test Conversation"
+    assert statuses[5].detail == "hello.txt"
+    assert statuses[6].detail == "message-001"

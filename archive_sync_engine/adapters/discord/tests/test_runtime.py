@@ -177,9 +177,10 @@ def test_discord_source_runtime_imports_through_canonical_coordinator(
         def __init__(self, paths: ArchivePaths) -> None:
             captured["paths"] = paths
 
-        def run(self, source, *, resume: bool = False) -> None:
+        def run(self, source, *, resume: bool = False, on_status=None):
             captured["source"] = source
             captured["resume"] = resume
+            captured["on_status"] = on_status
 
     monkeypatch.setattr(
         "archive_sync_engine.adapters.discord.runtime.CanonicalImportCoordinator",
@@ -198,6 +199,7 @@ def test_discord_source_runtime_imports_through_canonical_coordinator(
     assert captured["paths"] == paths
     assert captured["source"] is runtime.adapter
     assert captured["resume"] is True
+    assert captured["on_status"] is None
 
 
 def test_discord_source_runtime_propagates_import_report(
@@ -210,7 +212,7 @@ def test_discord_source_runtime_propagates_import_report(
         def __init__(self, paths: ArchivePaths) -> None:
             pass
 
-        def run(self, source, *, resume: bool = False) -> ImportReport:
+        def run(self, source, *, resume: bool = False, on_status=None) -> ImportReport:
             return report
 
     monkeypatch.setattr(

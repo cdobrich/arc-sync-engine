@@ -13,6 +13,58 @@ from archive_sync_engine.archive import validate_archive_package
 
 
 
+def test_print_import_progress_renders_adapter_neutral_phases(capsys) -> None:
+    from archive_sync_engine.cli import _print_import_progress
+    from archive_sync_engine.importer.progress import ImportProgress
+
+    _print_import_progress(ImportProgress(phase="identities", current=1, detail="user-1"))
+    _print_import_progress(ImportProgress(phase="conversations", current=2, total=4, detail="General"))
+    _print_import_progress(ImportProgress(phase="messages", current=3, total=10, detail="message-3"))
+    _print_import_progress(ImportProgress(phase="attachments", current=1, total=2, detail="photo.png"))
+
+    output = capsys.readouterr().out
+    assert "Importing identity 1 (user-1)..." in output
+    assert "Importing conversations 2 of 4: General..." in output
+    assert "Importing messages 3 of 10 [message-3]..." in output
+    assert "Importing attachment 1 of 2: photo.png..." in output
+
+
+def test_import_cli_reports_connection_and_phase_status(tmp_path: Path, capsys) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.import_to_archive.return_value = type(
+        "Report",
+        (),
+        dict(identities=1, conversations=1, messages=2, attachments=0),
+    )()
+    registry = MagicMock()
+    registry.create.return_value = runtime
+
+    with patch("archive_sync_engine.cli.default_source_runtime_registry", return_value=registry):
+        assert main(["import", "--config", str(config)]) == 0
+
+    output = capsys.readouterr().out
+    assert "Attempting to connect to source adapter 'discord'" in output
+    assert "Connected successfully." in output
+    assert "Initiating phase: import discord → Archive." in output
+    assert "Import completed: 1 identities, 1 conversations, 2 messages, 0 attachments." in output
+
+
 def test_sync_invocation_translates_platform_cli_flags_at_boundary() -> None:
     from archive_sync_engine.cli import _sync_invocation_from_args, _SyncInvocation
 
@@ -544,10 +596,11 @@ fluxer:
     assert request.scope == ("123",)
     assert request.archive_path == archive_path.resolve()
     assert request.adapter_config["discord"].token == "discord-secret"
-    runtime.import_to_archive.assert_called_once_with(
-        ArchivePaths(archive_path.resolve()),
-        resume=False,
-    )
+    runtime.import_to_archive.assert_called_once()
+    import_call = runtime.import_to_archive.call_args
+    assert import_call.args == (ArchivePaths(archive_path.resolve()),)
+    assert import_call.kwargs["resume"] is False
+    assert callable(import_call.kwargs["on_status"])
 
     persisted = ArchivePackage(ArchivePaths(archive_path)).load_run_configuration()
     assert persisted.direction is RunDirection.IMPORT
@@ -603,10 +656,11 @@ discord:
     ):
         assert main(["import", "--config", str(config)]) == 0
 
-    assert (
-        capsys.readouterr().out
-        == "Import completed: 4 identities, 2 conversations, 17 messages, 3 attachments.\n"
-    )
+    output = capsys.readouterr().out
+    assert "Attempting to connect to source adapter 'discord'" in output
+    assert "Connected successfully." in output
+    assert "Initiating phase: import discord → Archive." in output
+    assert "Import completed: 4 identities, 2 conversations, 17 messages, 3 attachments." in output
 
 
 def test_import_cli_resume_uses_persisted_scope_and_current_credentials(
@@ -667,10 +721,11 @@ fluxer:
     assert request.adapter == "discord"
     assert request.scope == ("10", "20")
     assert request.adapter_config["discord"].token == "current-discord-secret"
-    runtime.import_to_archive.assert_called_once_with(
-        ArchivePaths(archive_path.resolve()),
-        resume=True,
-    )
+    runtime.import_to_archive.assert_called_once()
+    import_call = runtime.import_to_archive.call_args
+    assert import_call.args == (ArchivePaths(archive_path.resolve()),)
+    assert import_call.kwargs["resume"] is True
+
 
 
 def test_import_cli_resume_rejects_scope_changes_against_persisted_run(

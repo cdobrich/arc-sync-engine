@@ -34,8 +34,10 @@ Import Pipeline
 
 from .session import ImportSession
 from .state import ImportState
+from .progress import ImportProgress
 
 __all__ = [
     "ImportSession",
     "ImportState",
+    "ImportProgress",
 ]

@@ -7,11 +7,12 @@ its canonical ``SourceAdapter`` to the application import workflow.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable
 
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.adapters.source import SourceAdapter
 from archive_sync_engine.importer.canonical_coordinator import ImportReport
+from archive_sync_engine.importer.progress import ImportProgress
 
 
 class SourceImportRuntime(ABC):
@@ -26,6 +27,7 @@ class SourceImportRuntime(ABC):
         archive_paths: ArchivePaths,
         *,
         resume: bool = False,
+        on_status: Callable[[ImportProgress], None] | None = None,
     ) -> ImportReport:
         """Import the runtime's source into the supplied Archive Package."""
         raise NotImplementedError

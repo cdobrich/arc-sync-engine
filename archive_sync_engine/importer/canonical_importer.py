@@ -24,11 +24,12 @@ of that progress remains the responsibility of the coordinator.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sized
 
 from archive_sync_engine.adapters import SourceAdapter
 from archive_sync_engine.archive.writer import ArchiveWriter
 from archive_sync_engine.asset_store import AssetStore
+from archive_sync_engine.importer.progress import ImportProgress
 from archive_sync_engine.importer.state import ImportState
 
 
@@ -49,10 +50,8 @@ class CanonicalImporter:
         source: SourceAdapter,
         writer: ArchiveWriter,
         asset_store: AssetStore,
-        on_progress: Callable[
-            [ImportState],
-            None,
-        ] | None = None,
+        on_progress: Callable[[ImportState], None] | None = None,
+        on_status: Callable[[ImportProgress], None] | None = None,
         resume_state: ImportState | None = None,
     ) -> None:
         """
@@ -83,8 +82,20 @@ class CanonicalImporter:
         #
 
         if resume_state is None:
+            if on_status is not None:
+                on_status(ImportProgress(phase="identities", current=0))
+            identity_count = 0
             for identity in source.iter_identities():
                 writer.add_identity(identity)
+                identity_count += 1
+                if on_status is not None:
+                    on_status(
+                        ImportProgress(
+                            phase="identities",
+                            current=identity_count,
+                            detail=str(identity.identity_key),
+                        )
+                    )
 
         #
         # Conversations and messages
@@ -105,9 +116,31 @@ class CanonicalImporter:
 
         resume_reached = resume_state is None
 
-        for conversation in source.iter_conversations():
+        conversations = source.iter_conversations()
+        conversation_total = len(conversations) if isinstance(conversations, Sized) else None
+        if on_status is not None:
+            on_status(
+                ImportProgress(
+                    phase="conversations",
+                    current=0,
+                    total=conversation_total,
+                )
+            )
+        conversation_count = 0
+
+        for conversation in conversations:
 
             conversation_id = str(conversation.id)
+            conversation_count += 1
+            if on_status is not None:
+                on_status(
+                    ImportProgress(
+                        phase="conversations",
+                        current=conversation_count,
+                        total=conversation_total,
+                        detail=str(getattr(conversation, "title", None) or conversation.id),
+                    )
+                )
 
             resume_conversation = False
             if resume_state is not None and not resume_reached:
@@ -126,9 +159,20 @@ class CanonicalImporter:
                 and resume_message_id is not None
             )
 
-            for message in source.iter_messages(
-                conversation,
-            ):
+            messages = source.iter_messages(conversation)
+            message_total = len(messages) if isinstance(messages, Sized) else None
+            message_count = 0
+            if on_status is not None:
+                on_status(
+                    ImportProgress(
+                        phase="messages",
+                        current=0,
+                        total=message_total,
+                        detail=conversation_id,
+                    )
+                )
+
+            for message in messages:
 
                 if skipping_messages:
                     if str(message.id) == str(resume_message_id):
@@ -146,6 +190,7 @@ class CanonicalImporter:
                 writer.add_message(
                     message,
                 )
+                message_count += 1
 
                 #
                 # Persist attachment bytes separately from metadata.
@@ -154,7 +199,19 @@ class CanonicalImporter:
                 # the canonical attachment SHA-256.
                 #
 
-                for attachment in message.attachments:
+                for attachment_index, attachment in enumerate(
+                    message.attachments,
+                    start=1,
+                ):
+                    if on_status is not None:
+                        on_status(
+                            ImportProgress(
+                                phase="attachments",
+                                current=attachment_index,
+                                total=len(message.attachments),
+                                detail=str(attachment.filename),
+                            )
+                        )
 
                     content = source.attachment_bytes(
                         attachment,
@@ -171,6 +228,16 @@ class CanonicalImporter:
                 #
                 # The importer does not interpret or persist this state.
                 #
+
+                if on_status is not None:
+                    on_status(
+                        ImportProgress(
+                            phase="messages",
+                            current=message_count,
+                            total=message_total,
+                            detail=str(message.id),
+                        )
+                    )
 
                 if on_progress is not None:
 
