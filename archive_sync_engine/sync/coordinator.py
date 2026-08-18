@@ -20,7 +20,7 @@ It deliberately does not:
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from archive_sync_engine.archive import Archive
 from archive_sync_engine.adapters import (
@@ -36,6 +36,7 @@ from archive_sync_engine.operations import SyncOperation
 from archive_sync_engine.planner import Planner
 from archive_sync_engine.repository import StateRepository
 
+from .progress import SyncProgress
 from .synchronization_state import SynchronizationState
 
 
@@ -58,6 +59,7 @@ class SyncCoordinator:
         destination: DestinationAdapter,
         capabilities: DestinationCapabilities,
         state_repository: StateRepository,
+        on_status: Callable[[SyncProgress], None] | None = None,
     ) -> None:
         self._archive = archive
         self._planner = planner
@@ -65,6 +67,7 @@ class SyncCoordinator:
         self._destination = destination
         self._capabilities = capabilities
         self._state_repository = state_repository
+        self._on_status = on_status
 
     def dry_run(self) -> tuple[SyncOperation, ...]:
         """Plan synchronization without executing or persisting anything.
@@ -118,7 +121,20 @@ class SyncCoordinator:
             capabilities=self._capabilities,
         )
 
+        phase_counts: dict[str, int] = {}
+
         for operation in operations:
+            phase = _progress_phase(operation)
+            phase_counts[phase] = phase_counts.get(phase, 0) + 1
+            if self._on_status is not None:
+                self._on_status(
+                    SyncProgress(
+                        phase=phase,
+                        current=phase_counts[phase],
+                        detail=_progress_detail(operation),
+                    )
+                )
+
             result: ExecutionResult = self._executor.execute(
                 operation=operation,
                 destination=self._destination,
@@ -140,3 +156,46 @@ class SyncCoordinator:
             results.append(result)
 
         return tuple(results)
+
+
+
+def _progress_phase(operation: SyncOperation) -> str:
+    """Map an operation to an adapter-neutral user-facing progress phase."""
+    name = type(operation).__name__
+    if "Conversation" in name:
+        return "conversations"
+    if "Identity" in name:
+        return "identities"
+    if "Attachment" in name:
+        return "attachments"
+    if "Reaction" in name:
+        return "reactions"
+    if "Reply" in name:
+        return "replies"
+    if "Message" in name:
+        return "messages"
+    return "operations"
+
+
+def _progress_detail(operation: SyncOperation) -> str | None:
+    """Return a safe canonical identifier for a progress event."""
+    for attribute in (
+        "conversation",
+        "identity",
+        "message",
+        "message_id",
+        "identity_key",
+        "conversation_id",
+    ):
+        value = getattr(operation, attribute, None)
+        if value is None:
+            continue
+        if attribute in {"conversation", "identity", "message"}:
+            identifier = getattr(value, "id", None) or getattr(
+                value, "identity_key", None
+            )
+            if identifier is not None:
+                return str(identifier)
+        else:
+            return str(value)
+    return None

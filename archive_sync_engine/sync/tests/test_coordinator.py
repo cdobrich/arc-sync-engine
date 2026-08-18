@@ -60,6 +60,7 @@ from archive_sync_engine.models.ids import (
 )
 from archive_sync_engine.operations import (
     CreateConversationOperation,
+    CreateMessageOperation,
     EditMessageOperation,
     PinMessageOperation,
 )
@@ -168,6 +169,55 @@ def test_synchronize_loads_state_and_plans_operations() -> None:
     )
 
     executor.execute.assert_not_called()
+
+
+def test_synchronize_reports_progress_for_each_operation() -> None:
+    archive = _archive()
+    planner = _planner()
+    executor = _executor()
+    destination = _destination()
+    capabilities = _capabilities()
+    state_repository = _state_repository()
+    reported = []
+
+    state = SynchronizationState()
+    state_repository.load_synchronization_state.return_value = state
+
+    operation_one = CreateConversationOperation(
+        conversation=CanonicalConversation(
+            id=ConversationId("conversation-1"),
+            conversation_type=ConversationType.CHANNEL,
+            title="general",
+        )
+    )
+    operation_two = CreateMessageOperation(
+        message=CanonicalMessage(
+            id=MessageId("message-1"),
+            conversation_id=ConversationId("conversation-1"),
+            identity_key=IdentityKey("identity-1"),
+            content="hello",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    planner.plan.return_value = iter((operation_one, operation_two))
+    executor.execute.side_effect = [ExecutionResult(), ExecutionResult()]
+
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=planner,
+        executor=executor,
+        destination=destination,
+        capabilities=capabilities,
+        state_repository=state_repository,
+        on_status=reported.append,
+    )
+
+    coordinator.synchronize()
+
+    assert [(event.phase, event.current, event.detail) for event in reported] == [
+        ("conversations", 1, "conversation-1"),
+        ("messages", 1, "message-1"),
+    ]
 
 
 def test_synchronize_executes_operations_in_planner_order() -> None:

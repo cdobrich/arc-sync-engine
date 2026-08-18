@@ -155,6 +155,28 @@ def test_canonical_exporter_uses_current_operation_pipeline(
     ]
 
 
+def test_canonical_exporter_forwards_progress_callback(
+    tmp_path: Path,
+) -> None:
+    paths = ArchivePaths(root=tmp_path / "archive")
+    archive, asset_store = _write_archive(paths)
+    destination = RecordingDestination()
+    reported = []
+
+    CanonicalExporter().export(
+        archive,
+        destination,
+        asset_store,
+        on_status=reported.append,
+    )
+
+    assert [(event.phase, event.current, event.detail) for event in reported] == [
+        ("conversations", 1, "conversation-1"),
+        ("identities", 1, "identity-1"),
+        ("messages", 1, "message-1"),
+    ]
+
+
 def test_canonical_exporter_preserves_destination_message_reference_contract(
     tmp_path: Path,
 ) -> None:

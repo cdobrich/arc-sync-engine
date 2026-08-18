@@ -29,6 +29,22 @@ def test_print_import_progress_renders_adapter_neutral_phases(capsys) -> None:
     assert "Importing attachment 1 of 2: photo.png..." in output
 
 
+def test_print_export_progress_renders_adapter_neutral_phases(capsys) -> None:
+    from archive_sync_engine.cli import _print_export_progress
+    from archive_sync_engine.sync.progress import SyncProgress
+
+    _print_export_progress(SyncProgress(phase="identities", current=1, detail="identity-1"))
+    _print_export_progress(SyncProgress(phase="conversations", current=2, detail="conversation-2"))
+    _print_export_progress(SyncProgress(phase="messages", current=3, detail="message-3"))
+    _print_export_progress(SyncProgress(phase="attachments", current=1, detail="photo.png"))
+
+    output = capsys.readouterr().out
+    assert "Exporting identities 1: identity-1..." in output
+    assert "Exporting conversations 2: conversation-2..." in output
+    assert "Exporting messages 3 [message-3]..." in output
+    assert "Exporting attachment 1 [photo.png]..." in output
+
+
 def test_import_cli_reports_connection_and_phase_status(tmp_path: Path, capsys) -> None:
     archive_path = tmp_path / "archive"
     ArchivePackage.initialize(ArchivePaths(archive_path))
@@ -843,6 +859,55 @@ fluxer:
     exporter.export.assert_called_once()
     assert exporter.export.call_args.kwargs["destination"] is runtime.adapter
     assert exporter.export.call_args.kwargs["archive"].package.paths.root == archive_path.resolve()
+
+
+def test_export_cli_reports_connection_and_phase_status(tmp_path: Path, capsys) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.adapter = object()
+
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    registry.build_config.return_value = {
+        "fluxer": type("FluxerConfig", (), {"token": "fluxer-secret"})()
+    }
+
+    exporter = MagicMock()
+    exporter.export.return_value = type("Report", (), {"executed_operations": 3})()
+
+    from archive_sync_engine.sync.progress import SyncProgress
+    exporter.export.side_effect = lambda **kwargs: (
+        kwargs["on_status"](SyncProgress("conversations", 1, detail="conversation-1")),
+        type("Report", (), {"executed_operations": 3})(),
+    )[1]
+
+    with (
+        patch("archive_sync_engine.cli.default_destination_runtime_registry", return_value=registry),
+        patch("archive_sync_engine.cli.CanonicalExporter", return_value=exporter),
+    ):
+        assert main(["export", "--config", str(config)]) == 0
+
+    output = capsys.readouterr().out
+    assert "Attempting to connect to destination adapter 'fluxer'" in output
+    assert "Connected successfully." in output
+    assert "Initiating phase: export Archive → fluxer." in output
+    assert "Exporting conversations 1: conversation-1..." in output
+    assert "Export completed: 3 operations." in output
 
 
 def test_export_cli_allows_destination_scope_override(tmp_path: Path) -> None:

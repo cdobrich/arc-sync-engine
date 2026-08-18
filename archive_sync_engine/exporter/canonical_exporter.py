@@ -12,6 +12,7 @@ Executor -> StateRepository flow to SyncCoordinator.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from archive_sync_engine.adapters import DestinationAdapter
@@ -21,6 +22,7 @@ from archive_sync_engine.executor import OperationExecutor
 from archive_sync_engine.planner import Planner
 from archive_sync_engine.repository import InMemoryStateRepository
 from archive_sync_engine.sync.coordinator import SyncCoordinator
+from archive_sync_engine.sync.progress import SyncProgress
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +46,7 @@ class CanonicalExporter:
         archive: Archive,
         destination: DestinationAdapter,
         asset_store: AssetStore,
+        on_status: Callable[[SyncProgress], None] | None = None,
     ) -> ExportReport:
         """
         Reproduce the canonical Archive at the destination.
@@ -70,6 +73,7 @@ class CanonicalExporter:
             destination=destination,
             capabilities=capabilities,
             state_repository=state_repository,
+            on_status=on_status,
         )
 
         results = coordinator.synchronize()

@@ -2,6 +2,7 @@
 Synchronization subsystem.
 """
 from .fingerprint import canonical_fingerprint
+from .progress import SyncProgress
 from .session import SyncDirection, SyncSession
 from .synchronization_state import SynchronizationState
 
@@ -10,6 +11,7 @@ __all__ = [
     "SyncSession",
     "SynchronizationState",
     "canonical_fingerprint",
+    "SyncProgress",
     "SyncRuntimeRegistry",
     "default_sync_runtime_registry",
     "SyncRuntimeRequest",

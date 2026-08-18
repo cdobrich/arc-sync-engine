@@ -182,7 +182,9 @@ fluxer:
         return_value=registry,
     ) as registry_factory:
         with patch("archive_sync_engine.cli.CanonicalExporter") as exporter_type:
-            exporter_type.return_value.export.return_value = None
+            exporter_type.return_value.export.return_value = type(
+                "Report", (), {"executed_operations": 0}
+            )()
             assert main(["export", "--config", str(config)]) == 0
 
     request = registry.create.call_args.args[1]

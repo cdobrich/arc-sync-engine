@@ -33,6 +33,7 @@ from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRe
 from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
 from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
 from archive_sync_engine.importer.progress import ImportProgress
+from archive_sync_engine.sync.progress import SyncProgress
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1003,6 +1004,30 @@ def _run_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_export_progress(progress: SyncProgress) -> None:
+    """Render adapter-neutral export progress without exposing secrets."""
+    labels = {
+        "identities": "Exporting identities",
+        "conversations": "Exporting conversations",
+        "messages": "Exporting messages",
+        "attachments": "Exporting attachment",
+        "reactions": "Exporting reactions",
+        "replies": "Exporting replies",
+        "operations": "Exporting operations",
+    }
+    label = labels.get(progress.phase, f"Exporting {progress.phase}")
+    if progress.current is not None:
+        label += f" {progress.current}"
+        if progress.total is not None:
+            label += f" of {progress.total}"
+    if progress.detail:
+        if progress.phase in {"messages", "replies", "reactions", "attachments"}:
+            label += f" [{progress.detail}]"
+        else:
+            label += f": {progress.detail}"
+    print(f"{label}...", flush=True)
+
+
 def _run_export(args: argparse.Namespace) -> int:
     """Export an existing Archive through a registered destination runtime."""
     destination_adapter = args.destination_adapter.strip().lower()
@@ -1064,16 +1089,31 @@ def _run_export(args: argparse.Namespace) -> int:
             archive_path=paths.root,
             adapter_config=destination_config,
         )
+        print(
+            f"Attempting to connect to destination adapter '{destination_adapter}' "
+            f"(scope: {', '.join(destination_scope)}; archive: {paths.root})...",
+            flush=True,
+        )
         runtime = destination_registry.create(destination_adapter, runtime_request)
+        print("Connected successfully.", flush=True)
+        print(
+            f"Initiating phase: export Archive → {destination_adapter}.",
+            flush=True,
+        )
     except ValueError as exc:
         raise ConfigurationError(str(exc)) from exc
 
     with Archive(paths) as archive, runtime:
-        CanonicalExporter().export(
+        export_report = CanonicalExporter().export(
             archive=archive,
             destination=runtime.adapter,
             asset_store=archive.asset_store,
+            on_status=_print_export_progress,
         )
+
+    print(
+        f"Export completed: {export_report.executed_operations} operations."
+    )
 
     return 0
 
