@@ -16,9 +16,12 @@ from archive_sync_engine.models import (
     CanonicalConversation,
     CanonicalIdentity,
     CanonicalMessage,
+    CanonicalAttachment,
+    CanonicalReaction,
 )
 from archive_sync_engine.models.enums import ConversationType
 from archive_sync_engine.models.ids import (
+    AttachmentId,
     ConversationId,
     IdentityKey,
     MessageId,
@@ -466,3 +469,114 @@ def test_canonical_import_coordinator_resumes_from_last_committed_message(
     session = coordinator.load_session()
     assert session.completed is True
     assert session.error is None
+
+
+def test_completed_import_resume_refreshes_new_messages_attachments_and_reactions(
+    tmp_path: Path,
+) -> None:
+    """Resuming a completed import reconciles the current source state."""
+    import hashlib
+
+    class MutableSource(SourceAdapter):
+        def __init__(self) -> None:
+            self.refresh = False
+            self.content = "initial"
+            self.reaction = False
+            self._attachment_content = b"new attachment"
+
+        @property
+        def name(self) -> str:
+            return "Mutable"
+
+        def iter_identities(self):
+            identities = [
+                CanonicalIdentity(
+                    identity_key=IdentityKey("identity-001"),
+                    display_name="Alice",
+                )
+            ]
+            if self.reaction:
+                identities.append(
+                    CanonicalIdentity(
+                        identity_key=IdentityKey("identity-002"),
+                        display_name="Bob",
+                    )
+                )
+            return tuple(identities)
+
+        def iter_conversations(self):
+            return (
+                CanonicalConversation(
+                    id=ConversationId("conversation-001"),
+                    conversation_type=ConversationType.CHANNEL,
+                    title="General",
+                ),
+            )
+
+        def iter_messages(self, conversation):
+            messages = [
+                CanonicalMessage(
+                    id=MessageId("message-001"),
+                    conversation_id=conversation.id,
+                    identity_key=IdentityKey("identity-001"),
+                    content=self.content,
+                    created_at=datetime(2026, 7, 31, 12, tzinfo=timezone.utc),
+                    reactions=(
+                        CanonicalReaction(
+                            identity_key=IdentityKey("identity-002"),
+                            emoji="👍",
+                        ),
+                    )
+                    if self.reaction
+                    else (),
+                ),
+            ]
+            if self.refresh:
+                content = self._attachment_content
+                attachment = CanonicalAttachment(
+                    id=AttachmentId("attachment-001"),
+                    filename="new.txt",
+                    content_type="text/plain",
+                    size=len(content),
+                    sha256=hashlib.sha256(content).hexdigest(),
+                )
+                messages.append(
+                    CanonicalMessage(
+                        id=MessageId("message-002"),
+                        conversation_id=conversation.id,
+                        identity_key=IdentityKey("identity-001"),
+                        content="",
+                        created_at=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+                        attachments=(attachment,),
+                    )
+                )
+            return tuple(messages)
+
+        def attachment_bytes(self, attachment):
+            return self._attachment_content
+
+    paths = ArchivePaths(root=tmp_path)
+    source = MutableSource()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    first = coordinator.run(source)
+    assert (first.messages, first.attachments) == (1, 0)
+
+    source.refresh = True
+    source.reaction = True
+    source.content = "updated"
+
+    refreshed = coordinator.run(source, resume=True)
+    assert (refreshed.messages, refreshed.attachments) == (2, 1)
+
+    with Archive(paths) as archive:
+        messages = tuple(archive.iter_messages())
+        assert len(messages) == 2
+        assert messages[0].content == "updated"
+        assert messages[0].reactions == (
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-002"),
+                emoji="👍",
+            ),
+        )
+        assert messages[1].attachments[0].id == AttachmentId("attachment-001")

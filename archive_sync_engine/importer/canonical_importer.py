@@ -53,6 +53,7 @@ class CanonicalImporter:
         on_progress: Callable[[ImportState], None] | None = None,
         on_status: Callable[[ImportProgress], None] | None = None,
         resume_state: ImportState | None = None,
+        incremental_refresh: bool = False,
     ) -> None:
         """
         Import all canonical information available from a source.
@@ -75,18 +76,21 @@ class CanonicalImporter:
         #
         # Identities
         #
-        # A resumed import already has all identities from the original
-        # import pass because identities are traversed before messages.
-        # Skip them during resume so we do not reinsert already-persisted
-        # records.
+        # A checkpoint resume skips identities because the original import
+        # committed them before reaching message traversal. A completed-run
+        # refresh intentionally re-traverses identities so newly discovered
+        # authors/reaction participants are incorporated.
         #
 
-        if resume_state is None:
+        if resume_state is None or incremental_refresh:
             if on_status is not None:
                 on_status(ImportProgress(phase="identities", current=0))
             identity_count = 0
             for identity in source.iter_identities():
-                writer.add_identity(identity)
+                if incremental_refresh:
+                    writer.upsert_identity(identity)
+                else:
+                    writer.add_identity(identity)
                 identity_count += 1
                 if on_status is not None:
                     on_status(
@@ -114,7 +118,7 @@ class CanonicalImporter:
                 "message_id",
             )
 
-        resume_reached = resume_state is None
+        resume_reached = resume_state is None or incremental_refresh
 
         conversations = source.iter_conversations()
         conversation_total = len(conversations) if isinstance(conversations, Sized) else None
@@ -151,7 +155,10 @@ class CanonicalImporter:
                     continue
 
             if not resume_conversation:
-                writer.add_conversation(conversation)
+                if incremental_refresh:
+                    writer.upsert_conversation(conversation)
+                else:
+                    writer.add_conversation(conversation)
 
             skipping_messages = (
                 resume_state is not None
@@ -187,9 +194,10 @@ class CanonicalImporter:
                 # message/attachment relationships.
                 #
 
-                writer.add_message(
-                    message,
-                )
+                if incremental_refresh:
+                    writer.upsert_message(message)
+                else:
+                    writer.add_message(message)
                 message_count += 1
 
                 #

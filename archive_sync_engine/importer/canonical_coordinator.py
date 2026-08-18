@@ -76,7 +76,10 @@ class CanonicalImportCoordinator:
         """
         Execute a complete canonical import.
 
-        A new SyncSession is persisted before import begins.
+        A new SyncSession is persisted before import begins. If --resume
+        targets a completed import, the previous completion is treated as a
+        request for an incremental source refresh rather than a checkpoint
+        continuation.
 
         CanonicalImporter reports importer-owned progress through
         save_import_state().
@@ -89,6 +92,19 @@ class CanonicalImportCoordinator:
 
         started_at = datetime.now(
             timezone.utc,
+        )
+
+        previous_session = None
+        if resume:
+            try:
+                previous_session = self.load_session()
+            except FileNotFoundError:
+                previous_session = None
+
+        incremental_refresh = bool(
+            resume
+            and previous_session is not None
+            and previous_session.completed
         )
 
         session = SyncSession(
@@ -104,7 +120,7 @@ class CanonicalImportCoordinator:
 
         try:
             resume_state = None
-            if resume:
+            if resume and not incremental_refresh:
                 resume_state = self.load_import_state()
 
             with ArchiveWriter(
@@ -124,6 +140,7 @@ class CanonicalImportCoordinator:
                     on_progress=checkpoint,
                     on_status=on_status,
                     resume_state=resume_state,
+                    incremental_refresh=incremental_refresh,
                 )
 
             finished_at = datetime.now(

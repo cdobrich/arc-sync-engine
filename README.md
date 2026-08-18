@@ -6,10 +6,11 @@ Archive-Sync Engine can _archive_ (import), _export_, and _migrate_ (synchronizi
 
 Dear Discord, the Archive Engine team has a [message for you](https://c.tenor.com/dq8yuzNDkWkAAAAd/tenor.gif).
 
-
 # Running the Program
 
 You will need to create two bots (one for Discord and one for Fluxer), in order to run this program. This will require saving some info to files (guided steps below), running the setup script, then you may execute the full program.
+
+See Usage section.
 
 Migration resuming is supported, meaning the program will resume from the last successful migrated message.
 - Automatically: All channels will have a resume-attempt during the migration stage, attempting to continue from the last migrated message from each channel.
@@ -97,7 +98,7 @@ To enable the migration program to interact with your Fluxer server, create a Fl
     * NOTE: After selecting the minimum `bot` step, more permissions can be granted later within a target server.
     
 5.  **Invite the Bot to Your Server:**
-    * Paste the copied `Authorize URL` into your web browser.
+    * In your web browser, open a new tab and paste the copied `Authorize URL` into the address bar. Press ENTER to go to the link.
     * Select the Fluxer server you wish to add the Bot to, in order to migrate content into there.(Your own user must have "Manage Server" permissions on this server).
     * Authorize the bot to be added.
 
@@ -203,7 +204,7 @@ Finally, you are ready. To run the exporter, open a command terminal at the loca
     source .venv/bin/python
     archive-sync-engine -h
 
-## Documentation / Guide / Help for Commands
+# Usage / Using the program: Documentation Guide & Help Info for Commands
 
 To see a top level summary of options, run:
 
@@ -248,6 +249,32 @@ Do not skip this step.
 
 The architecture deliberately does not have `import` silently initialize an Archive, because an incorrect Archive path should not accidentally cause data to be written somewhere unintended.
 
+## Import to Archive (3rd Step)
+
+    archive-sync-engine import --config ./config.yaml
+
+The final output of a successful import action should be a folder (as defined either by the configuration file or by input commands) containing a mirror of the input-source.
+
+## Update/Refresh the Import to Archive (4th Step)
+
+To refresh the archive (gathering latest updates from input-source), run `import` command again with the `--resume` option:
+
+    archive-sync-engine import --config ./config.yaml --resume
+
+This should update the stored archive contents, mirroring of the input-source.
+
+## How to Interrupt
+
+Pressing `CTRL+C` on the keyboard will halt the program, and it can be resumed later. Simply run:
+
+    archive-sync-engine import --config ./config.yaml --resume
+
+### A few things to be aware of
+
+- GOOD NEWS: The Archive commits data to itself every time it does the smallest unit of action (importing or exporting).
+- BAD NEWS: Because the Archive performs full source reconciliation, rather than a source-specific incremental cursor, perform an `import` command again with the `--resume` option will check the entire input-source again.
+
+NOTE: new feature for update only since last download is pending.
 
 ---
 

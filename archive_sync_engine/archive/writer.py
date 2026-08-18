@@ -78,6 +78,13 @@ class ArchiveWriter:
             attachment,
         )
 
+    def upsert_attachment(
+        self,
+        attachment: CanonicalAttachment,
+    ) -> None:
+        """Insert or refresh attachment metadata during incremental imports."""
+        self._store.upsert_attachment(attachment)
+
     #
     # Conversations
     #
@@ -94,6 +101,13 @@ class ArchiveWriter:
             conversation,
         )
 
+    def upsert_conversation(
+        self,
+        conversation: CanonicalConversation,
+    ) -> None:
+        """Insert or refresh a canonical conversation."""
+        self._store.upsert_conversation(conversation)
+
     #
     # Identities
     #
@@ -109,6 +123,13 @@ class ArchiveWriter:
         self._store.insert_identity(
             identity,
         )
+
+    def upsert_identity(
+        self,
+        identity: CanonicalIdentity,
+    ) -> None:
+        """Insert or refresh a canonical identity."""
+        self._store.upsert_identity(identity)
 
     #
     # Manifest
@@ -193,6 +214,29 @@ class ArchiveWriter:
                 attachment.id,
                 attachment_index,
             )
+
+        self._validate_message_reactions(message)
+        self._persist_message_reactions(message)
+
+    def upsert_message(
+        self,
+        message: CanonicalMessage,
+    ) -> None:
+        """Persist a complete message aggregate, replacing current relationships."""
+        self._store.upsert_message(message)
+        seen_attachment_ids: set[AttachmentId] = set()
+        for attachment_index, attachment in enumerate(message.attachments):
+            if attachment.id in seen_attachment_ids:
+                raise ValueError(
+                    f"Duplicate attachment {attachment.id} in message {message.id}."
+                )
+            seen_attachment_ids.add(attachment.id)
+            self._store.upsert_attachment(attachment)
+            self._store.insert_message_attachment(
+                message.id, attachment.id, attachment_index
+            )
+        self._validate_message_reactions(message)
+        self._persist_message_reactions(message)
 
     #
     # Provenance

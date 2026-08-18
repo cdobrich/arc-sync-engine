@@ -163,6 +163,24 @@ class ArchiveStore:
             ),
         )
 
+    def upsert_attachment(
+        self,
+        attachment: CanonicalAttachment,
+    ) -> None:
+        """Insert attachment metadata or refresh it by stable attachment ID."""
+        self._connection.execute(
+            """
+            INSERT INTO attachments (attachment_id, filename, content_type, size, sha256)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(attachment_id) DO UPDATE SET
+                filename = excluded.filename,
+                content_type = excluded.content_type,
+                size = excluded.size,
+                sha256 = excluded.sha256
+            """,
+            self._attachment_parameters(attachment),
+        )
+
     def get_attachment(
         self,
         attachment_id: AttachmentId,
@@ -407,6 +425,26 @@ class ArchiveStore:
             ),
         )
 
+    def upsert_conversation(
+        self,
+        conversation: CanonicalConversation,
+    ) -> None:
+        """Insert a conversation or refresh its current canonical representation."""
+        self._connection.execute(
+            """
+            INSERT INTO conversations (
+                conversation_id, conversation_type, title, parent_id, created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(conversation_id) DO UPDATE SET
+                conversation_type = excluded.conversation_type,
+                title = excluded.title,
+                parent_id = excluded.parent_id,
+                created_at = excluded.created_at
+            """,
+            self._conversation_parameters(conversation),
+        )
+
     def get_conversation(
         self,
         conversation_id: ConversationId,
@@ -553,6 +591,21 @@ class ArchiveStore:
             ),
         )
 
+    def upsert_identity(
+        self,
+        identity: CanonicalIdentity,
+    ) -> None:
+        """Insert an identity or refresh its current canonical representation."""
+        self._connection.execute(
+            """
+            INSERT INTO identities (identity_key, display_name)
+            VALUES (?, ?)
+            ON CONFLICT(identity_key) DO UPDATE SET
+                display_name = excluded.display_name
+            """,
+            self._identity_parameters(identity),
+        )
+
     def get_identity(
         self,
         identity_key: IdentityKey,
@@ -634,6 +687,38 @@ class ArchiveStore:
             self._message_parameters(
                 message,
             ),
+        )
+
+    def upsert_message(
+        self,
+        message: CanonicalMessage,
+    ) -> None:
+        """Insert a message or replace its mutable aggregate state."""
+        self._connection.execute(
+            """
+            INSERT INTO messages (
+                message_id, conversation_id, identity_key, created_at,
+                edited_at, reply_to_message_id, content
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id) DO UPDATE SET
+                conversation_id = excluded.conversation_id,
+                identity_key = excluded.identity_key,
+                created_at = excluded.created_at,
+                edited_at = excluded.edited_at,
+                reply_to_message_id = excluded.reply_to_message_id,
+                content = excluded.content
+            """,
+            self._message_parameters(message),
+        )
+
+        self._connection.execute(
+            "DELETE FROM message_attachments WHERE message_id = ?",
+            (str(message.id),),
+        )
+        self._connection.execute(
+            "DELETE FROM message_reactions WHERE message_id = ?",
+            (str(message.id),),
         )
 
     def get_message(
