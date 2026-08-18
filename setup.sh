@@ -51,9 +51,14 @@ fi
 echo "Upgrading pip and build tools..."
 pip install --upgrade pip setuptools wheel
 
-echo "Installing project dependencies from pyproject.toml..."
-# -e installs in editable mode so changes to source code reflect without reinstalling
-pip install -e "$PROJECT_DIR"
+# Check if "dev" argument was passed
+if [ "$1" = "dev" ]; then
+  echo "Installing project dependencies with dev extras from pyproject.toml..."
+  pip install -e "$PROJECT_DIR[dev]"
+else
+  echo "Installing project dependencies from pyproject.toml..."
+  pip install -e "$PROJECT_DIR"
+fi
 
 echo ""
 echo "Setup complete!"

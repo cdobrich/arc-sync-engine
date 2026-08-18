@@ -12,6 +12,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "discord.py>=2.7,<3",
+    "fluxer.py>=0.4.2,<0.5",
+]
 discord = [
     "discord.py>=2.7,<3",
 ]
