@@ -339,6 +339,14 @@ class FakeMessage:
         self.reference = reference
         self.attachments = attachments
         self.reactions = reactions
+        self.embeds = []
+        self.stickers = []
+        self.components = []
+        self.message_snapshots = []
+        self.poll = None
+        self.call = None
+        self.activity = None
+        self.purchase_notification = None
 
 
 class MessageChannel(FakeChannel):
@@ -360,6 +368,148 @@ class MessageChannel(FakeChannel):
 
     async def pins(self, *, limit=None):
         return list(self._pinned)
+
+
+def test_iter_messages_preserves_metadata_only_embed_message() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "gallery-groups", 1, created)
+    message = FakeMessage(200, channel, user, created, "")
+    # This models a real-world embed whose useful Discord representation is
+    # not covered by the currently extracted title/description/URL fields.
+    message.embeds = [object()]
+    message.stickers = []
+    message.type = SimpleNamespace(name="default")
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    canonical = next(adapter.iter_messages(conversation))
+
+    assert canonical.content == "[Discord embed message]"
+
+
+def test_iter_messages_reports_truly_unrepresentable_empty_message_with_source_context() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "gallery-groups", 1, created)
+    message = FakeMessage(203, channel, user, created, "")
+    message.type = SimpleNamespace(name="default")
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    with pytest.raises(
+        AdapterError,
+        match=(
+            r".*Discord message discord:message:203.*"
+            r"content_length=0; attachments=0; embeds=0; stickers=0; "
+            r"components=0; message_snapshots=0; message_type=default"
+        ),
+    ):
+        list(adapter.iter_messages(conversation))
+
+
+def test_iter_messages_debug_diagnostic_includes_raw_discord_source_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(12, "debug", 1, created)
+    message = FakeMessage(202, channel, user, created, "")
+    message.type = SimpleNamespace(name="default")
+    message.flags = SimpleNamespace(value=123)
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    monkeypatch.setenv("ARCHIVE_SYNC_ENGINE_DISCORD_DEBUG_MESSAGES", "1")
+
+    with pytest.raises(
+        AdapterError,
+        match=(
+            r".*source_class=FakeMessage.*"
+            r"source_module=.*test_source.*"
+            r"content_repr='';.*"
+            r"flags_repr=namespace\(value=123\).*"
+            r"source_flags=namespace\(value=123\).*"
+        ),
+    ):
+        list(adapter.iter_messages(conversation))
+
+
+def test_iter_messages_preserves_role_subscription_message_as_content() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(14, "system-events", 1, created)
+    message = FakeMessage(205, channel, user, created, "")
+    message.role_subscription_data = SimpleNamespace(role_id=77)
+    message.type = SimpleNamespace(name="default")
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    canonical = next(adapter.iter_messages(conversation))
+
+    assert canonical.content == "[Discord role subscription message]"
+
+
+def test_iter_messages_preserves_interaction_metadata_as_content() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(13, "interaction", 1, created)
+    message = FakeMessage(204, channel, user, created, "")
+    message.interaction_metadata = SimpleNamespace(id=999)
+    message.type = SimpleNamespace(name="default")
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    canonical = next(adapter.iter_messages(conversation))
+
+    assert canonical.content == "[Discord interaction message]"
+
+
+def test_iter_messages_represents_empty_non_default_discord_system_message() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(11, "system-events", 1, created)
+    message = FakeMessage(201, channel, user, created, "")
+    message.embeds = []
+    message.stickers = []
+    message.components = []
+    message.type = SimpleNamespace(name="recipient_remove")
+    message.system_content = ""
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    messages = list(adapter.iter_messages(conversation))
+
+    assert len(messages) == 1
+    assert messages[0].content == "[Discord system message: recipient_remove]"
 
 
 def test_iter_messages_maps_content_reply_attachment_reaction_and_pin_state() -> None:
@@ -671,9 +821,7 @@ def test_iter_conversations_fetches_channels_when_guild_cache_is_empty() -> None
     guild.channels = []
     guild.threads = []
     created = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    fetched_channels = [
-        FakeChannel(40, "fetched", 1, created),
-    ]
+    fetched_channels = [FakeChannel(40, "fetched", 1, created)]
     fetch_calls: list[tuple[()]] = []
 
     async def fetch_channels():
@@ -682,10 +830,7 @@ def test_iter_conversations_fetches_channels_when_guild_cache_is_empty() -> None
 
     guild.fetch_channels = fetch_channels
 
-    adapter = DiscordSourceAdapter(
-        FakeClient(guild),
-        [123],
-    )
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
 
     conversations = list(adapter.iter_conversations())
 
@@ -711,16 +856,11 @@ def test_iter_conversations_fetches_active_threads_when_thread_cache_is_empty() 
 
     guild.fetch_active_threads = fetch_active_threads
 
-    adapter = DiscordSourceAdapter(
-        FakeClient(guild),
-        [123],
-    )
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
 
     conversations = list(adapter.iter_conversations())
 
-    assert "discord:guild:123:channel:50" in {
-        str(item.id) for item in conversations
-    }
+    assert "discord:guild:123:channel:50" in {str(item.id) for item in conversations}
     assert fetch_calls == [()]
 
 
@@ -743,6 +883,177 @@ def test_iter_messages_uses_discord_system_content_for_system_messages() -> None
     assert messages[0].content == "Alice pinned a message."
 
 
+def test_iter_messages_derives_empty_pins_add_system_message() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "first", 1, created)
+    message = FakeMessage(102, channel, user, created, "")
+    message.system_content = ""
+    message.type = SimpleNamespace(name="pins_add")
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    conversation = next(adapter.iter_conversations())
+    messages = list(adapter.iter_messages(conversation))
+
+    assert len(messages) == 1
+    assert messages[0].content == "Alice pinned a message."
+
+
+def test_iter_messages_canonicalizes_forwarded_message_snapshot_content() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "gallery-groups", 1, created)
+    message = FakeMessage(103, channel, user, created, "")
+    message.message_snapshots = [
+        SimpleNamespace(
+            content="Forwarded gallery message.",
+            embeds=[],
+            stickers=[],
+            components=[],
+            attachments=[],
+        ),
+    ]
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    conversation = next(adapter.iter_conversations())
+    canonical = next(adapter.iter_messages(conversation))
+
+    assert canonical.content == "Forwarded gallery message."
+
+
+def test_iter_messages_imports_forwarded_message_snapshot_attachments() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "gallery-groups", 1, created)
+    snapshot_attachment = FakeAttachment(900, "forwarded.png", b"snapshot-bytes")
+    message = FakeMessage(104, channel, user, created, "")
+    message.message_snapshots = [
+        SimpleNamespace(
+            content="",
+            embeds=[],
+            stickers=[],
+            components=[],
+            attachments=[snapshot_attachment],
+        ),
+    ]
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    conversation = next(adapter.iter_conversations())
+    canonical = next(adapter.iter_messages(conversation))
+
+    assert [attachment.filename for attachment in canonical.attachments] == [
+        "forwarded.png",
+    ]
+    assert adapter.attachment_bytes(canonical.attachments[0]) == b"snapshot-bytes"
+
+
+def test_iter_messages_canonicalizes_embed_only_message_content() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "gallery-groups", 1, created)
+    message = FakeMessage(102, channel, user, created, "")
+    message.embeds = [
+        SimpleNamespace(
+            title="Gallery update",
+            description="A description from the embed.",
+            url="https://example.test/gallery",
+            author=SimpleNamespace(name="Gallery Bot", url=""),
+            fields=(SimpleNamespace(name="Status", value="Ready"),),
+            footer=SimpleNamespace(text="Source footer"),
+            image=SimpleNamespace(url="https://example.test/image.png"),
+            thumbnail=SimpleNamespace(url=""),
+        ),
+    ]
+    message.stickers = []
+    message.components = []
+    message.type = SimpleNamespace(name="default")
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    conversation = next(adapter.iter_conversations())
+    canonical = next(adapter.iter_messages(conversation))
+
+    assert canonical.content == (
+        "Gallery update\n"
+        "A description from the embed.\n"
+        "https://example.test/gallery\n"
+        "Gallery Bot\n"
+        "Status\n"
+        "Ready\n"
+        "Source footer\n"
+        "https://example.test/image.png"
+    )
+
+
+def test_iter_messages_canonicalizes_poll_message_content() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "gallery-groups", 1, created)
+    message = FakeMessage(104, channel, user, created, "")
+    message.poll = SimpleNamespace(
+        question=SimpleNamespace(text="Which gallery should we use?"),
+        answers=(
+            SimpleNamespace(text="Gallery A"),
+            SimpleNamespace(text="Gallery B"),
+        ),
+    )
+    message.type = SimpleNamespace(name="default")
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    conversation = next(adapter.iter_conversations())
+    canonical = next(adapter.iter_messages(conversation))
+
+    assert canonical.content == (
+        "Poll: Which gallery should we use?\n"
+        "- Gallery A\n"
+        "- Gallery B"
+    )
+
+
+def test_iter_messages_preserves_empty_discord_message_with_special_content_feature() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "gallery-groups", 1, created)
+    message = FakeMessage(105, channel, user, created, "")
+    message.activity = SimpleNamespace(name="Watch Together")
+    message.type = SimpleNamespace(name="default")
+    channel._messages = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    conversation = next(adapter.iter_conversations())
+    canonical = next(adapter.iter_messages(conversation))
+
+    assert canonical.content == "[Discord activity message]"
+
+
 def test_iter_messages_rejects_unrepresentable_empty_discord_message() -> None:
     created = datetime(2026, 1, 1, tzinfo=timezone.utc)
     user = FakeUser(1, "Alice")
@@ -756,5 +1067,5 @@ def test_iter_messages_rejects_unrepresentable_empty_discord_message() -> None:
     adapter = DiscordSourceAdapter(FakeClient(guild), [123])
 
     conversation = next(adapter.iter_conversations())
-    with pytest.raises(ValueError, match="A message must contain text or at least one attachment"):
+    with pytest.raises(AdapterError, match="A message must contain text or at least one attachment"):
         list(adapter.iter_messages(conversation))

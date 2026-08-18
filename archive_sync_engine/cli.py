@@ -1379,7 +1379,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if isinstance(value, str) and value
     ]
     logger = configure_logging(
-        level=getattr(args, "log_level", "WARNING"),
+        level=getattr(args, "log_level", "DEBUG"),
         log_file=getattr(args, "log_file", None),
         secrets=secrets,
     )

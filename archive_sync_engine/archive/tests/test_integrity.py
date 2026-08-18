@@ -64,3 +64,53 @@ def test_validate_cli_returns_nonzero_for_unsupported_manifest_hash_algorithm(tm
     manifest.write_text(json.dumps(data), encoding="utf-8")
 
     assert main(["validate", "--archive", str(tmp_path)]) == 1
+
+
+def test_validate_archive_package_identifies_invalid_message_by_id(tmp_path: Path) -> None:
+    paths = ArchivePaths(tmp_path)
+
+    from archive_sync_engine.archive import ArchivePackage
+    import sqlite3
+
+    ArchivePackage.initialize(paths)
+    with sqlite3.connect(paths.database) as connection:
+        connection.execute(
+            "INSERT INTO identities (identity_key, display_name) VALUES (?, ?)",
+            ("discord:user:1", "Alice"),
+        )
+        connection.execute(
+            "INSERT INTO conversations (conversation_id, conversation_type, title, parent_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "discord:guild:123:channel:10",
+                "channel",
+                "gallery-groups",
+                None,
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO messages (message_id, conversation_id, identity_key, created_at, edited_at, reply_to_message_id, content) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "discord:message:200",
+                "discord:guild:123:channel:10",
+                "discord:user:1",
+                "2026-01-01T00:00:00+00:00",
+                None,
+                None,
+                "",
+            ),
+        )
+
+    report = validate_archive_package(paths)
+
+    assert report.valid is False
+    assert any(
+        "Canonical message discord:message:200 is invalid" in error
+        for error in report.errors
+    )
+    assert any(
+        "A message must contain text or at least one attachment" in error
+        for error in report.errors
+    )

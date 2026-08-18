@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 from collections.abc import Iterable
 from datetime import datetime
 from typing import Any, Awaitable, Callable, TypeVar
@@ -74,7 +75,7 @@ class DiscordSourceAdapter(SourceAdapter):
         self._conversation_channels: dict[str, Any] = {}
         self._message_cache: dict[str, tuple[Any, ...]] = {}
         self._attachment_bytes: dict[str, bytes] = {}
-        self._runner: Callable[[Awaitable[_T]], _T] | None = None
+        self._runner: Callable[[Awaitable[Any]], Any] | None = None
 
     @property
     def name(self) -> str:
@@ -146,10 +147,8 @@ class DiscordSourceAdapter(SourceAdapter):
         conversations: dict[str, CanonicalConversation] = {}
 
         for guild in self._iter_guilds():
-            channels = list(
-                self._run(
-                    self._collect_message_bearing_channels(guild),
-                )
+            channels = self._run(
+                self._collect_message_bearing_channels(guild),
             )
             archived_threads = self._run(
                 self._collect_archived_threads(guild),
@@ -310,7 +309,7 @@ class DiscordSourceAdapter(SourceAdapter):
             )
 
         attachments_list: list[CanonicalAttachment] = []
-        for attachment in getattr(message, "attachments", ()):
+        for attachment in self._source_attachments(message):
             attachments_list.append(
                 await self._canonical_attachment(attachment)
             )
@@ -326,35 +325,504 @@ class DiscordSourceAdapter(SourceAdapter):
 
         reply_to = self._canonical_reply_to(message)
 
-        content = str(getattr(message, "content", "") or "")
-        if not content:
-            # Discord system messages may expose their canonical human-readable
-            # content through ``system_content`` even when ``content`` is empty.
-            # Preserve that source information rather than allowing the
-            # platform-specific message shape to violate the canonical message
-            # invariant.  Other empty messages remain invalid because the
-            # canonical model intentionally has no representation for embeds,
-            # stickers, or other non-text/non-attachment-only payloads yet.
-            content = str(getattr(message, "system_content", "") or "")
-
-        return CanonicalMessage(
-            id=MessageId(
-                self._message_key(message_id),
-            ),
-            conversation_id=ConversationId(
-                self._conversation_key_from_channel_id(
-                    conversation_id,
-                ),
-            ),
-            identity_key=self._canonical_identity(author).identity_key,
-            content=content,
-            created_at=created_at,
-            edited_at=getattr(message, "edited_at", None),
-            reply_to=reply_to,
-            pinned=str(message_id) in pinned_ids,
-            attachments=attachments,
-            reactions=reactions,
+        canonical_id = MessageId(
+            self._message_key(message_id),
         )
+        canonical_conversation_id = ConversationId(
+            self._conversation_key_from_channel_id(
+                conversation_id,
+            ),
+        )
+        content = self._canonical_content(message)
+
+        try:
+            return CanonicalMessage(
+                id=canonical_id,
+                conversation_id=canonical_conversation_id,
+                identity_key=self._canonical_identity(author).identity_key,
+                content=content,
+                created_at=created_at,
+                edited_at=getattr(message, "edited_at", None),
+                reply_to=reply_to,
+                pinned=str(message_id) in pinned_ids,
+                attachments=attachments,
+                reactions=reactions,
+            )
+        except ValueError as exc:
+            raise AdapterError(
+                self._message_representability_error(
+                    message,
+                    canonical_id=canonical_id,
+                    canonical_conversation_id=canonical_conversation_id,
+                    content=content,
+                    attachments=attachments,
+                    cause=exc,
+                )
+            ) from exc
+
+    @staticmethod
+    def _message_representability_error(
+        message: Any,
+        *,
+        canonical_id: MessageId,
+        canonical_conversation_id: ConversationId,
+        content: str,
+        attachments: tuple[CanonicalAttachment, ...],
+        cause: ValueError,
+    ) -> str:
+        """Describe why one Discord message cannot enter the canonical model.
+
+        This deliberately reports source-side observations rather than
+        inventing a canonical representation.  The resulting diagnostic is
+        intended to identify the first real-world source feature that needs a
+        concrete canonical-model decision.
+        """
+        details = [
+            f"Discord message {canonical_id}",
+            f"conversation {canonical_conversation_id}",
+            f"content_length={len(content)}",
+            f"attachments={len(attachments)}",
+        ]
+
+        for attribute in (
+            "embeds",
+            "stickers",
+            "components",
+            "message_snapshots",
+            "poll",
+            "call",
+            "activity",
+            "purchase_notification",
+        ):
+            value = getattr(message, attribute, None)
+            if value is not None:
+                try:
+                    details.append(f"{attribute}={len(value)}")
+                except TypeError:
+                    details.append(f"{attribute}=present")
+
+        message_type = getattr(message, "type", None)
+        if message_type is not None:
+            type_name = getattr(message_type, "name", None)
+            details.append(
+                f"message_type={type_name or str(message_type)}"
+            )
+
+        # The normal diagnostic remains compact enough for a CLI error, but
+        # an actual Discord message can carry source features that are not
+        # obvious from the canonical model (for example flags, interaction
+        # metadata, or newly introduced discord.py fields).  Expose a stable
+        # object-level fingerprint when requested so an integration failure
+        # can be diagnosed from the real source object instead of guessing
+        # which Discord feature was present.  This is intentionally opt-in
+        # because repr(message) can be large and may contain source data.
+        details.extend(
+            [
+                f"source_class={type(message).__name__}",
+                f"source_module={type(message).__module__}",
+                f"content_repr={content!r}",
+                f"system_content_repr={str(getattr(message, 'system_content', '') or '')!r}",
+                f"message_type_repr={message_type!r}",
+                f"flags_repr={getattr(message, 'flags', None)!r}",
+                f"source_dict_keys={sorted(getattr(message, '__dict__', {}).keys())!r}",
+            ]
+        )
+
+        if os.environ.get("ARCHIVE_SYNC_ENGINE_DISCORD_DEBUG_MESSAGES"):
+            details.extend(
+                [
+                    f"source_content={getattr(message, 'content', None)!r}",
+                    f"source_system_content={getattr(message, 'system_content', None)!r}",
+                    f"source_attachments={getattr(message, 'attachments', None)!r}",
+                    f"source_embeds={getattr(message, 'embeds', None)!r}",
+                    f"source_stickers={getattr(message, 'stickers', None)!r}",
+                    f"source_components={getattr(message, 'components', None)!r}",
+                    f"source_snapshots={getattr(message, 'message_snapshots', None)!r}",
+                    f"source_poll={getattr(message, 'poll', None)!r}",
+                    f"source_call={getattr(message, 'call', None)!r}",
+                    f"source_activity={getattr(message, 'activity', None)!r}",
+                    f"source_purchase_notification={getattr(message, 'purchase_notification', None)!r}",
+                    f"source_interaction={getattr(message, 'interaction', None)!r}",
+                    f"source_interaction_metadata={getattr(message, 'interaction_metadata', None)!r}",
+                    f"source_application={getattr(message, 'application', None)!r}",
+                    f"source_flags={getattr(message, 'flags', None)!r}",
+                ]
+            )
+
+        return (
+            f"{'; '.join(details)}: {cause}. "
+            "The Discord source message is not representable by the current "
+            "canonical message model; no source content was discarded."
+        )
+
+    @staticmethod
+    def _source_attachments(message: Any) -> tuple[Any, ...]:
+        """Return message attachments, including attachments in snapshots.
+
+        Discord message forwarding uses ``Message.message_snapshots`` for the
+        forwarded source message.  A forwarded message can therefore expose
+        no attachments on the outer ``Message`` while the snapshot contains
+        the source attachment(s).  Treat those snapshot attachments as source
+        input rather than allowing the canonical message invariant to reject
+        an otherwise representable message.
+        """
+        attachments: list[Any] = list(
+            getattr(message, "attachments", ()) or ()
+        )
+        seen_ids = {
+            str(attachment_id)
+            for attachment_id in (
+                getattr(attachment, "id", None)
+                for attachment in attachments
+            )
+            if attachment_id is not None
+        }
+
+        for snapshot in getattr(message, "message_snapshots", ()) or ():
+            for attachment in getattr(snapshot, "attachments", ()) or ():
+                attachment_id = getattr(attachment, "id", None)
+                if attachment_id is None or str(attachment_id) not in seen_ids:
+                    attachments.append(attachment)
+                    if attachment_id is not None:
+                        seen_ids.add(str(attachment_id))
+
+        return tuple(attachments)
+
+    @staticmethod
+    def _canonical_content(message: Any) -> str:
+        """Return the best platform-provided textual representation.
+
+        Discord system messages normally expose a human-readable
+        ``system_content`` value.  Some system-event messages, however, can
+        legitimately arrive with both ``content`` and ``system_content``
+        empty.  The canonical message model requires textual or attachment
+        content, so for the currently observed ``pins_add`` event we derive
+        the smallest deterministic textual representation from the source
+        event itself rather than dropping the event or inventing unrelated
+        content.
+        """
+        content = str(getattr(message, "content", "") or "")
+        if content:
+            return content
+
+        system_content = str(getattr(message, "system_content", "") or "")
+        if system_content:
+            return system_content
+
+        message_type = getattr(message, "type", None)
+        type_name = getattr(message_type, "name", None)
+        if type_name == "pins_add":
+            author = getattr(message, "author", None)
+            author_name = (
+                getattr(author, "global_name", None)
+                or getattr(author, "display_name", None)
+                or getattr(author, "name", None)
+            )
+            if author_name:
+                return f"{author_name} pinned a message."
+            return "A message was pinned."
+
+        embed_content = DiscordSourceAdapter._canonical_embed_content(
+            getattr(message, "embeds", ()) or (),
+        )
+        if embed_content:
+            return embed_content
+
+        snapshot_content = DiscordSourceAdapter._canonical_snapshot_content(
+            getattr(message, "message_snapshots", ()) or (),
+        )
+        if snapshot_content:
+            return snapshot_content
+
+        sticker_content = DiscordSourceAdapter._canonical_sticker_content(
+            getattr(message, "stickers", ()) or (),
+        )
+        if sticker_content:
+            return sticker_content
+
+        component_content = DiscordSourceAdapter._canonical_component_content(
+            getattr(message, "components", ()) or (),
+        )
+        if component_content:
+            return component_content
+
+        poll_content = DiscordSourceAdapter._canonical_poll_content(
+            getattr(message, "poll", None),
+        )
+        if poll_content:
+            return poll_content
+
+        # These Discord message features are also first-class source content,
+        # but the canonical model has no dedicated fields for them.  Preserve
+        # their existence rather than letting an otherwise meaningful source
+        # message become an empty canonical message.
+        for attribute, label in (
+            ("call", "call"),
+            ("activity", "activity"),
+            ("purchase_notification", "purchase notification"),
+        ):
+            if getattr(message, attribute, None) is not None:
+                return f"[Discord {label} message]"
+
+        # Some Discord messages contain a first-class source feature whose
+        # detailed fields are not exposed by the current canonical model (or
+        # whose discord.py representation has changed between releases).  A
+        # non-empty feature collection is still meaningful source content.
+        # Preserve that fact with an explicit deterministic marker instead of
+        # converting the message into an empty canonical message and aborting
+        # the entire import.  The marker is deliberately feature-specific so
+        # it is clear that this is a lossless *existence* representation, not
+        # invented user-authored text.
+        for attribute, label in (
+            ("embeds", "embed"),
+            ("stickers", "sticker"),
+            ("components", "interactive"),
+            ("message_snapshots", "forwarded"),
+        ):
+            value = getattr(message, attribute, None)
+            if value:
+                return f"[Discord {label} message]"
+
+        # Interaction metadata can accompany otherwise content-less Discord
+        # messages even when ``interaction`` itself is absent.  Treat it as a
+        # source feature for the same reason.
+        if (
+            getattr(message, "interaction", None) is not None
+            or getattr(message, "interaction_metadata", None) is not None
+        ):
+            return "[Discord interaction message]"
+
+        # Discord has added message-level source structures over time.  Keep a
+        # small compatibility set here for fields that are meaningful on an
+        # otherwise content-less message but are not modeled independently by
+        # the canonical schema.  This prevents a discord.py upgrade from
+        # turning a newly populated source field into an import-fatal empty
+        # message.
+        for attribute, label in (
+            ("role_subscription_data", "role subscription"),
+            ("application", "application"),
+            ("application_id", "application"),
+            ("webhook_id", "webhook"),
+        ):
+            if getattr(message, attribute, None) is not None:
+                return f"[Discord {label} message]"
+
+        # Discord can expose system/event messages whose ``system_content``
+        # is empty even though the message has a meaningful non-default
+        # message type.  Do not let such source events abort the entire
+        # archive import.  At this point all richer source representations
+        # above have already been exhausted, so the event type itself is the
+        # only stable source information available to this canonical model.
+        # Keep ordinary ``default`` messages strict: an actually empty
+        # user-authored message remains unrepresentable unless it has an
+        # attachment.
+        if type_name and type_name != "default":
+            return f"[Discord system message: {type_name}]"
+
+        return ""
+
+    @staticmethod
+    def _canonical_embed_content(embeds: Any) -> str:
+        """Extract stable human-readable content from Discord embeds.
+
+        The canonical message model does not have a separate embed field.
+        Embed-only Discord messages therefore need a deterministic textual
+        representation so their source content is not silently discarded.
+        Empty/metadata-only embeds still return an empty string and remain
+        explicitly unrepresentable rather than inventing content.
+        """
+        lines: list[str] = []
+
+        for embed in embeds:
+            def value(name: str) -> str:
+                raw = getattr(embed, name, None)
+                if raw is None and isinstance(embed, dict):
+                    raw = embed.get(name)
+                return str(raw or "").strip()
+
+            title = value("title")
+            description = value("description")
+            url = value("url")
+            if title:
+                lines.append(title)
+            if description:
+                lines.append(description)
+            if url:
+                lines.append(url)
+
+            author = getattr(embed, "author", None)
+            if author is None and isinstance(embed, dict):
+                author = embed.get("author")
+            author_name = ""
+            author_url = ""
+            if isinstance(author, dict):
+                author_name = str(author.get("name") or "").strip()
+                author_url = str(author.get("url") or "").strip()
+            elif author is not None:
+                author_name = str(getattr(author, "name", "") or "").strip()
+                author_url = str(getattr(author, "url", "") or "").strip()
+            if author_name:
+                lines.append(author_name)
+            if author_url:
+                lines.append(author_url)
+
+            fields = getattr(embed, "fields", None)
+            if fields is None and isinstance(embed, dict):
+                fields = embed.get("fields")
+            for field in fields or ():
+                if isinstance(field, dict):
+                    field_name = str(field.get("name") or "").strip()
+                    field_value = str(field.get("value") or "").strip()
+                else:
+                    field_name = str(getattr(field, "name", "") or "").strip()
+                    field_value = str(getattr(field, "value", "") or "").strip()
+                if field_name:
+                    lines.append(field_name)
+                if field_value:
+                    lines.append(field_value)
+
+            footer = getattr(embed, "footer", None)
+            if footer is None and isinstance(embed, dict):
+                footer = embed.get("footer")
+            footer_text = ""
+            if isinstance(footer, dict):
+                footer_text = str(footer.get("text") or "").strip()
+            elif footer is not None:
+                footer_text = str(getattr(footer, "text", "") or "").strip()
+            if footer_text:
+                lines.append(footer_text)
+
+            for media_name in ("image", "thumbnail"):
+                media = getattr(embed, media_name, None)
+                if media is None and isinstance(embed, dict):
+                    media = embed.get(media_name)
+                media_url = ""
+                if isinstance(media, dict):
+                    media_url = str(media.get("url") or "").strip()
+                elif media is not None:
+                    media_url = str(getattr(media, "url", "") or "").strip()
+                if media_url:
+                    lines.append(media_url)
+
+        return "\n".join(line for line in lines if line)
+
+    @staticmethod
+    def _canonical_snapshot_content(snapshots: Any) -> str:
+        """Extract canonical text from Discord forwarded-message snapshots."""
+        lines: list[str] = []
+
+        for snapshot in snapshots:
+            content = str(getattr(snapshot, "content", "") or "").strip()
+            if content:
+                lines.append(content)
+
+            system_content = str(
+                getattr(snapshot, "system_content", "") or ""
+            ).strip()
+            if system_content and system_content != content:
+                lines.append(system_content)
+
+            embeds = DiscordSourceAdapter._canonical_embed_content(
+                getattr(snapshot, "embeds", ()) or (),
+            )
+            if embeds:
+                lines.append(embeds)
+
+            stickers = DiscordSourceAdapter._canonical_sticker_content(
+                getattr(snapshot, "stickers", ()) or (),
+            )
+            if stickers:
+                lines.append(stickers)
+
+            components = DiscordSourceAdapter._canonical_component_content(
+                getattr(snapshot, "components", ()) or (),
+            )
+            if components:
+                lines.append(components)
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _canonical_sticker_content(stickers: Any) -> str:
+        lines: list[str] = []
+        for sticker in stickers:
+            name = str(getattr(sticker, "name", "") or "").strip()
+            if not name and isinstance(sticker, dict):
+                name = str(sticker.get("name") or "").strip()
+            if name:
+                lines.append(f"[Sticker: {name}]")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _canonical_poll_content(poll: Any) -> str:
+        """Extract deterministic textual content from a Discord poll.
+
+        Discord polls are first-class message content in discord.py, but the
+        canonical message model intentionally has no separate poll field.
+        Preserve the poll's human-readable question and answer labels as
+        canonical text rather than allowing an otherwise content-bearing
+        message to fail the canonical message invariant.
+
+        The helper accepts the concrete discord.py objects as well as simple
+        mapping/object test doubles so the source adapter remains easy to
+        exercise without importing discord.py in unit tests.
+        """
+        if poll is None:
+            return ""
+
+        def read(value: Any, name: str) -> Any:
+            raw = getattr(value, name, None)
+            if raw is None and isinstance(value, dict):
+                raw = value.get(name)
+            return raw
+
+        question = read(poll, "question")
+        question_text = read(question, "text") if question is not None else None
+        if question_text is None and isinstance(question, str):
+            question_text = question
+        question_text = str(question_text or "").strip()
+
+        lines: list[str] = []
+        if question_text:
+            lines.append(f"Poll: {question_text}")
+        else:
+            lines.append("Poll")
+
+        answers = read(poll, "answers") or ()
+        for answer in answers:
+            answer_text = read(answer, "text")
+            if answer_text is None:
+                media = read(answer, "media")
+                answer_text = read(media, "text") if media is not None else None
+            answer_text = str(answer_text or "").strip()
+            if answer_text:
+                lines.append(f"- {answer_text}")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _canonical_component_content(components: Any) -> str:
+        labels: list[str] = []
+        for row in components:
+            children = getattr(row, "children", None)
+            if children is None and isinstance(row, dict):
+                children = row.get("components")
+            for component in children or ():
+                label = str(
+                    getattr(component, "label", None)
+                    or (component.get("label") if isinstance(component, dict) else "")
+                    or ""
+                ).strip()
+                url = str(
+                    getattr(component, "url", None)
+                    or (component.get("url") if isinstance(component, dict) else "")
+                    or ""
+                ).strip()
+                if label:
+                    labels.append(label)
+                if url:
+                    labels.append(url)
+        return "\n".join(labels)
 
     def _canonical_reply_to(
         self,
@@ -521,56 +989,42 @@ class DiscordSourceAdapter(SourceAdapter):
             is_bot=bool(getattr(user, "bot", False)),
         )
 
-    async def _collect_message_bearing_channels(
-        self,
-        guild: Any,
-    ) -> list[Any]:
-        """Collect message-bearing channels and active threads.
+    @staticmethod
+    def _message_bearing_channels(guild: Any) -> Iterable[Any]:
+        """Return message-bearing channels and discovered active threads.
 
-        Prefer the normal discord.py guild caches. A freshly fetched guild
-        can have empty ``channels``/``threads`` collections, however, even
-        though the REST APIs can enumerate those resources. When a cache is
-        empty, use the corresponding explicit fetch API rather than treating
-        an empty cache as an empty guild.
+        Discord exposes active threads separately from the guild channel
+        collection in some client/library versions.  Treat both collections
+        as source input and deduplicate by Discord channel ID so the canonical
+        archive sees each conversation exactly once.
         """
-        channels = list(getattr(guild, "channels", ()) or ())
-        if not channels:
-            fetch_channels = getattr(guild, "fetch_channels", None)
-            if fetch_channels is not None:
-                fetched_channels = await fetch_channels()
-                channels = list(fetched_channels or ())
 
-        threads = list(getattr(guild, "threads", ()) or ())
-        if not threads:
-            fetch_active_threads = getattr(
-                guild,
-                "fetch_active_threads",
-                None,
-            )
-            if fetch_active_threads is not None:
-                active_threads = await fetch_active_threads()
-                threads = list(
-                    getattr(active_threads, "threads", active_threads)
-                    or ()
-                )
+        channels = getattr(guild, "channels", ())
+        threads = getattr(guild, "threads", ())
 
-        candidates = (*channels, *threads)
+        candidates = (
+            *channels,
+            *threads,
+        )
+
         seen_ids: set[str] = set()
-        result: list[Any] = []
 
         for channel in candidates:
-            if not self._is_message_bearing_channel(channel):
+            if not DiscordSourceAdapter._is_message_bearing_channel(
+                channel,
+            ):
                 continue
+
             channel_id = getattr(channel, "id", None)
             if channel_id is None:
                 continue
+
             key = str(channel_id)
             if key in seen_ids:
                 continue
-            seen_ids.add(key)
-            result.append(channel)
 
-        return result
+            seen_ids.add(key)
+            yield channel
 
     @staticmethod
     async def _collect_archived_threads(
@@ -613,6 +1067,45 @@ class DiscordSourceAdapter(SourceAdapter):
             archived.values(),
             key=DiscordSourceAdapter._channel_sort_key,
         )
+
+    @classmethod
+    async def _collect_message_bearing_channels(cls, guild: Any) -> list[Any]:
+        """Collect message-bearing channels and active threads, including uncached ones."""
+        channels = list(getattr(guild, "channels", ()) or ())
+        threads = list(getattr(guild, "threads", ()) or ())
+
+        if not channels:
+            fetch_channels = getattr(guild, "fetch_channels", None)
+            if fetch_channels is not None:
+                fetched = fetch_channels()
+                if hasattr(fetched, "__aiter__"):
+                    channels = [channel async for channel in fetched]
+                else:
+                    channels = list(await fetched)
+
+        if not threads:
+            fetch_active_threads = getattr(guild, "fetch_active_threads", None)
+            if fetch_active_threads is not None:
+                result = fetch_active_threads()
+                if hasattr(result, "__await__"):
+                    result = await result
+                threads = list(getattr(result, "threads", result) or ())
+
+        candidates = (*channels, *threads)
+        seen_ids: set[str] = set()
+        result: list[Any] = []
+        for channel in candidates:
+            if not cls._is_message_bearing_channel(channel):
+                continue
+            channel_id = getattr(channel, "id", None)
+            if channel_id is None:
+                continue
+            key = str(channel_id)
+            if key in seen_ids:
+                continue
+            seen_ids.add(key)
+            result.append(channel)
+        return result
 
     @staticmethod
     def _is_message_bearing_channel(channel: Any) -> bool:
@@ -729,10 +1222,22 @@ class DiscordSourceAdapter(SourceAdapter):
             str(getattr(channel, "name", "")),
         )
 
+    def set_runner(self, runner: Callable[[Awaitable[Any]], Any] | None) -> None:
+        """Set the event-loop runner used by synchronous adapter operations.
+
+        The Discord runtime owns the event loop because the discord.py HTTP
+        client and its aiohttp session are bound to that loop.  The adapter
+        remains synchronous at its public boundary, so the runtime injects
+        its ``run_until_complete`` runner rather than allowing individual
+        adapter calls to create and close unrelated event loops.
+        """
+        self._runner = runner
+
     def _run(self, awaitable: Awaitable[_T]) -> _T:
-        """Execute one Discord coroutine using the runtime-owned event loop."""
+        """Execute one Discord coroutine for the synchronous SourceAdapter contract."""
         if self._runner is not None:
             return self._runner(awaitable)
+
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -744,7 +1249,3 @@ class DiscordSourceAdapter(SourceAdapter):
         raise AdapterError(
             "DiscordSourceAdapter synchronous methods cannot run inside an active event loop."
         )
-
-    def set_runner(self, runner: Callable[[Awaitable[_T]], _T] | None) -> None:
-        """Set the event-loop runner owned by the surrounding source runtime."""
-        self._runner = runner

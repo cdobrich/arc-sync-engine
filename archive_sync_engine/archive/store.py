@@ -738,18 +738,26 @@ class ArchiveStore:
             message.content,
         )
 
-    @staticmethod
     def _row_to_message(
+        self,
         row: sqlite3.Row,
     ) -> CanonicalMessage:
         """
-        Convert a SQLite row into a CanonicalMessage core.
+        Convert a SQLite row into a complete CanonicalMessage aggregate.
+
+        Message attachments are stored in normalized tables rather than
+        duplicated in the message row.  They must therefore be rehydrated
+        before constructing ``CanonicalMessage``.  In particular, an
+        attachment-only message has empty text but is still a valid canonical
+        message; constructing the row with ``attachments=()`` would violate
+        the canonical message invariant and make archive reads fail after a
+        successful import.
         """
 
+        message_id = MessageId(row["message_id"])
+
         return CanonicalMessage(
-            id=MessageId(
-                row["message_id"],
-            ),
+            id=message_id,
             conversation_id=ConversationId(
                 row["conversation_id"],
             ),
@@ -774,8 +782,8 @@ class ArchiveStore:
                 else None
             ),
             content=row["content"],
-            attachments=(),
-            reactions=(),
+            attachments=tuple(self.attachments_for_message(message_id)),
+            reactions=tuple(self.reactions_for_message(message_id)),
         )
 
     #

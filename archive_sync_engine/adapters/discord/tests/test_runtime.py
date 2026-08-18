@@ -107,6 +107,8 @@ def test_discord_source_adapter_can_reuse_runtime_owned_event_loop() -> None:
             return "same-loop"
 
         assert adapter._run(identify()) == "same-loop"
+        adapter.set_runner(None)
+        assert adapter._run(identify()) == "same-loop"
     finally:
         loop.close()
 

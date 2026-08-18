@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -71,6 +72,14 @@ def validate_archive_package(
         )
 
     try:
+        invalid_empty_messages = _find_empty_message_ids(paths.database)
+        if invalid_empty_messages:
+            errors.extend(
+                f"Canonical message {message_id} is invalid: "
+                "A message must contain text or at least one attachment."
+                for message_id in invalid_empty_messages
+            )
+
         with Archive(paths) as archive:
             manifest = archive.manifest
             manifest_loaded = True
@@ -153,7 +162,9 @@ def validate_archive_package(
                     )
 
     except Exception as exc:
-        errors.append(f"Archive Package validation failed: {exc}")
+        message = f"Archive Package validation failed: {exc}"
+        if message not in errors:
+            errors.append(message)
 
     return ArchiveIntegrityReport(
         valid=not errors,
@@ -164,3 +175,27 @@ def validate_archive_package(
         attachments_checked=attachments_checked,
         manifest_loaded=manifest_loaded,
     )
+
+
+def _find_empty_message_ids(database: Path) -> tuple[str, ...]:
+    """Find persisted messages that violate the canonical content invariant.
+
+    This check runs directly against normalized storage so an invalid message
+    can be identified by canonical ID even though recomposing it into a
+    ``CanonicalMessage`` necessarily raises before normal Archive traversal
+    can complete.
+    """
+    with sqlite3.connect(database) as connection:
+        rows = connection.execute(
+            """
+            SELECT m.message_id
+            FROM messages AS m
+            LEFT JOIN message_attachments AS ma
+                ON ma.message_id = m.message_id
+            WHERE (m.content IS NULL OR m.content = '')
+            GROUP BY m.message_id
+            HAVING COUNT(ma.attachment_id) = 0
+            ORDER BY m.message_id
+            """
+        )
+        return tuple(str(row[0]) for row in rows)

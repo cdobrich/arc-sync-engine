@@ -37,21 +37,25 @@ class ArchiveRecomposer:
                 f"Unknown message: {message_id}"
             )
 
-        return CanonicalMessage(
-            id=message.id,
-            conversation_id=message.conversation_id,
-            identity_key=message.identity_key,
-            content=message.content,
-            created_at=message.created_at,
-            edited_at=message.edited_at,
-            reply_to=message.reply_to,
-            attachments=self._attachments(
-                message.id,
-            ),
-            reactions=self._reactions(
-                message.id,
-            ),
-        )
+        attachments = self._attachments(message.id)
+        reactions = self._reactions(message.id)
+
+        try:
+            return CanonicalMessage(
+                id=message.id,
+                conversation_id=message.conversation_id,
+                identity_key=message.identity_key,
+                content=message.content,
+                created_at=message.created_at,
+                edited_at=message.edited_at,
+                reply_to=message.reply_to,
+                attachments=attachments,
+                reactions=reactions,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                f"Canonical message {message.id} is invalid: {exc}"
+            ) from exc
 
     def recompose_provenance(
             self,
