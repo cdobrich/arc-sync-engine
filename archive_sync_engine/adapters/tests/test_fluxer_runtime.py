@@ -208,6 +208,18 @@ def test_runtime_wires_real_rest_clients_into_destination_adapter() -> None:
     runtime.close()
     assert FakeHTTPClient.instances[0].closed is True
 
+def test_runtime_supports_context_manager_and_closes_owned_clients() -> None:
+    with FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=_factory(),
+    ) as runtime:
+        assert runtime.adapter is not None
+        assert FakeHTTPClient.instances[0].closed is False
+
+    assert FakeHTTPClient.instances[0].closed is True
+
+
 def test_runtime_lazily_constructs_user_client_for_masqueraded_message() -> None:
     runtime = FluxerDestinationRuntime(
         guild_id="guild-1",

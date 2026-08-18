@@ -341,6 +341,16 @@ class FluxerDestinationRuntime:
     def adapter(self) -> DestinationAdapter:
         return self._adapter
 
+    def __enter__(self) -> "FluxerDestinationRuntime":
+        """Enter the destination runtime context without changing ownership."""
+        if self._closed:
+            raise AdapterError("Cannot enter a closed Fluxer destination runtime.")
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        """Release all HTTP clients owned by this destination runtime."""
+        self.close()
+
     def _create_identity_client(
         self,
         mapping: FluxerIdentityMapping,
