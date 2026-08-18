@@ -66,7 +66,7 @@ To enable the migration program to interact with your Fluxer server, create a Fl
 1.  **Login:** Open the [Fluxer](https://web.fluxer.app/) app and sign in.
 
 2.  **Create a Bot Application:**
-    * Go to User Settings → Develoeprs → Applications. 
+    * Go to User Settings → Developers → Applications. 
     * This is done by finding your user Avatar and nearby should be a Gear-icon. Click this gear-icon to access the Settings.
     * From there click the button 'Create Application'. Give the application a name.
 
