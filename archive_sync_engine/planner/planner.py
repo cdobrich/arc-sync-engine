@@ -335,6 +335,15 @@ class Planner:
             fingerprint = canonical_fingerprint(identity)
 
             if identity_key not in synchronization_state.identities:
+                if capabilities.supports_identity_mapping:
+                    # Some destinations represent identities through
+                    # pre-existing external accounts selected by configured
+                    # mappings rather than through destination-side identity
+                    # creation. In that case there is no identity operation
+                    # to execute; messages use the destination adapter's
+                    # mapping when they are created.
+                    continue
+
                 self._require_capability(
                     capabilities.supports_identity_creation,
                     "supports_identity_creation",
@@ -382,10 +391,16 @@ class Planner:
         are independently synchronized. Reply operations are deferred until
         after all message operations have been planned so execution-local
         destination references exist for replies to messages created during
-        the same synchronization run.
+        the same synchronization run. Destinations that support replying as
+        part of initial message creation may use that path when the reply
+        target has already been created earlier in the same planned order.
         """
 
         message_ids = {str(message.id) for message in messages}
+        message_positions = {
+            str(message.id): index
+            for index, message in enumerate(messages)
+        }
         stale_message_ids = set(synchronization_state.messages) - message_ids
 
         for message in messages:
@@ -400,7 +415,7 @@ class Planner:
 
         reply_operations: list[SyncOperation] = []
 
-        for message in messages:
+        for message_index, message in enumerate(messages):
             message_id = str(message.id)
             fingerprint = canonical_fingerprint(message)
 
@@ -480,7 +495,10 @@ class Planner:
                     reply_target_id = str(message.reply_to)
                     if (
                         capabilities.supports_initial_message_replying
-                        and reply_target_id in synchronization_state.messages
+                        and (
+                            reply_target_id in synchronization_state.messages
+                            or message_positions[reply_target_id] < message_index
+                        )
                     ):
                         include_initial_reply = True
                     else:

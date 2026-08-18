@@ -85,6 +85,7 @@ def _capabilities(**overrides: bool) -> DestinationCapabilities:
         "supports_attachment_reordering": True,
         "supports_replying": True,
         "supports_identity_updates": True,
+        "supports_identity_mapping": False,
         "supports_identity_deletion": True,
     }
     values.update(overrides)
@@ -2702,6 +2703,28 @@ def test_plan_rejects_unsupported_conversation_updates() -> None:
         )
 
 
+def test_plan_skips_identity_creation_when_destination_uses_identity_mapping() -> None:
+    archive = _archive()
+    identity = _identity("identity-001")
+
+    archive.iter_identities.return_value = iter([identity])
+    archive.iter_conversations.return_value = iter([])
+    archive.iter_messages.return_value = iter([])
+
+    operations = list(
+        Planner().plan(
+            archive,
+            SynchronizationState(),
+            _capabilities(
+                supports_identity_creation=False,
+                supports_identity_mapping=True,
+            ),
+        )
+    )
+
+    assert operations == []
+
+
 def test_plan_rejects_unsupported_identity_creation() -> None:
     archive = _archive()
     identity = _identity("identity-001")
@@ -2886,7 +2909,7 @@ def test_plan_uses_initial_message_reply_capability_for_existing_target() -> Non
     ]
 
 
-def test_plan_rejects_initial_reply_when_target_is_not_already_synchronized() -> None:
+def test_plan_uses_initial_message_reply_capability_for_target_created_earlier_in_run() -> None:
     archive = _archive()
     conversation = _conversation("conversation-001")
     target = _message("message-000", "conversation-001")
@@ -2898,6 +2921,34 @@ def test_plan_rejects_initial_reply_when_target_is_not_already_synchronized() ->
     archive.iter_identities.return_value = iter([])
     archive.iter_conversations.return_value = iter([conversation])
     archive.iter_messages.return_value = iter([target, message])
+
+    capabilities = replace(
+        _capabilities(),
+        supports_replying=False,
+        supports_initial_message_replying=True,
+    )
+
+    operations = _planned_operations(Planner(), archive, SynchronizationState(), capabilities)
+
+    assert operations == [
+        CreateConversationOperation(conversation=conversation),
+        CreateMessageOperation(message=target),
+        CreateMessageOperation(message=message, include_reply_to=True),
+    ]
+
+
+def test_plan_rejects_initial_reply_when_target_is_created_later_in_run() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    target = _message("message-002", "conversation-001")
+    message = replace(
+        _message("message-001", "conversation-001"),
+        reply_to=target.id,
+    )
+
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([message, target])
 
     capabilities = replace(
         _capabilities(),

@@ -227,8 +227,37 @@ def test_fluxer_adapter_reports_current_capabilities() -> None:
     assert capabilities.supports_initial_message_replying is True
     assert capabilities.supports_replying is False
     assert capabilities.supports_identity_creation is False
+    assert capabilities.supports_identity_mapping is True
     assert capabilities.supports_identity_updates is False
     assert capabilities.supports_identity_deletion is False
+
+
+def test_fluxer_adapter_uses_injected_async_runner() -> None:
+    calls: list[object] = []
+
+    def run(awaitable):
+        calls.append(awaitable)
+        return asyncio.run(awaitable)
+
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(client, async_runner=run)
+
+    result = adapter.create_conversation(
+        CanonicalConversation(
+            id=ConversationId("conversation-1"),
+            conversation_type=ConversationType.CHANNEL,
+            title="general",
+        )
+    )
+
+    assert result.id == "fluxer-channel-1"
+    assert len(calls) == 1
+    assert client.calls[0][0] == "create_conversation"
+
+def test_fluxer_adapter_reports_identity_mapping_unsupported_without_mappings() -> None:
+    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+
+    assert adapter.capabilities.supports_identity_mapping is False
 
 
 def test_create_conversation_maps_canonical_channel() -> None:

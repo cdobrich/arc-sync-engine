@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -185,6 +186,18 @@ def test_fluxer_runtime_rejects_empty_token() -> None:
         FluxerClientConfig(token="")
 
 
+def test_runtime_supports_context_manager_lifecycle() -> None:
+    with FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=_factory(),
+    ) as runtime:
+        assert runtime.adapter is not None
+        assert FakeHTTPClient.instances[0].closed is False
+
+    assert FakeHTTPClient.instances[0].closed is True
+
+
 def test_runtime_wires_real_rest_clients_into_destination_adapter() -> None:
     runtime = FluxerDestinationRuntime(
         guild_id="guild-1",
@@ -207,18 +220,6 @@ def test_runtime_wires_real_rest_clients_into_destination_adapter() -> None:
 
     runtime.close()
     assert FakeHTTPClient.instances[0].closed is True
-
-def test_runtime_supports_context_manager_and_closes_owned_clients() -> None:
-    with FluxerDestinationRuntime(
-        guild_id="guild-1",
-        bot_client=FluxerClientConfig(token="bot-token"),
-        client_factory=_factory(),
-    ) as runtime:
-        assert runtime.adapter is not None
-        assert FakeHTTPClient.instances[0].closed is False
-
-    assert FakeHTTPClient.instances[0].closed is True
-
 
 def test_runtime_lazily_constructs_user_client_for_masqueraded_message() -> None:
     runtime = FluxerDestinationRuntime(
@@ -389,3 +390,65 @@ def test_build_fluxer_destination_runtime_config_uses_override_token() -> None:
 
     assert config["fluxer"].token == "override-token"
     assert config["fluxer"].max_retries == 2
+
+
+def test_runtime_reuses_one_event_loop_for_multiple_http_operations() -> None:
+    loop_ids: list[int] = []
+
+    class LoopAwareHTTPClient(FakeHTTPClient):
+        async def create_guild_channel(self, guild_id, *, name, type):
+            loop_ids.append(id(asyncio.get_running_loop()))
+            return await super().create_guild_channel(
+                guild_id, name=name, type=type
+            )
+
+        async def send_message(
+            self,
+            channel_id,
+            *,
+            content=None,
+            files=None,
+            message_reference=None,
+        ):
+            loop_ids.append(id(asyncio.get_running_loop()))
+            return await super().send_message(
+                channel_id,
+                content=content,
+                files=files,
+                message_reference=message_reference,
+            )
+
+        async def close(self) -> None:
+            loop_ids.append(id(asyncio.get_running_loop()))
+            await super().close()
+
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=FluxerHttpClientFactory(
+            importer=lambda: SimpleNamespace(HTTPClient=LoopAwareHTTPClient),
+        ),
+    )
+
+    runtime.adapter.create_conversation(
+        CanonicalConversation(
+            id=ConversationId("conversation-1"),
+            conversation_type=ConversationType.CHANNEL,
+            title="general",
+        )
+    )
+    runtime.adapter.create_message(
+        CanonicalMessage(
+            id=MessageId("message-1"),
+            conversation_id=ConversationId("conversation-1"),
+            identity_key=IdentityKey("identity-1"),
+            content="hello",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ),
+        DestinationConversationRef("channel-1"),
+    )
+
+    runtime.close()
+
+    assert len(loop_ids) == 3
+    assert len(set(loop_ids)) == 1

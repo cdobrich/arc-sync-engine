@@ -173,8 +173,13 @@ class FluxerDestinationAdapter(DestinationAdapter):
         identity_mappings: tuple[FluxerIdentityMapping, ...] = (),
         identity_client_factory: Callable[[FluxerIdentityMapping], Any] | None = None,
         reaction_client_factory: Callable[[str], Any] | None = None,
+        async_runner: Callable[[Any], Any] | None = None,
     ) -> None:
         self._client = client
+        # The runtime supplies a persistent event-loop runner for real HTTP
+        # clients.  Standalone adapters retain the synchronous fallback for
+        # tests and callers that do not own a runtime.
+        self._async_runner = async_runner
 
         self._legacy_reaction_client_factory = reaction_client_factory is not None and identity_client_factory is None
 
@@ -228,6 +233,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
             supports_attachment_reordering=False,
             supports_replying=False,
             supports_identity_creation=False,
+            supports_identity_mapping=bool(self._identity_mappings),
             supports_identity_updates=False,
             supports_identity_deletion=False,
         )
@@ -669,8 +675,10 @@ class FluxerDestinationAdapter(DestinationAdapter):
         if not result:
             raise AdapterError(f"Fluxer failed to {action}.")
 
-    @staticmethod
-    def _run(awaitable: Any) -> Any:
+    def _run(self, awaitable: Any) -> Any:
+        if self._async_runner is not None:
+            return self._async_runner(awaitable)
+
         try:
             asyncio.get_running_loop()
         except RuntimeError:

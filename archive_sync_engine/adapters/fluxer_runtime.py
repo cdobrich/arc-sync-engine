@@ -319,6 +319,7 @@ class FluxerDestinationRuntime:
         self._identity_mappings = identity_mappings
         self._http_clients: list[Any] = []
         self._closed = False
+        self._loop = asyncio.new_event_loop()
 
         bot_http = self._factory.create(bot_client)
         self._http_clients.append(bot_http)
@@ -335,6 +336,7 @@ class FluxerDestinationRuntime:
             self._bot_client,
             identity_mappings=identity_mappings,
             identity_client_factory=self._create_identity_client,
+            async_runner=self._run_async,
         )
 
     @property
@@ -342,13 +344,17 @@ class FluxerDestinationRuntime:
         return self._adapter
 
     def __enter__(self) -> "FluxerDestinationRuntime":
-        """Enter the destination runtime context without changing ownership."""
         if self._closed:
-            raise AdapterError("Cannot enter a closed Fluxer destination runtime.")
+            raise AdapterError("Fluxer destination runtime is closed.")
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        """Release all HTTP clients owned by this destination runtime."""
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: Any | None,
+    ) -> None:
+        del exc_type, exc_value, traceback
         self.close()
 
     def _create_identity_client(
@@ -384,29 +390,64 @@ class FluxerDestinationRuntime:
         self._identity_clients[mapping.username] = client
         return client
 
-    def close(self) -> None:
-        """Close all owned HTTP clients.
-
-        The engine's application boundary is synchronous today.  Like the
-        destination adapter, this method must be called outside a running
-        asyncio event loop.
-        """
+    def _run_async(self, awaitable: Any) -> Any:
+        """Run one async Fluxer operation on this runtime's persistent loop."""
         if self._closed:
-            return
-        self._closed = True
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            raise AdapterError("Fluxer destination runtime is closed.")
+        if self._loop.is_closed():
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            raise AdapterError("Fluxer destination runtime event loop is closed.")
 
         try:
-            asyncio.get_running_loop()
+            running_loop = asyncio.get_running_loop()
         except RuntimeError:
-            for client in reversed(self._http_clients):
-                asyncio.run(client.close())
+            running_loop = None
+
+        if running_loop is self._loop:
+            return running_loop.run_until_complete(awaitable)
+
+        if running_loop is not None:
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            raise RuntimeError(
+                "FluxerDestinationRuntime cannot execute a synchronous "
+                "operation from inside an active asyncio event loop."
+            )
+
+        return self._loop.run_until_complete(awaitable)
+
+    def close(self) -> None:
+        """Close all HTTP clients and the runtime-owned event loop."""
+        if self._closed:
             return
 
-        self._closed = False
-        raise RuntimeError(
-            "FluxerDestinationRuntime.close() cannot run inside an active "
-            "asyncio event loop."
-        )
+        self._closed = True
+        first_error: BaseException | None = None
+        try:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                for client in reversed(self._http_clients):
+                    try:
+                        self._loop.run_until_complete(client.close())
+                    except BaseException as exc:
+                        if first_error is None:
+                            first_error = exc
+            else:
+                raise RuntimeError(
+                    "FluxerDestinationRuntime.close() cannot run inside an "
+                    "active asyncio event loop."
+                )
+        finally:
+            self._http_clients.clear()
+            self._identity_clients.clear()
+            self._loop.close()
+
+        if first_error is not None:
+            raise first_error
 
 
 def build_fluxer_destination_runtime_config(
