@@ -47,6 +47,8 @@ class CanonicalExporter:
         destination: DestinationAdapter,
         asset_store: AssetStore,
         on_status: Callable[[SyncProgress], None] | None = None,
+        between_messages_seconds: float = 0.0,
+        between_channels_seconds: float = 0.0,
     ) -> ExportReport:
         """
         Reproduce the canonical Archive at the destination.
@@ -74,6 +76,8 @@ class CanonicalExporter:
             capabilities=capabilities,
             state_repository=state_repository,
             on_status=on_status,
+            between_messages_seconds=between_messages_seconds,
+            between_channels_seconds=between_channels_seconds,
         )
 
         results = coordinator.synchronize()

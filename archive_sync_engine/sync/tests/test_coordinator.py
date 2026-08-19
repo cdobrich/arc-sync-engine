@@ -171,55 +171,6 @@ def test_synchronize_loads_state_and_plans_operations() -> None:
     executor.execute.assert_not_called()
 
 
-def test_synchronize_reports_progress_for_each_operation() -> None:
-    archive = _archive()
-    planner = _planner()
-    executor = _executor()
-    destination = _destination()
-    capabilities = _capabilities()
-    state_repository = _state_repository()
-    reported = []
-
-    state = SynchronizationState()
-    state_repository.load_synchronization_state.return_value = state
-
-    operation_one = CreateConversationOperation(
-        conversation=CanonicalConversation(
-            id=ConversationId("conversation-1"),
-            conversation_type=ConversationType.CHANNEL,
-            title="general",
-        )
-    )
-    operation_two = CreateMessageOperation(
-        message=CanonicalMessage(
-            id=MessageId("message-1"),
-            conversation_id=ConversationId("conversation-1"),
-            identity_key=IdentityKey("identity-1"),
-            content="hello",
-            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        )
-    )
-    planner.plan.return_value = iter((operation_one, operation_two))
-    executor.execute.side_effect = [ExecutionResult(), ExecutionResult()]
-
-    coordinator = SyncCoordinator(
-        archive=archive,
-        planner=planner,
-        executor=executor,
-        destination=destination,
-        capabilities=capabilities,
-        state_repository=state_repository,
-        on_status=reported.append,
-    )
-
-    coordinator.synchronize()
-
-    assert [(event.phase, event.current, event.detail) for event in reported] == [
-        ("conversations", 1, "conversation-1"),
-        ("messages", 1, "message-1"),
-    ]
-
-
 def test_synchronize_executes_operations_in_planner_order() -> None:
     archive = _archive()
     planner = _planner()
@@ -1679,3 +1630,135 @@ def test_dry_run_plans_operations_without_executing_or_persisting_state() -> Non
     )
     executor.execute.assert_not_called()
     state_repository.record_execution.assert_not_called()
+
+
+def test_synchronize_reports_progress_for_each_operation() -> None:
+    archive = _archive()
+    planner = _planner()
+    executor = _executor()
+    destination = _destination()
+    capabilities = _capabilities()
+    state_repository = _state_repository()
+    reported = []
+
+    state = SynchronizationState()
+    state_repository.load_synchronization_state.return_value = state
+
+    operation_one = CreateConversationOperation(
+        conversation=CanonicalConversation(
+            id=ConversationId("conversation-1"),
+            conversation_type=ConversationType.CHANNEL,
+            title="general",
+        )
+    )
+    operation_two = CreateMessageOperation(
+        message=CanonicalMessage(
+            id=MessageId("message-1"),
+            conversation_id=ConversationId("conversation-1"),
+            identity_key=IdentityKey("identity-1"),
+            content="hello",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    planner.plan.return_value = iter((operation_one, operation_two))
+    executor.execute.side_effect = [ExecutionResult(), ExecutionResult()]
+
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=planner,
+        executor=executor,
+        destination=destination,
+        capabilities=capabilities,
+        state_repository=state_repository,
+        on_status=reported.append,
+    )
+
+    coordinator.synchronize()
+
+    assert [(event.phase, event.current, event.detail) for event in reported] == [
+        ("conversations", 1, "conversation-1"),
+        ("messages", 1, "message-1"),
+    ]
+
+
+def test_export_rate_limiter_applies_message_and_channel_delays() -> None:
+    """Destination operations honor the configured migration delays."""
+    from archive_sync_engine.adapters.references import DestinationConversationRef
+    from archive_sync_engine.models import CanonicalIdentity
+    from archive_sync_engine.operations import CreateConversationOperation, CreateMessageOperation
+    from archive_sync_engine.rate_limit import OperationRateLimiter
+    from archive_sync_engine.executor.result import ExecutionResult
+
+    archive = _archive()
+    planner = _planner()
+    executor = _executor()
+    destination = _destination()
+    state_repository = Mock(spec=StateRepository)
+    state_repository.load_synchronization_state.return_value = SynchronizationState()
+    state_repository.record_execution.return_value = None
+
+    conversation_one = CanonicalConversation(
+        id=ConversationId("conversation-1"),
+        conversation_type=ConversationType.CHANNEL,
+        title="one",
+    )
+    conversation_two = replace(conversation_one, id=ConversationId("conversation-2"), title="two")
+    identity = IdentityKey("identity-1")
+    messages = (
+        CanonicalMessage(
+            id=MessageId("message-1"),
+            conversation_id=conversation_one.id,
+            identity_key=identity,
+            content="one",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ),
+        CanonicalMessage(
+            id=MessageId("message-2"),
+            conversation_id=conversation_one.id,
+            identity_key=identity,
+            content="two",
+            created_at=datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc),
+        ),
+        CanonicalMessage(
+            id=MessageId("message-3"),
+            conversation_id=conversation_two.id,
+            identity_key=identity,
+            content="three",
+            created_at=datetime(2026, 1, 1, 0, 2, tzinfo=timezone.utc),
+        ),
+    )
+    operations = [
+        CreateConversationOperation(conversation_one),
+        CreateMessageOperation(messages[0]),
+        CreateMessageOperation(messages[1]),
+        CreateConversationOperation(conversation_two),
+        CreateMessageOperation(messages[2]),
+    ]
+    planner.plan.return_value = iter(operations)
+    executor.execute.side_effect = [
+        ExecutionResult(canonical_id=None),
+        ExecutionResult(canonical_id=None),
+        ExecutionResult(canonical_id=None),
+        ExecutionResult(canonical_id=None),
+        ExecutionResult(canonical_id=None),
+    ]
+
+    sleeps: list[float] = []
+    limiter = OperationRateLimiter(
+        between_messages_seconds=0.5,
+        between_channels_seconds=2.0,
+        sleep=sleeps.append,
+        monotonic=lambda: 100.0,
+    )
+
+    SyncCoordinator(
+        archive=archive,
+        planner=planner,
+        executor=executor,
+        destination=destination,
+        capabilities=DestinationCapabilities(),
+        state_repository=state_repository,
+        rate_limiter=limiter,
+    ).synchronize()
+
+    assert sleeps == [2.0, 0.5]

@@ -13,22 +13,6 @@ from archive_sync_engine.archive import validate_archive_package
 
 
 
-def test_print_import_progress_renders_adapter_neutral_phases(capsys) -> None:
-    from archive_sync_engine.cli import _print_import_progress
-    from archive_sync_engine.importer.progress import ImportProgress
-
-    _print_import_progress(ImportProgress(phase="identities", current=1, detail="user-1"))
-    _print_import_progress(ImportProgress(phase="conversations", current=2, total=4, detail="General"))
-    _print_import_progress(ImportProgress(phase="messages", current=3, total=10, detail="message-3"))
-    _print_import_progress(ImportProgress(phase="attachments", current=1, total=2, detail="photo.png"))
-
-    output = capsys.readouterr().out
-    assert "Importing identity 1 (user-1)..." in output
-    assert "Importing conversations 2 of 4: General..." in output
-    assert "Importing messages 3 of 10 [message-3]..." in output
-    assert "Importing attachment 1 of 2: photo.png..." in output
-
-
 def test_print_export_progress_renders_adapter_neutral_phases(capsys) -> None:
     from archive_sync_engine.cli import _print_export_progress
     from archive_sync_engine.sync.progress import SyncProgress
@@ -45,6 +29,45 @@ def test_print_export_progress_renders_adapter_neutral_phases(capsys) -> None:
     assert "Exporting attachment 1 [photo.png]..." in output
 
 
+def test_print_import_progress_renders_adapter_neutral_phases(capsys) -> None:
+    from archive_sync_engine.cli import _print_import_progress
+    from archive_sync_engine.importer.progress import ImportProgress
+
+    _print_import_progress(ImportProgress(phase="identities", current=1, detail="user-1"))
+    _print_import_progress(ImportProgress(phase="conversations", current=2, total=4, detail="General"))
+    _print_import_progress(ImportProgress(phase="messages", current=3, total=10, detail="message-3"))
+    _print_import_progress(ImportProgress(phase="attachments", current=1, total=2, detail="photo.png"))
+    _print_import_progress(
+        ImportProgress(
+            phase="refresh",
+            mode="incremental",
+            traversal="adapter_incremental",
+            cursor="message-42",
+            lookback_seconds=604800,
+            detail="conversation-1",
+        )
+    )
+    _print_import_progress(
+        ImportProgress(
+            phase="refresh",
+            mode="incremental",
+            traversal="completed",
+            examined=3,
+            attachments_downloaded=1,
+            attachments_reused=2,
+            detail="source refresh complete",
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert "Importing identity 1 (user-1)..." in output
+    assert "Importing conversations 2 of 4: General..." in output
+    assert "Importing messages 3 of 10 [message-3]..." in output
+    assert "Importing attachment 1 of 2: photo.png..." in output
+    assert "Import refresh: mode=incremental; traversal=adapter_incremental; cursor=message-42; lookback=604800s; conversation-1." in output
+    assert "Import refresh completed: mode=incremental; examined=3; attachments_downloaded=1; attachments_reused=2." in output
+
+
 def test_import_cli_reports_connection_and_phase_status(tmp_path: Path, capsys) -> None:
     archive_path = tmp_path / "archive"
     ArchivePackage.initialize(ArchivePaths(archive_path))
@@ -56,6 +79,9 @@ archive:
 discord:
   token: discord-secret
   guild_id: 123
+delays:
+  between_messages_seconds: 0.5
+  between_channels_seconds: 2.0
 """,
         encoding="utf-8",
     )
@@ -79,6 +105,9 @@ discord:
     assert "Connected successfully." in output
     assert "Initiating phase: import discord → Archive." in output
     assert "Import completed: 1 identities, 1 conversations, 2 messages, 0 attachments." in output
+    call = runtime.import_to_archive.call_args
+    assert call.kwargs["between_messages_seconds"] == 0.5
+    assert call.kwargs["between_channels_seconds"] == 2.0
 
 
 def test_sync_invocation_translates_platform_cli_flags_at_boundary() -> None:
@@ -820,6 +849,9 @@ discord:
 fluxer:
   token: fluxer-secret
   server_id: fluxer-server
+delays:
+  between_messages_seconds: 0.75
+  between_channels_seconds: 3.0
 """,
         encoding="utf-8",
     )
@@ -859,55 +891,8 @@ fluxer:
     exporter.export.assert_called_once()
     assert exporter.export.call_args.kwargs["destination"] is runtime.adapter
     assert exporter.export.call_args.kwargs["archive"].package.paths.root == archive_path.resolve()
-
-
-def test_export_cli_reports_connection_and_phase_status(tmp_path: Path, capsys) -> None:
-    archive_path = tmp_path / "archive"
-    ArchivePackage.initialize(ArchivePaths(archive_path))
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        """
-archive:
-  path: ./archive
-fluxer:
-  token: fluxer-secret
-  server_id: fluxer-server
-""",
-        encoding="utf-8",
-    )
-
-    runtime = MagicMock()
-    runtime.__enter__.return_value = runtime
-    runtime.__exit__.return_value = None
-    runtime.adapter = object()
-
-    registry = MagicMock()
-    registry.create.return_value = runtime
-    registry.build_config.return_value = {
-        "fluxer": type("FluxerConfig", (), {"token": "fluxer-secret"})()
-    }
-
-    exporter = MagicMock()
-    exporter.export.return_value = type("Report", (), {"executed_operations": 3})()
-
-    from archive_sync_engine.sync.progress import SyncProgress
-    exporter.export.side_effect = lambda **kwargs: (
-        kwargs["on_status"](SyncProgress("conversations", 1, detail="conversation-1")),
-        type("Report", (), {"executed_operations": 3})(),
-    )[1]
-
-    with (
-        patch("archive_sync_engine.cli.default_destination_runtime_registry", return_value=registry),
-        patch("archive_sync_engine.cli.CanonicalExporter", return_value=exporter),
-    ):
-        assert main(["export", "--config", str(config)]) == 0
-
-    output = capsys.readouterr().out
-    assert "Attempting to connect to destination adapter 'fluxer'" in output
-    assert "Connected successfully." in output
-    assert "Initiating phase: export Archive → fluxer." in output
-    assert "Exporting conversations 1: conversation-1..." in output
-    assert "Export completed: 3 operations." in output
+    assert exporter.export.call_args.kwargs["between_messages_seconds"] == 0.75
+    assert exporter.export.call_args.kwargs["between_channels_seconds"] == 3.0
 
 
 def test_export_cli_allows_destination_scope_override(tmp_path: Path) -> None:
@@ -1405,3 +1390,52 @@ def test_cli_unexpected_application_error_does_not_print_usage(capsys, monkeypat
     captured = capsys.readouterr()
     assert "usage:" not in captured.err
     assert "Unexpected application error" in captured.err
+
+def test_export_cli_reports_connection_and_phase_status(tmp_path: Path, capsys) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-server
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.adapter = object()
+
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    registry.build_config.return_value = {
+        "fluxer": type("FluxerConfig", (), {"token": "fluxer-secret"})()
+    }
+
+    exporter = MagicMock()
+    exporter.export.return_value = type("Report", (), {"executed_operations": 3})()
+
+    from archive_sync_engine.sync.progress import SyncProgress
+    exporter.export.side_effect = lambda **kwargs: (
+        kwargs["on_status"](SyncProgress("conversations", 1, detail="conversation-1")),
+        type("Report", (), {"executed_operations": 3})(),
+    )[1]
+
+    with (
+        patch("archive_sync_engine.cli.default_destination_runtime_registry", return_value=registry),
+        patch("archive_sync_engine.cli.CanonicalExporter", return_value=exporter),
+    ):
+        assert main(["export", "--config", str(config)]) == 0
+
+    output = capsys.readouterr().out
+    assert "Attempting to connect to destination adapter 'fluxer'" in output
+    assert "Connected successfully." in output
+    assert "Initiating phase: export Archive → fluxer." in output
+    assert "Exporting conversations 1: conversation-1..." in output
+    assert "Export completed: 3 operations." in output
+

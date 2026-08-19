@@ -317,6 +317,7 @@ def test_canonical_importer_reports_user_facing_status_without_source_specific_f
         )
 
     assert [(item.phase, item.current, item.total) for item in statuses] == [
+        ("refresh", None, None),
         ("identities", 0, None),
         ("identities", 1, None),
         ("conversations", 0, None),
@@ -324,11 +325,14 @@ def test_canonical_importer_reports_user_facing_status_without_source_specific_f
         ("messages", 0, None),
         ("attachments", 1, 1),
         ("messages", 1, None),
+        ("refresh", None, None),
     ]
-    assert statuses[1].detail == "user-001"
-    assert statuses[3].detail == "Test Conversation"
-    assert statuses[5].detail == "hello.txt"
-    assert statuses[6].detail == "message-001"
+    assert statuses[0].mode == "full"
+    assert statuses[-1].traversal == "completed"
+    assert statuses[2].detail == "user-001"
+    assert statuses[4].detail == "Test Conversation"
+    assert statuses[6].detail == "hello.txt"
+    assert statuses[7].detail == "message-001"
 
 
 def test_incremental_refresh_reuses_content_addressed_attachment_without_download(
@@ -400,3 +404,94 @@ def test_incremental_refresh_uses_adapter_incremental_message_traversal(
             "message-001",
             "message-002",
         )
+
+
+def test_import_rate_limiter_applies_message_and_channel_delays(tmp_path: Path) -> None:
+    """Import pacing occurs between messages and conversations."""
+    source = FakeSourceAdapter(b"attachment-content")
+    conversation_two = CanonicalConversation(
+        id=ConversationId("conversation-002"),
+        conversation_type=ConversationType.CHANNEL,
+        title="Second Conversation",
+        created_at=datetime(2026, 7, 31, tzinfo=timezone.utc),
+    )
+    original_iter_conversations = source.iter_conversations
+    source.iter_conversations = lambda: iter(
+        (*tuple(original_iter_conversations()), conversation_two)
+    )
+
+    original_iter_messages = source.iter_messages
+    source.iter_messages = lambda conversation: (
+        original_iter_messages(conversation)
+        if conversation.id == source._conversation.id
+        else iter(())
+    )
+
+    sleeps: list[float] = []
+    from archive_sync_engine.rate_limit import OperationRateLimiter
+
+    limiter = OperationRateLimiter(
+        between_messages_seconds=0.5,
+        between_channels_seconds=2.0,
+        sleep=sleeps.append,
+        monotonic=lambda: 100.0,
+    )
+
+    paths = ArchivePaths(root=tmp_path)
+    with ArchiveWriter(paths) as writer:
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=AssetStore(paths.root),
+            rate_limiter=limiter,
+        )
+
+    # The source has one message in each conversation. Only the channel
+    # transition requires pacing; the first message in each channel does not
+    # incur a message delay.
+    assert sleeps == [2.0]
+
+
+def test_incremental_refresh_reports_source_cursor_diagnostics(tmp_path: Path) -> None:
+    from archive_sync_engine.adapters.source import SourceRefreshCursor
+
+    class IncrementalSource(FakeSourceAdapter):
+        @property
+        def incremental_refresh_lookback(self):
+            from datetime import timedelta
+            return timedelta(days=7)
+
+        def iter_messages_since(self, conversation, cursor):
+            self.cursor = cursor
+            return iter(())
+
+    source = IncrementalSource(b"attachment-content")
+    statuses = []
+    paths = ArchivePaths(root=tmp_path)
+
+    with ArchiveWriter(paths) as writer:
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=AssetStore(paths.root),
+            on_status=statuses.append,
+            resume_state=ImportState(
+                payload={
+                    "refresh_cursors": {
+                        "conversation-001": SourceRefreshCursor(
+                            created_at=datetime(2026, 7, 30, 18, tzinfo=timezone.utc),
+                            message_id="message-001",
+                        ).to_json_dict(),
+                    },
+                },
+            ),
+            incremental_refresh=True,
+        )
+
+    refresh_events = [event for event in statuses if event.phase == "refresh"]
+    assert refresh_events[0].mode == "incremental"
+    assert refresh_events[0].traversal == "adapter_incremental"
+    assert refresh_events[1].cursor == "message-001"
+    assert refresh_events[1].lookback_seconds == 7 * 24 * 60 * 60
+    assert refresh_events[-1].traversal == "completed"
+    assert refresh_events[-1].examined == 0

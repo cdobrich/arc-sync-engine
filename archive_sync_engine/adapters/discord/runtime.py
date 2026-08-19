@@ -202,6 +202,8 @@ class DiscordSourceRuntime:
         *,
         resume: bool = False,
         on_status: Callable[[ImportProgress], None] | None = None,
+        between_messages_seconds: float = 0.0,
+        between_channels_seconds: float = 0.0,
     ) -> ImportReport:
         """Import the authenticated Discord source into an Archive Package.
 
@@ -214,12 +216,22 @@ class DiscordSourceRuntime:
                 "Cannot import from a closed Discord source runtime."
             )
 
+        run_kwargs: dict[str, Any] = {
+            "resume": resume,
+            "on_status": on_status,
+        }
+        # Preserve compatibility with coordinator test doubles and older
+        # adapters when the configured delays are both zero.
+        if between_messages_seconds or between_channels_seconds:
+            run_kwargs.update(
+                between_messages_seconds=between_messages_seconds,
+                between_channels_seconds=between_channels_seconds,
+            )
         return CanonicalImportCoordinator(
             archive_paths,
         ).run(
             self.adapter,
-            resume=resume,
-            on_status=on_status,
+            **run_kwargs,
         )
 
     def close(self) -> None:

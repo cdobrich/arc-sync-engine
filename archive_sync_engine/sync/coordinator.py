@@ -36,8 +36,9 @@ from archive_sync_engine.operations import SyncOperation
 from archive_sync_engine.planner import Planner
 from archive_sync_engine.repository import StateRepository
 
-from .progress import SyncProgress
 from .synchronization_state import SynchronizationState
+from archive_sync_engine.rate_limit import OperationRateLimiter
+from .progress import SyncProgress
 
 
 class SyncCoordinator:
@@ -59,6 +60,9 @@ class SyncCoordinator:
         destination: DestinationAdapter,
         capabilities: DestinationCapabilities,
         state_repository: StateRepository,
+        between_messages_seconds: float = 0.0,
+        between_channels_seconds: float = 0.0,
+        rate_limiter: OperationRateLimiter | None = None,
         on_status: Callable[[SyncProgress], None] | None = None,
     ) -> None:
         self._archive = archive
@@ -68,6 +72,10 @@ class SyncCoordinator:
         self._capabilities = capabilities
         self._state_repository = state_repository
         self._on_status = on_status
+        self._rate_limiter = rate_limiter or OperationRateLimiter(
+            between_messages_seconds=between_messages_seconds,
+            between_channels_seconds=between_channels_seconds,
+        )
 
     def dry_run(self) -> tuple[SyncOperation, ...]:
         """Plan synchronization without executing or persisting anything.
@@ -121,7 +129,17 @@ class SyncCoordinator:
             capabilities=self._capabilities,
         )
 
+        previous_channel_id: str | None = None
+        seen_message_operation = False
         phase_counts: dict[str, int] = {}
+
+        from archive_sync_engine.operations import (
+            CreateConversationOperation, DeleteConversationOperation,
+            UpdateConversationOperation, CreateMessageOperation, EditMessageOperation,
+            DeleteMessageOperation, PinMessageOperation, UnpinMessageOperation,
+            AddAttachmentOperation, RemoveAttachmentOperation, ReorderAttachmentsOperation,
+            AddReactionOperation, RemoveReactionOperation, SetMessageReplyOperation,
+        )
 
         for operation in operations:
             phase = _progress_phase(operation)
@@ -134,6 +152,45 @@ class SyncCoordinator:
                         detail=_progress_detail(operation),
                     )
                 )
+
+            channel_id = None
+            is_message = isinstance(
+                operation,
+                (
+                    CreateMessageOperation, EditMessageOperation, DeleteMessageOperation,
+                    PinMessageOperation, UnpinMessageOperation, AddAttachmentOperation,
+                    RemoveAttachmentOperation, ReorderAttachmentsOperation, AddReactionOperation,
+                    RemoveReactionOperation, SetMessageReplyOperation,
+                ),
+            )
+            if is_message:
+                message = getattr(operation, "message", None)
+                channel_id = str(getattr(message, "conversation_id", "")) if message is not None else None
+
+            is_channel = isinstance(
+                operation,
+                (CreateConversationOperation, UpdateConversationOperation, DeleteConversationOperation),
+            )
+            if is_channel:
+                conversation = getattr(operation, "conversation", None)
+                channel_id = str(getattr(conversation, "id", getattr(operation, "conversation_id", "")))
+
+            if channel_id is not None and previous_channel_id is None:
+                self._rate_limiter.before_channel()
+            elif (
+                channel_id is not None
+                and previous_channel_id is not None
+                and channel_id != previous_channel_id
+            ):
+                self._rate_limiter.before_channel()
+
+            if is_message:
+                if seen_message_operation:
+                    self._rate_limiter.before_message()
+                seen_message_operation = True
+
+            if channel_id is not None:
+                previous_channel_id = channel_id
 
             result: ExecutionResult = self._executor.execute(
                 operation=operation,
@@ -156,7 +213,6 @@ class SyncCoordinator:
             results.append(result)
 
         return tuple(results)
-
 
 
 def _progress_phase(operation: SyncOperation) -> str:

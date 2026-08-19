@@ -18,3 +18,10 @@ class ImportProgress:
     current: int | None = None
     total: int | None = None
     detail: str | None = None
+    mode: str | None = None
+    cursor: str | None = None
+    lookback_seconds: float | None = None
+    traversal: str | None = None
+    examined: int | None = None
+    attachments_downloaded: int | None = None
+    attachments_reused: int | None = None

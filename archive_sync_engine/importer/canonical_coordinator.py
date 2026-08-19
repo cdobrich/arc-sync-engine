@@ -36,6 +36,7 @@ from archive_sync_engine.importer import ImportProgress, ImportState
 from archive_sync_engine.importer.canonical_importer import (
     CanonicalImporter,
 )
+from archive_sync_engine.rate_limit import OperationRateLimiter
 from archive_sync_engine.sync.session import (
     SyncDirection,
     SyncSession,
@@ -73,6 +74,8 @@ class CanonicalImportCoordinator:
         *,
         resume: bool = False,
         on_status: Callable[[ImportProgress], None] | None = None,
+        between_messages_seconds: float = 0.0,
+        between_channels_seconds: float = 0.0,
     ) -> ImportReport:
         """
         Execute a complete canonical import.
@@ -170,6 +173,10 @@ class CanonicalImportCoordinator:
 
 
                 importer = CanonicalImporter()
+                rate_limiter = OperationRateLimiter(
+                    between_messages_seconds=between_messages_seconds,
+                    between_channels_seconds=between_channels_seconds,
+                )
 
                 importer.import_source(
                     source=source,
@@ -180,6 +187,7 @@ class CanonicalImportCoordinator:
                     on_refresh_cursor=save_refresh_cursor,
                     resume_state=resume_state,
                     incremental_refresh=incremental_refresh,
+                    rate_limiter=rate_limiter,
                 )
 
             finished_at = datetime.now(

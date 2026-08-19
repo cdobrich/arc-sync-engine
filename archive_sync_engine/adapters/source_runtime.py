@@ -28,6 +28,8 @@ class SourceImportRuntime(ABC):
         *,
         resume: bool = False,
         on_status: Callable[[ImportProgress], None] | None = None,
+        between_messages_seconds: float = 0.0,
+        between_channels_seconds: float = 0.0,
     ) -> ImportReport:
         """Import the runtime's source into the supplied Archive Package."""
         raise NotImplementedError

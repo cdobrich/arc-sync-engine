@@ -32,6 +32,7 @@ from archive_sync_engine.archive.writer import ArchiveWriter
 from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.importer.progress import ImportProgress
 from archive_sync_engine.importer.state import ImportState
+from archive_sync_engine.rate_limit import OperationRateLimiter
 
 
 class CanonicalImporter:
@@ -56,6 +57,7 @@ class CanonicalImporter:
         on_refresh_cursor: Callable[[str, SourceRefreshCursor], None] | None = None,
         resume_state: ImportState | None = None,
         incremental_refresh: bool = False,
+        rate_limiter: OperationRateLimiter | None = None,
     ) -> None:
         """
         Import all canonical information available from a source.
@@ -75,7 +77,31 @@ class CanonicalImporter:
         identifying the completed conversation and message.
         """
 
+        rate_limiter = rate_limiter or OperationRateLimiter()
         refresh_cursors: dict[str, SourceRefreshCursor] = {}
+        examined_messages = 0
+        attachments_downloaded = 0
+        attachments_reused = 0
+
+        if on_status is not None and incremental_refresh:
+            on_status(
+                ImportProgress(
+                    phase="refresh",
+                    mode="incremental",
+                    lookback_seconds=source.incremental_refresh_lookback.total_seconds(),
+                    traversal="adapter_incremental",
+                    detail="incremental source refresh enabled",
+                )
+            )
+        elif on_status is not None:
+            on_status(
+                ImportProgress(
+                    phase="refresh",
+                    mode="full",
+                    traversal="complete_source_traversal",
+                    detail="complete source traversal enabled",
+                )
+            )
         if resume_state is not None:
             raw_cursors = resume_state.payload.get("refresh_cursors", {})
             if isinstance(raw_cursors, dict):
@@ -151,6 +177,10 @@ class CanonicalImporter:
 
         for conversation in conversations:
 
+            # The first call establishes the channel pacing clock without
+            # sleeping; subsequent conversations are delayed as configured.
+            rate_limiter.before_channel()
+
             conversation_id = str(conversation.id)
             conversation_count += 1
             if on_status is not None:
@@ -185,9 +215,32 @@ class CanonicalImporter:
 
             cursor = refresh_cursors.get(conversation_id)
             if incremental_refresh and cursor is not None:
+                traversal = "adapter_incremental"
                 messages = source.iter_messages_since(conversation, cursor)
+                if on_status is not None:
+                    on_status(
+                        ImportProgress(
+                            phase="refresh",
+                            mode="incremental",
+                            cursor=str(cursor.message_id),
+                            lookback_seconds=source.incremental_refresh_lookback.total_seconds(),
+                            traversal=traversal,
+                            detail=conversation_id,
+                        )
+                    )
             else:
+                traversal = "complete_source_traversal"
                 messages = source.iter_messages(conversation)
+                if on_status is not None and incremental_refresh:
+                    on_status(
+                        ImportProgress(
+                            phase="refresh",
+                            mode="incremental",
+                            lookback_seconds=source.incremental_refresh_lookback.total_seconds(),
+                            traversal="fallback_complete_source_traversal",
+                            detail=conversation_id,
+                        )
+                    )
             message_total = len(messages) if isinstance(messages, Sized) else None
             message_count = 0
             if on_status is not None:
@@ -200,6 +253,7 @@ class CanonicalImporter:
                     )
                 )
 
+            first_message = True
             for message in messages:
 
                 if skipping_messages:
@@ -207,6 +261,11 @@ class CanonicalImporter:
                         skipping_messages = False
                         continue
                     continue
+
+                if not first_message:
+                    rate_limiter.before_message()
+                first_message = False
+                examined_messages += 1
 
                 #
                 # Persist the complete canonical message aggregate.
@@ -247,6 +306,7 @@ class CanonicalImporter:
                     # downloaded again.  This is the primary protection
                     # against re-downloading the archive's historical media.
                     if not asset_store.exists(attachment.sha256):
+                        attachments_downloaded += 1
                         content = source.attachment_bytes(
                             attachment,
                         )
@@ -255,6 +315,8 @@ class CanonicalImporter:
                             attachment,
                             content,
                         )
+                    else:
+                        attachments_reused += 1
 
                 #
                 # Report progress only after the complete message
@@ -303,3 +365,15 @@ class CanonicalImporter:
                         refresh_cursors[conversation_id],
                     )
 
+        if on_status is not None:
+            on_status(
+                ImportProgress(
+                    phase="refresh",
+                    mode="incremental" if incremental_refresh else "full",
+                    traversal="completed",
+                    examined=examined_messages,
+                    attachments_downloaded=attachments_downloaded,
+                    attachments_reused=attachments_reused,
+                    detail="source refresh complete",
+                )
+            )

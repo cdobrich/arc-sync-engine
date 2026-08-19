@@ -840,6 +840,33 @@ def _run_init(args: argparse.Namespace) -> int:
 
 def _print_import_progress(progress: ImportProgress) -> None:
     """Render adapter-neutral import progress without exposing secrets."""
+    if progress.phase == "refresh":
+        mode = progress.mode or "unknown"
+        if progress.traversal == "completed":
+            details = [f"examined={progress.examined or 0}"]
+            if progress.attachments_downloaded is not None:
+                details.append(f"attachments_downloaded={progress.attachments_downloaded}")
+            if progress.attachments_reused is not None:
+                details.append(f"attachments_reused={progress.attachments_reused}")
+            print(
+                f"Import refresh completed: mode={mode}; "
+                + "; ".join(details)
+                + ".",
+                flush=True,
+            )
+            return
+        details = [f"mode={mode}"]
+        if progress.traversal:
+            details.append(f"traversal={progress.traversal}")
+        if progress.cursor:
+            details.append(f"cursor={progress.cursor}")
+        if progress.lookback_seconds is not None:
+            details.append(f"lookback={progress.lookback_seconds:g}s")
+        if progress.detail:
+            details.append(progress.detail)
+        print("Import refresh: " + "; ".join(details) + ".", flush=True)
+        return
+
     if progress.phase == "identities":
         if progress.current == 0:
             print("Importing identities...", flush=True)
@@ -991,6 +1018,8 @@ def _run_import(args: argparse.Namespace) -> int:
             paths,
             resume=args.resume,
             on_status=_print_import_progress,
+            between_messages_seconds=setup.between_messages_seconds,
+            between_channels_seconds=setup.between_channels_seconds,
         )
 
     print(
@@ -1109,6 +1138,8 @@ def _run_export(args: argparse.Namespace) -> int:
             destination=runtime.adapter,
             asset_store=archive.asset_store,
             on_status=_print_export_progress,
+            between_messages_seconds=setup.between_messages_seconds,
+            between_channels_seconds=setup.between_channels_seconds,
         )
 
     print(
