@@ -103,3 +103,8 @@ class ArchivePaths:
     @property
     def import_state(self) -> Path:
         return self.root / "import-state.json"
+
+    @property
+    def import_cursors(self) -> Path:
+        """Path to persisted source-aware incremental refresh cursors."""
+        return self.root / "import-cursors.json"

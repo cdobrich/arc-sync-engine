@@ -1069,3 +1069,47 @@ def test_iter_messages_rejects_unrepresentable_empty_discord_message() -> None:
     conversation = next(adapter.iter_conversations())
     with pytest.raises(AdapterError, match="A message must contain text or at least one attachment"):
         list(adapter.iter_messages(conversation))
+
+
+def test_iter_messages_since_uses_bounded_discord_history_window() -> None:
+    from archive_sync_engine.adapters.source import SourceRefreshCursor
+
+    created = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+
+    class IncrementalChannel(FakeChannel):
+        def __init__(self):
+            super().__init__(10, "first", 1, created)
+            self.history_after = None
+            self._messages = (
+                FakeMessage(100, self, user, created, "new"),
+            )
+
+        def history(self, *, limit=None, oldest_first=True, after=None):
+            self.history_after = after
+
+            async def iterator():
+                for message in self._messages:
+                    yield message
+
+            return iterator()
+
+    channel = IncrementalChannel()
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+    cursor = SourceRefreshCursor(
+        created_at=datetime(2026, 8, 17, tzinfo=timezone.utc),
+        message_id="99",
+    )
+
+    messages = list(adapter.iter_messages_since(conversation, cursor))
+
+    assert [str(message.id) for message in messages] == [
+        "discord:message:100",
+    ]
+    assert channel.history_after == datetime(2026, 8, 10, tzinfo=timezone.utc)
+    assert adapter.incremental_refresh_lookback == timedelta(days=7)

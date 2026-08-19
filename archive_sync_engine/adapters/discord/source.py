@@ -25,7 +25,7 @@ import asyncio
 import hashlib
 import os
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, TypeVar
 
 from archive_sync_engine.adapters.exceptions import (
@@ -33,7 +33,7 @@ from archive_sync_engine.adapters.exceptions import (
     AuthorizationError,
     NotFoundError,
 )
-from archive_sync_engine.adapters.source import SourceAdapter
+from archive_sync_engine.adapters.source import SourceAdapter, SourceRefreshCursor
 from archive_sync_engine.models import (
     CanonicalAttachment,
     CanonicalConversation,
@@ -63,6 +63,8 @@ class DiscordSourceAdapter(SourceAdapter):
     interprets their structure.
     """
 
+    _INCREMENTAL_LOOKBACK = timedelta(days=7)
+
     def __init__(
         self,
         client: Any,
@@ -80,6 +82,17 @@ class DiscordSourceAdapter(SourceAdapter):
     @property
     def name(self) -> str:
         return "Discord"
+
+    @property
+    def incremental_refresh_lookback(self) -> timedelta:
+        """Re-read a bounded recent window so mutable Discord state is seen.
+
+        Discord does not expose a general "messages changed since" endpoint.
+        A seven-day overlap catches ordinary edits, pins, reactions, and
+        attachment changes without re-reading the entire channel history.
+        Older mutations remain an inherent source-platform limitation.
+        """
+        return timedelta(days=7)
 
     def iter_identities(self) -> Iterable[CanonicalIdentity]:
         """Yield every identity referenced by the configured Discord scope.
@@ -191,6 +204,88 @@ class DiscordSourceAdapter(SourceAdapter):
             )
 
         yield from messages
+
+    def iter_identities_since(
+        self,
+        cursors: dict[str, SourceRefreshCursor],
+    ) -> Iterable[CanonicalIdentity]:
+        """Discover identities from only the incremental message windows."""
+        identities: dict[str, CanonicalIdentity] = {}
+
+        for guild in self._iter_guilds():
+            members = self._run(self._collect_guild_members(guild))
+            for member in members:
+                identity = self._canonical_identity(member)
+                identities.setdefault(str(identity.identity_key), identity)
+
+        for conversation in self._discover_conversations():
+            cursor = cursors.get(str(conversation.id))
+            if cursor is None:
+                continue
+            channel = self._conversation_channels[str(conversation.id)]
+            if getattr(channel, "history", None) is None:
+                continue
+            messages = self._run(
+                self._collect_incremental_raw_messages(channel, cursor),
+            )
+            self._message_cache[str(conversation.id)] = tuple(messages)
+            for message in messages:
+                author = getattr(message, "author", None)
+                if author is not None:
+                    identity = self._canonical_identity(author)
+                    identities.setdefault(str(identity.identity_key), identity)
+                for reaction_group in getattr(message, "reactions", ()):
+                    users = getattr(reaction_group, "users", None)
+                    if users is None:
+                        raise AdapterError(
+                            "Discord reaction does not expose reacting users."
+                        )
+                    for identity in self._run(
+                        self._collect_reaction_identities(users),
+                    ):
+                        identities.setdefault(str(identity.identity_key), identity)
+
+        yield from (identities[key] for key in sorted(identities))
+
+    def iter_messages_since(
+        self,
+        conversation: CanonicalConversation,
+        cursor: SourceRefreshCursor,
+    ) -> Iterable[CanonicalMessage]:
+        """Yield messages from Discord's bounded incremental history window."""
+        channel = self._conversation_channels.get(str(conversation.id))
+        if channel is None:
+            raise NotFoundError(
+                f"Discord conversation {conversation.id} is not available."
+            )
+
+        cached_messages = self._message_cache.get(str(conversation.id))
+        if cached_messages is None:
+            cached_messages = tuple(
+                self._run(
+                    self._collect_incremental_raw_messages(channel, cursor),
+                )
+            )
+            self._message_cache[str(conversation.id)] = cached_messages
+
+        messages = self._run(
+            self._canonicalize_cached_messages(cached_messages, channel),
+        )
+        yield from messages
+
+    @classmethod
+    async def _collect_incremental_raw_messages(
+        cls,
+        channel: Any,
+        cursor: SourceRefreshCursor,
+    ) -> list[Any]:
+        after = cursor.created_at - cls._INCREMENTAL_LOOKBACK
+        history = channel.history(
+            limit=None,
+            oldest_first=True,
+            after=after,
+        )
+        return [message async for message in history]
 
     def attachment_bytes(
         self,
@@ -574,10 +669,10 @@ class DiscordSourceAdapter(SourceAdapter):
         # it is clear that this is a lossless *existence* representation, not
         # invented user-authored text.
         for attribute, label in (
-            ("embeds", "embed"),
-            ("stickers", "sticker"),
-            ("components", "interactive"),
-            ("message_snapshots", "forwarded"),
+                ("embeds", "embed"),
+                ("stickers", "sticker"),
+                ("components", "interactive"),
+                ("message_snapshots", "forwarded"),
         ):
             value = getattr(message, attribute, None)
             if value:
@@ -586,10 +681,13 @@ class DiscordSourceAdapter(SourceAdapter):
         # Interaction metadata can accompany otherwise content-less Discord
         # messages even when ``interaction`` itself is absent.  Treat it as a
         # source feature for the same reason.
-        if (
-            getattr(message, "interaction", None) is not None
-            or getattr(message, "interaction_metadata", None) is not None
-        ):
+
+        # Check for the modern attribute first (discord.py 2.4+)
+        if hasattr(message, "interaction_metadata"):
+            if getattr(message, "interaction_metadata", None) is not None:
+                return "[Discord interaction message]"
+        # Fallback for older library versions that only have the deprecated attribute
+        elif getattr(message, "interaction", None) is not None:
             return "[Discord interaction message]"
 
         # Discord has added message-level source structures over time.  Keep a

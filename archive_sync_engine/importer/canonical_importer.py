@@ -27,6 +27,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sized
 
 from archive_sync_engine.adapters import SourceAdapter
+from archive_sync_engine.adapters.source import SourceRefreshCursor
 from archive_sync_engine.archive.writer import ArchiveWriter
 from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.importer.progress import ImportProgress
@@ -52,6 +53,7 @@ class CanonicalImporter:
         asset_store: AssetStore,
         on_progress: Callable[[ImportState], None] | None = None,
         on_status: Callable[[ImportProgress], None] | None = None,
+        on_refresh_cursor: Callable[[str, SourceRefreshCursor], None] | None = None,
         resume_state: ImportState | None = None,
         incremental_refresh: bool = False,
     ) -> None:
@@ -73,6 +75,16 @@ class CanonicalImporter:
         identifying the completed conversation and message.
         """
 
+        refresh_cursors: dict[str, SourceRefreshCursor] = {}
+        if resume_state is not None:
+            raw_cursors = resume_state.payload.get("refresh_cursors", {})
+            if isinstance(raw_cursors, dict):
+                refresh_cursors = {
+                    str(key): SourceRefreshCursor.from_json_dict(value)
+                    for key, value in raw_cursors.items()
+                    if isinstance(value, dict)
+                }
+
         #
         # Identities
         #
@@ -86,7 +98,12 @@ class CanonicalImporter:
             if on_status is not None:
                 on_status(ImportProgress(phase="identities", current=0))
             identity_count = 0
-            for identity in source.iter_identities():
+            identities = (
+                source.iter_identities_since(refresh_cursors)
+                if incremental_refresh
+                else source.iter_identities()
+            )
+            for identity in identities:
                 if incremental_refresh:
                     writer.upsert_identity(identity)
                 else:
@@ -166,7 +183,11 @@ class CanonicalImporter:
                 and resume_message_id is not None
             )
 
-            messages = source.iter_messages(conversation)
+            cursor = refresh_cursors.get(conversation_id)
+            if incremental_refresh and cursor is not None:
+                messages = source.iter_messages_since(conversation, cursor)
+            else:
+                messages = source.iter_messages(conversation)
             message_total = len(messages) if isinstance(messages, Sized) else None
             message_count = 0
             if on_status is not None:
@@ -221,14 +242,19 @@ class CanonicalImporter:
                             )
                         )
 
-                    content = source.attachment_bytes(
-                        attachment,
-                    )
+                    # Attachment content is content-addressed.  During a
+                    # refresh, a previously stored SHA-256 never needs to be
+                    # downloaded again.  This is the primary protection
+                    # against re-downloading the archive's historical media.
+                    if not asset_store.exists(attachment.sha256):
+                        content = source.attachment_bytes(
+                            attachment,
+                        )
 
-                    asset_store.put_attachment(
-                        attachment,
-                        content,
-                    )
+                        asset_store.put_attachment(
+                            attachment,
+                            content,
+                        )
 
                 #
                 # Report progress only after the complete message
@@ -247,8 +273,17 @@ class CanonicalImporter:
                         )
                     )
 
+                refresh_cursors[conversation_id] = SourceRefreshCursor(
+                    created_at=message.created_at,
+                    message_id=str(message.id),
+                )
+
                 if on_progress is not None:
 
+                    # The coordinator commits canonical data and the opaque
+                    # checkpoint before the source cursor is advanced. This
+                    # ordering prevents an interruption from ever advancing
+                    # the source cursor past uncommitted archive data.
                     on_progress(
                         ImportState(
                             payload={
@@ -261,3 +296,10 @@ class CanonicalImporter:
                             },
                         ),
                     )
+
+                if on_refresh_cursor is not None:
+                    on_refresh_cursor(
+                        conversation_id,
+                        refresh_cursors[conversation_id],
+                    )
+

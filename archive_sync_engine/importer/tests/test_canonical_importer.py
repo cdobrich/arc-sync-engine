@@ -329,3 +329,74 @@ def test_canonical_importer_reports_user_facing_status_without_source_specific_f
     assert statuses[3].detail == "Test Conversation"
     assert statuses[5].detail == "hello.txt"
     assert statuses[6].detail == "message-001"
+
+
+def test_incremental_refresh_reuses_content_addressed_attachment_without_download(
+    tmp_path: Path,
+) -> None:
+    """A refresh never downloads an attachment whose SHA-256 is already stored."""
+    source = FakeSourceAdapter(b"attachment-content")
+    download_count = 0
+
+    original = source.attachment_bytes
+
+    def counted_download(attachment):
+        nonlocal download_count
+        download_count += 1
+        return original(attachment)
+
+    source.attachment_bytes = counted_download
+
+    paths = ArchivePaths(root=tmp_path)
+    coordinator = CanonicalImportCoordinator(paths)
+    coordinator.run(source)
+    assert download_count == 1
+
+    coordinator.run(source, resume=True)
+
+    assert download_count == 1
+
+
+def test_incremental_refresh_uses_adapter_incremental_message_traversal(
+    tmp_path: Path,
+) -> None:
+    """A completed refresh uses the adapter's source-aware cursor API."""
+    from archive_sync_engine.adapters.source import SourceRefreshCursor
+
+    class IncrementalSource(FakeSourceAdapter):
+        def __init__(self) -> None:
+            super().__init__(b"attachment-content")
+            self.incremental_cursors = []
+            self._refresh = False
+
+        def iter_messages_since(self, conversation, cursor):
+            self.incremental_cursors.append(cursor)
+            if self._refresh:
+                yield CanonicalMessage(
+                    id=MessageId("message-002"),
+                    conversation_id=conversation.id,
+                    identity_key=self._identity.identity_key,
+                    content="new",
+                    created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                )
+
+    paths = ArchivePaths(root=tmp_path)
+    source = IncrementalSource()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    coordinator.run(source)
+    source._refresh = True
+    coordinator.run(source, resume=True)
+
+    assert source.incremental_cursors == [
+        SourceRefreshCursor(
+            created_at=datetime(2026, 7, 30, 18, tzinfo=timezone.utc),
+            message_id="message-001",
+        )
+    ]
+
+    with Archive(paths) as archive:
+        assert tuple(str(message.id) for message in archive.iter_messages()) == (
+            "message-001",
+            "message-002",
+        )

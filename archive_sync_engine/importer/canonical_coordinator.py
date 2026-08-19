@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from archive_sync_engine.adapters import SourceAdapter
+from archive_sync_engine.adapters.source import SourceRefreshCursor
 from archive_sync_engine.archive.package import ArchivePackage
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.archive.writer import ArchiveWriter
@@ -101,10 +102,11 @@ class CanonicalImportCoordinator:
             except FileNotFoundError:
                 previous_session = None
 
+        cursor_state_available = self._paths.import_cursors.is_file()
         incremental_refresh = bool(
             resume
             and previous_session is not None
-            and previous_session.completed
+            and (previous_session.completed or cursor_state_available)
         )
 
         session = SyncSession(
@@ -122,14 +124,50 @@ class CanonicalImportCoordinator:
             resume_state = None
             if resume and not incremental_refresh:
                 resume_state = self.load_import_state()
+            elif resume and incremental_refresh:
+                try:
+                    cursors = self._package.load_import_cursors()
+                except FileNotFoundError:
+                    # Archives created before source-aware cursors were
+                    # introduced remain safe: the first refresh falls back
+                    # to the adapter's complete traversal.
+                    cursors = {}
+                resume_state = ImportState(
+                    payload={
+                        "refresh_cursors": {
+                            key: cursor.to_json_dict()
+                            for key, cursor in cursors.items()
+                        },
+                    },
+                )
 
             with ArchiveWriter(
                 self._paths,
             ) as writer:
 
+                refresh_cursors: dict[str, "SourceRefreshCursor"] = {}
+                if resume_state is not None:
+                    raw_cursors = resume_state.payload.get("refresh_cursors", {})
+                    if isinstance(raw_cursors, dict):
+                        from archive_sync_engine.adapters.source import SourceRefreshCursor
+
+                        refresh_cursors = {
+                            str(key): SourceRefreshCursor.from_json_dict(value)
+                            for key, value in raw_cursors.items()
+                            if isinstance(value, dict)
+                        }
+
                 def checkpoint(state: ImportState) -> None:
                     writer.commit()
                     self.save_import_state(state)
+
+                def save_refresh_cursor(
+                    conversation_id: str,
+                    cursor: "SourceRefreshCursor",
+                ) -> None:
+                    refresh_cursors[conversation_id] = cursor
+                    self._package.save_import_cursors(refresh_cursors)
+
 
                 importer = CanonicalImporter()
 
@@ -139,6 +177,7 @@ class CanonicalImportCoordinator:
                     asset_store=self._package.asset_store,
                     on_progress=checkpoint,
                     on_status=on_status,
+                    on_refresh_cursor=save_refresh_cursor,
                     resume_state=resume_state,
                     incremental_refresh=incremental_refresh,
                 )
@@ -211,3 +250,7 @@ class CanonicalImportCoordinator:
         self._package.save_import_state(
             state,
         )
+
+    def load_import_cursors(self):
+        """Load persisted source-aware incremental refresh cursors."""
+        return self._package.load_import_cursors()

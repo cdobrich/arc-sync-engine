@@ -580,3 +580,140 @@ def test_completed_import_resume_refreshes_new_messages_attachments_and_reaction
             ),
         )
         assert messages[1].attachments[0].id == AttachmentId("attachment-001")
+
+
+def test_incremental_refresh_reconciles_mutable_message_state_from_source_window(
+    tmp_path: Path,
+) -> None:
+    """Incremental refresh can update an old message without a full scan."""
+    from archive_sync_engine.adapters.source import SourceRefreshCursor
+
+    class MutableIncrementalSource(SourceAdapter):
+        def __init__(self) -> None:
+            self.refresh = False
+            self.since_cursors = []
+            self._identity = CanonicalIdentity(
+                identity_key=IdentityKey("identity-001"),
+                display_name="Alice",
+            )
+            self._reaction_identity = CanonicalIdentity(
+                identity_key=IdentityKey("identity-002"),
+                display_name="Bob",
+            )
+            self._conversation = CanonicalConversation(
+                id=ConversationId("conversation-001"),
+                conversation_type=ConversationType.CHANNEL,
+                title="General",
+            )
+
+        @property
+        def name(self) -> str:
+            return "Mutable incremental"
+
+        def iter_identities(self):
+            yield self._identity
+
+        def iter_identities_since(self, cursors):
+            if self.refresh:
+                yield self._identity
+                yield self._reaction_identity
+
+        def iter_conversations(self):
+            yield self._conversation
+
+        def iter_messages(self, conversation):
+            yield CanonicalMessage(
+                id=MessageId("message-001"),
+                conversation_id=conversation.id,
+                identity_key=self._identity.identity_key,
+                content="original",
+                created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            )
+
+        def iter_messages_since(self, conversation, cursor):
+            self.since_cursors.append(cursor)
+            yield CanonicalMessage(
+                id=MessageId("message-001"),
+                conversation_id=conversation.id,
+                identity_key=self._identity.identity_key,
+                content="edited",
+                created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                reactions=(
+                    CanonicalReaction(
+                        identity_key=self._reaction_identity.identity_key,
+                        emoji="👍",
+                    ),
+                ),
+            )
+
+        def attachment_bytes(self, attachment):
+            raise AssertionError("No attachments are used in this test.")
+
+    paths = ArchivePaths(root=tmp_path)
+    source = MutableIncrementalSource()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    coordinator.run(source)
+    source.refresh = True
+    coordinator.run(source, resume=True)
+
+    assert source.since_cursors == [
+        SourceRefreshCursor(
+            created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            message_id="message-001",
+        )
+    ]
+
+    with Archive(paths) as archive:
+        message = archive.message(MessageId("message-001"))
+        assert message.content == "edited"
+        assert message.reactions == (
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-002"),
+                emoji="👍",
+            ),
+        )
+
+
+def test_interrupted_import_resume_uses_last_committed_source_cursor(
+    tmp_path: Path,
+) -> None:
+    """An interrupted import can continue from its durable source cursor."""
+    from archive_sync_engine.adapters.source import SourceRefreshCursor
+
+    class InterruptibleSource(ResumableSourceAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.incremental_visits: list[str] = []
+            self.use_incremental = False
+
+        def iter_messages_since(self, conversation, cursor):
+            self.incremental_visits.append(str(cursor.message_id))
+            for message in self._messages:
+                if message.created_at > cursor.created_at:
+                    yield message
+
+    paths = ArchivePaths(root=tmp_path)
+    source = InterruptibleSource()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    with pytest.raises(RuntimeError, match="second message failed"):
+        coordinator.run(source)
+
+    assert coordinator.load_import_cursors() == {
+        "conversation-001": SourceRefreshCursor(
+            created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            message_id="message-001",
+        )
+    }
+
+    source.fail_second_message = False
+    source.message_visits.clear()
+    coordinator.run(source, resume=True)
+
+    assert source.incremental_visits == ["message-001"]
+    with Archive(paths) as archive:
+        assert tuple(str(message.id) for message in archive.iter_messages()) == (
+            "message-001",
+            "message-002",
+        )

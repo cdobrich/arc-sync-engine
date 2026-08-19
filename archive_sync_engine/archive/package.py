@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Mapping
 
 from datetime import datetime
 from datetime import timezone
@@ -9,6 +10,7 @@ from pathlib import Path
 from .manifest import ArchiveManifest
 from .paths import ArchivePaths
 from .version import ARCHIVE_ENGINE_VERSION
+from archive_sync_engine.adapters.source import SourceRefreshCursor
 
 
 class ArchivePackage:
@@ -291,3 +293,29 @@ class ArchivePackage:
         return ImportState(
             payload=data,
         )
+
+    def save_import_cursors(
+        self,
+        cursors: "Mapping[str, SourceRefreshCursor]",
+    ) -> None:
+        """Persist source-aware incremental refresh cursors."""
+        with self._paths.import_cursors.open("w", encoding="utf-8") as handle:
+            json.dump(
+                {key: cursor.to_json_dict() for key, cursor in sorted(cursors.items())},
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
+            handle.write("\n")
+
+    def load_import_cursors(self) -> dict[str, "SourceRefreshCursor"]:
+        """Load source-aware incremental refresh cursors."""
+        with self._paths.import_cursors.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError("Import cursors must contain a JSON object.")
+        from archive_sync_engine.adapters.source import SourceRefreshCursor
+        return {
+            str(key): SourceRefreshCursor.from_json_dict(value)
+            for key, value in data.items()
+        }
