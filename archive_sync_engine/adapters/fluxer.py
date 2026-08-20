@@ -250,7 +250,12 @@ class FluxerDestinationAdapter(DestinationAdapter):
             # Canonical reactions are per-identity. Fluxer can only preserve
             # that identity when a masquerade mapping is configured.
             supports_reactions=bool(self._identity_mappings),
-            supports_custom_emoji=bool(self._identity_mappings),
+            # Custom-emoji reaction synchronization is intentionally not
+            # implemented. The Fluxer reaction endpoint requires destination
+            # emoji semantics that are not yet represented safely by the
+            # current adapter, so the planner must reject these operations
+            # before any destination mutation occurs.
+            supports_custom_emoji=False,
             supports_attachments=False,
             supports_attachment_removal=True,
             supports_initial_message_attachments=True,
@@ -506,6 +511,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
         message: DestinationMessageRef,
         reaction: CanonicalReaction,
     ) -> None:
+        self._require_supported_reaction(reaction)
         conversation_id = self._require_message_conversation(message)
         reaction_client = self._reaction_client(reaction)
         auth_key = self._auth_key_for_reaction(reaction)
@@ -529,6 +535,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
         message: DestinationMessageRef,
         reaction: CanonicalReaction,
     ) -> None:
+        self._require_supported_reaction(reaction)
         conversation_id = self._require_message_conversation(message)
         emoji = self._reaction_identifier(reaction)
         reaction_client = self._reaction_client(reaction)
@@ -593,6 +600,14 @@ class FluxerDestinationAdapter(DestinationAdapter):
         if self._identity_client_factory is not None:
             return self._client_for_identity(reaction.identity_key)
         return self._client
+
+    @staticmethod
+    def _require_supported_reaction(reaction: CanonicalReaction) -> None:
+        if reaction.is_custom:
+            raise CapabilityError(
+                "Fluxer custom emoji reaction synchronization is not "
+                "supported by the current adapter."
+            )
 
     @staticmethod
     def _reaction_identifier(reaction: CanonicalReaction) -> str:

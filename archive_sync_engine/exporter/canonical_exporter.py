@@ -20,7 +20,7 @@ from archive_sync_engine.archive import Archive
 from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.executor import OperationExecutor
 from archive_sync_engine.planner import Planner
-from archive_sync_engine.repository import InMemoryStateRepository
+from archive_sync_engine.repository import InMemoryStateRepository, StateRepository
 from archive_sync_engine.sync.coordinator import SyncCoordinator
 from archive_sync_engine.sync.progress import SyncProgress
 
@@ -49,21 +49,21 @@ class CanonicalExporter:
         on_status: Callable[[SyncProgress], None] | None = None,
         between_messages_seconds: float = 0.0,
         between_channels_seconds: float = 0.0,
+        state_repository: StateRepository | None = None,
     ) -> ExportReport:
         """
         Reproduce the canonical Archive at the destination.
 
-        The export starts from an empty synchronization snapshot and lets the
-        existing Planner and OperationExecutor establish destination
-        references, component baselines, and dependency-safe ordering.
+        The synchronization state repository determines whether this is an
+        initial export or a subsequent reconciliation. Callers that need
+        repeatable exports must provide a durable StateRepository so destination
+        references survive between CLI invocations.
 
-        A fresh in-memory StateRepository is sufficient because this facade
-        represents one-shot initial export. Callers that need resumable or
-        incremental synchronization should use SyncCoordinator directly with
-        a durable StateRepository.
+        When no repository is supplied, a fresh in-memory repository is used
+        for callers that intentionally want one-shot export semantics.
         """
         capabilities = destination.capabilities
-        state_repository = InMemoryStateRepository()
+        repository = state_repository or InMemoryStateRepository()
         executor = OperationExecutor(
             asset_store=asset_store,
         )
@@ -74,7 +74,7 @@ class CanonicalExporter:
             executor=executor,
             destination=destination,
             capabilities=capabilities,
-            state_repository=state_repository,
+            state_repository=repository,
             on_status=on_status,
             between_messages_seconds=between_messages_seconds,
             between_channels_seconds=between_channels_seconds,

@@ -11,6 +11,7 @@ import pytest
 
 from archive_sync_engine.adapters import (
     AdapterError,
+    CapabilityError,
     FluxerDestinationAdapter,
     FluxerIdentityMapping,
 )
@@ -799,9 +800,7 @@ def test_fluxer_initial_reply_and_reaction_complete_together(
 
 
 
-def test_fluxer_custom_reaction_is_synchronized_through_full_sync(
-    tmp_path: Path,
-) -> None:
+def test_fluxer_custom_reaction_is_rejected_before_full_sync(tmp_path: Path) -> None:
     conversation = _conversation()
     reaction = CanonicalReaction(
         identity_key=IdentityKey("reactor-1"),
@@ -814,34 +813,23 @@ def test_fluxer_custom_reaction_is_synchronized_through_full_sync(
     client = FakeFluxerClient()
 
     with SQLiteStateRepository(path) as repository:
-        _coordinator(
-            _archive(conversation, message),
-            client,
-            repository,
-            identity_mappings=(
-                FluxerIdentityMapping(
-                    "reactor-1",
-                    "reactor-auth-key",
+        with pytest.raises(
+            CapabilityError,
+            match="supports_custom_emoji.*reconcile custom emoji reactions",
+        ):
+            _coordinator(
+                _archive(conversation, message),
+                client,
+                repository,
+                identity_mappings=(
+                    FluxerIdentityMapping(
+                        "reactor-1",
+                        "reactor-auth-key",
+                    ),
                 ),
-            ),
-        ).synchronize()
+            ).synchronize()
 
-    reaction_calls = [
-        call for call in client.calls if call[0] == "apply_reaction"
-    ]
-    assert len(reaction_calls) == 1
-    assert reaction_calls[0][2] == {
-        "channel_id": "fluxer-channel-1",
-        "message_id": "fluxer-message-1",
-        "emoji": "party_parrot:1234567890",
-        "auth_key": "reactor-auth-key",
-    }
-
-    with SQLiteStateRepository(path) as repository:
-        state = repository.load_synchronization_state()
-
-    assert state.message_reactions["message-1"] == (reaction,)
-    assert state.message_fingerprints["message-1"]
+    assert not [call for call in client.calls if call[0] == "apply_reaction"]
 
 
 def test_fluxer_threads_are_preserved_in_archive_but_skipped_for_export(

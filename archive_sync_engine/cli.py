@@ -1133,7 +1133,12 @@ def _run_export(args: argparse.Namespace) -> int:
     except ValueError as exc:
         raise ConfigurationError(str(exc)) from exc
 
-    with Archive(paths) as archive, runtime:
+    repository_path = paths.root / "synchronization.sqlite"
+    with (
+        Archive(paths) as archive,
+        runtime,
+        SQLiteStateRepository(repository_path) as state_repository,
+    ):
         export_report = CanonicalExporter().export(
             archive=archive,
             destination=runtime.adapter,
@@ -1141,6 +1146,7 @@ def _run_export(args: argparse.Namespace) -> int:
             on_status=_print_export_progress,
             between_messages_seconds=setup.between_messages_seconds,
             between_channels_seconds=setup.between_channels_seconds,
+            state_repository=state_repository,
         )
 
     print(

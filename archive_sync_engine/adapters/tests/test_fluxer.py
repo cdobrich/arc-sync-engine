@@ -224,7 +224,7 @@ def test_fluxer_adapter_reports_current_capabilities() -> None:
     assert capabilities.supports_conversation_deletion is True
     assert capabilities.supports_message_pinning is True
     assert capabilities.supports_reactions is True
-    assert capabilities.supports_custom_emoji is True
+    assert capabilities.supports_custom_emoji is False
     assert capabilities.supports_attachments is False
     assert capabilities.supports_attachment_removal is True
     assert capabilities.supports_initial_message_attachments is True
@@ -447,7 +447,7 @@ def test_capabilities_advertise_standard_reaction_synchronization_only_with_mapp
     )
 
     assert adapter.capabilities.supports_reactions is True
-    assert adapter.capabilities.supports_custom_emoji is True
+    assert adapter.capabilities.supports_custom_emoji is False
 
 
 
@@ -646,50 +646,43 @@ def test_reaction_removal_uses_masquerade_auth_key() -> None:
     assert client.calls[-1][2]["auth_key"] == "user-auth-key"
 
 
-def test_custom_reaction_is_forwarded_with_name_and_id() -> None:
+def test_custom_reaction_add_is_rejected_before_http_call() -> None:
     client = FakeFluxerClient()
     adapter = FluxerDestinationAdapter(
         client,
-        identity_mappings=(
-            FluxerIdentityMapping("identity-1", "auth-key"),
-        ),
+        identity_mappings=(FluxerIdentityMapping("identity-1", "auth-key"),),
     )
 
-    adapter.add_reaction(
-        _message_ref(),
-        CanonicalReaction(
-            identity_key=IdentityKey("identity-1"),
-            emoji="party_parrot",
-            emoji_id=EmojiId("1234567890"),
-            is_custom=True,
-        ),
-    )
-
-    assert client.calls[-1][2]["emoji"] == "party_parrot:1234567890"
-    assert client.calls[-1][2]["auth_key"] == "auth-key"
+    with pytest.raises(CapabilityError, match="custom emoji"):
+        adapter.add_reaction(
+            _message_ref(),
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-1"),
+                emoji="party_parrot",
+                emoji_id=EmojiId("1234567890"),
+                is_custom=True,
+            ),
+        )
 
 
-def test_custom_reaction_removal_is_forwarded_with_name_and_id() -> None:
+def test_custom_reaction_removal_is_rejected_before_http_call() -> None:
     client = FakeFluxerClient()
     adapter = FluxerDestinationAdapter(
         client,
-        identity_mappings=(
-            FluxerIdentityMapping("identity-1", "auth-key"),
-        ),
+        identity_mappings=(FluxerIdentityMapping("identity-1", "auth-key"),),
     )
 
-    adapter.remove_reaction(
-        _message_ref(),
-        CanonicalReaction(
-            identity_key=IdentityKey("identity-1"),
-            emoji="party_parrot",
-            emoji_id=EmojiId("1234567890"),
-            is_custom=True,
-        ),
-    )
+    with pytest.raises(CapabilityError, match="custom emoji"):
+        adapter.remove_reaction(
+            _message_ref(),
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-1"),
+                emoji="party_parrot",
+                emoji_id=EmojiId("1234567890"),
+                is_custom=True,
+            ),
+        )
 
-    assert client.calls[-1][2]["emoji_id_or_name"] == "party_parrot:1234567890"
-    assert client.calls[-1][2]["auth_key"] == "auth-key"
 
 def test_custom_reaction_requires_emoji_id() -> None:
     adapter = FluxerDestinationAdapter(
@@ -711,27 +704,22 @@ def test_custom_reaction_requires_emoji_id() -> None:
         )
 
 
-def test_custom_reaction_can_use_the_default_bot_account() -> None:
-    client = FakeFluxerClient()
+def test_custom_reaction_default_bot_account_is_rejected() -> None:
     adapter = FluxerDestinationAdapter(
-        client,
-        identity_mappings=(
-            FluxerIdentityMapping("identity-1"),
-        ),
+        FakeFluxerClient(),
+        identity_mappings=(FluxerIdentityMapping("identity-1", None),),
     )
 
-    adapter.add_reaction(
-        _message_ref(),
-        CanonicalReaction(
-            identity_key=IdentityKey("identity-1"),
-            emoji="party_parrot",
-            emoji_id=EmojiId("1234567890"),
-            is_custom=True,
-        ),
-    )
-
-    assert client.calls[-1][2]["emoji"] == "party_parrot:1234567890"
-    assert client.calls[-1][2]["auth_key"] is None
+    with pytest.raises(CapabilityError, match="custom emoji"):
+        adapter.add_reaction(
+            _message_ref(),
+            CanonicalReaction(
+                identity_key=IdentityKey("identity-1"),
+                emoji="party_parrot",
+                emoji_id=EmojiId("1234567890"),
+                is_custom=True,
+            ),
+        )
 
 
 def test_reaction_client_factory_failure_is_reported_as_adapter_error() -> None:
@@ -751,9 +739,9 @@ def test_reaction_client_factory_failure_is_reported_as_adapter_error() -> None:
             _message_ref(),
             CanonicalReaction(
                 identity_key=IdentityKey("identity-1"),
-                emoji="party_parrot",
-                emoji_id=EmojiId("123"),
-                is_custom=True,
+                emoji="👍",
+                emoji_id=None,
+                is_custom=False,
             ),
         )
 
@@ -772,9 +760,9 @@ def test_reaction_client_factory_returning_none_is_reported_as_adapter_error() -
             _message_ref(),
             CanonicalReaction(
                 identity_key=IdentityKey("identity-1"),
-                emoji="party_parrot",
-                emoji_id=EmojiId("123"),
-                is_custom=True,
+                emoji="👍",
+                emoji_id=None,
+                is_custom=False,
             ),
         )
 
@@ -800,33 +788,25 @@ def test_reaction_client_factory_selects_masqueraded_fluxer_client() -> None:
         _message_ref(),
         CanonicalReaction(
             identity_key=IdentityKey("identity-1"),
-            emoji="party_parrot",
-            emoji_id=EmojiId("1234567890"),
-            is_custom=True,
+            emoji="👍",
+            emoji_id=None,
+            is_custom=False,
         ),
     )
 
     assert factory_calls == ["user-auth-key"]
     assert default_client.calls == []
-    assert user_client.calls[-1][2]["emoji"] == "party_parrot:1234567890"
+    assert user_client.calls[-1][2]["emoji"] == "👍"
     assert user_client.calls[-1][2]["auth_key"] is None
 
 
 def test_custom_reaction_uses_actor_client_factory_for_add_and_remove() -> None:
-    bot_client = FakeFluxerClient()
-    user_client = FakeFluxerClient()
-    created_auth_keys: list[str] = []
-
-    def factory(auth_key: str):
-        created_auth_keys.append(auth_key)
-        return user_client
-
     adapter = FluxerDestinationAdapter(
-        bot_client,
+        FakeFluxerClient(),
         identity_mappings=(
             FluxerIdentityMapping("identity-1", "user-auth-key"),
         ),
-        reaction_client_factory=factory,
+        reaction_client_factory=lambda auth_key: FakeFluxerClient(),
     )
     reaction = CanonicalReaction(
         identity_key=IdentityKey("identity-1"),
@@ -835,17 +815,10 @@ def test_custom_reaction_uses_actor_client_factory_for_add_and_remove() -> None:
         is_custom=True,
     )
 
-    adapter.add_reaction(_message_ref(), reaction)
-    adapter.remove_reaction(_message_ref(), reaction)
-
-    assert created_auth_keys == ["user-auth-key", "user-auth-key"]
-    assert [call[0] for call in user_client.calls] == [
-        "apply_reaction",
-        "remove_reaction",
-    ]
-    assert user_client.calls[0][2]["emoji"] == "party_parrot:123"
-    assert user_client.calls[1][2]["emoji_id_or_name"] == "party_parrot:123"
-    assert bot_client.calls == []
+    with pytest.raises(CapabilityError, match="custom emoji"):
+        adapter.add_reaction(_message_ref(), reaction)
+    with pytest.raises(CapabilityError, match="custom emoji"):
+        adapter.remove_reaction(_message_ref(), reaction)
 
 
 def test_unsupported_attachment_mutation_is_rejected() -> None:

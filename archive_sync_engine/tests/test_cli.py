@@ -10,6 +10,7 @@ from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConf
 from archive_sync_engine.archive.package import ArchivePackage
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.archive import validate_archive_package
+from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
 
 
 
@@ -893,6 +894,7 @@ delays:
     assert exporter.export.call_args.kwargs["archive"].package.paths.root == archive_path.resolve()
     assert exporter.export.call_args.kwargs["between_messages_seconds"] == 0.75
     assert exporter.export.call_args.kwargs["between_channels_seconds"] == 3.0
+    assert isinstance(exporter.export.call_args.kwargs["state_repository"], SQLiteStateRepository)
 
 
 def test_export_cli_allows_destination_scope_override(tmp_path: Path) -> None:

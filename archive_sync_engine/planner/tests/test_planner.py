@@ -1646,22 +1646,17 @@ def test_fluxer_capabilities_plan_custom_reaction_before_execution() -> None:
         ),
     ).capabilities
 
-    operations = list(
-        Planner().plan(
-            archive=archive,
-            synchronization_state=state,
-            capabilities=capabilities,
-        ),
-    )
-
-    reaction_operations = [
-        operation
-        for operation in operations
-        if isinstance(operation, AddReactionOperation)
-    ]
-
-    assert len(reaction_operations) == 1
-    assert reaction_operations[0].reaction == reaction
+    with pytest.raises(
+        CapabilityError,
+        match="supports_custom_emoji.*reconcile custom emoji reactions",
+    ):
+        list(
+            Planner().plan(
+                archive=archive,
+                synchronization_state=state,
+                capabilities=capabilities,
+            ),
+        )
 
 
 def test_plan_rejects_unsupported_message_pinning() -> None:

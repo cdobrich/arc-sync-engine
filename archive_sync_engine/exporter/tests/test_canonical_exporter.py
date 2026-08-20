@@ -14,6 +14,7 @@ from archive_sync_engine.adapters import (
 from archive_sync_engine.archive import Archive, ArchivePaths, ArchiveWriter
 from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.exporter import CanonicalExporter
+from archive_sync_engine.repository import SQLiteStateRepository
 from archive_sync_engine.models import (
     CanonicalConversation,
     CanonicalIdentity,
@@ -153,6 +154,36 @@ def test_canonical_exporter_uses_current_operation_pipeline(
         "create_identity",
         "create_message",
     ]
+
+
+
+def test_canonical_exporter_reuses_durable_synchronization_state(
+    tmp_path: Path,
+) -> None:
+    paths = ArchivePaths(root=tmp_path / "archive")
+    archive, asset_store = _write_archive(paths)
+    destination = RecordingDestination()
+    state_path = paths.root / "synchronization.sqlite"
+
+    with SQLiteStateRepository(state_path) as repository:
+        first = CanonicalExporter().export(
+            archive,
+            destination,
+            asset_store,
+            state_repository=repository,
+        )
+        first_call_count = len(destination.calls)
+
+        second = CanonicalExporter().export(
+            archive,
+            destination,
+            asset_store,
+            state_repository=repository,
+        )
+
+    assert first.executed_operations == 3
+    assert second.executed_operations == 0
+    assert len(destination.calls) == first_call_count
 
 
 def test_canonical_exporter_forwards_progress_callback(
