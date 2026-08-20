@@ -24,7 +24,7 @@ of that progress remains the responsibility of the coordinator.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sized
+from collections.abc import Callable, Sized, Iterable
 
 from archive_sync_engine.adapters import SourceAdapter
 from archive_sync_engine.adapters.source import SourceRefreshCursor
@@ -80,6 +80,7 @@ class CanonicalImporter:
         rate_limiter = rate_limiter or OperationRateLimiter()
         refresh_cursors: dict[str, SourceRefreshCursor] = {}
         examined_messages = 0
+
         attachments_downloaded = 0
         attachments_reused = 0
 
@@ -143,6 +144,30 @@ class CanonicalImporter:
                             detail=str(identity.identity_key),
                         )
                     )
+
+        #
+        # Custom emojis
+        #
+        # Some reactions may reference custom emojis that are not owned by
+        # the source guild (Discord permits reactions using emojis from other
+        # shared guilds). Identity discovery intentionally precedes this
+        # stage because the Discord source adapter uses its cached raw-message
+        # traversal to discover reaction-only custom emojis and their assets.
+        #
+        iter_custom_emojis = getattr(source, "iter_custom_emojis", None)
+        if callable(iter_custom_emojis):
+            custom_emojis = iter_custom_emojis()
+            if isinstance(custom_emojis, Iterable):
+                custom_emoji_bytes = getattr(source, "custom_emoji_bytes", None)
+                for custom_emoji in custom_emojis:
+                    writer.upsert_custom_emoji(custom_emoji)
+                    if not asset_store.exists(custom_emoji.sha256):
+                        if not callable(custom_emoji_bytes):
+                            raise TypeError(
+                                "Source adapter yielded custom emoji data without "
+                                "providing custom_emoji_bytes()."
+                            )
+                        asset_store.put(custom_emoji_bytes(custom_emoji))
 
         #
         # Conversations and messages

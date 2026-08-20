@@ -11,6 +11,7 @@ The archive persists canonical models.
 
 from .attachment import CanonicalAttachment
 from .conversation import CanonicalConversation
+from .custom_emoji import CanonicalCustomEmoji
 from .enums import ConversationType
 from .identity import CanonicalIdentity
 from .message import CanonicalMessage
@@ -19,6 +20,7 @@ from .reaction import CanonicalReaction
 __all__ = [
     "CanonicalAttachment",
     "CanonicalConversation",
+    "CanonicalCustomEmoji",
     "CanonicalIdentity",
     "CanonicalMessage",
     "CanonicalReaction",

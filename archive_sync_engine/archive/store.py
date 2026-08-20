@@ -16,6 +16,7 @@ from archive_sync_engine.models import (
     CanonicalAttachment,
     CanonicalConversation,
     CanonicalMessage,
+    CanonicalCustomEmoji,
     CanonicalReaction,
 )
 from archive_sync_engine.models.enums import ConversationType
@@ -94,6 +95,72 @@ class ArchiveStore:
             paths=paths,
             connection=connection,
         )
+
+    #
+    # Custom emojis
+    #
+
+    @staticmethod
+    def _custom_emoji_parameters(emoji: CanonicalCustomEmoji) -> tuple[object, ...]:
+        return (
+            str(emoji.id),
+            emoji.name,
+            int(emoji.animated),
+            emoji.content_type,
+            emoji.size,
+            emoji.sha256,
+        )
+
+    def insert_custom_emoji(self, emoji: CanonicalCustomEmoji) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO custom_emojis
+                (emoji_id, name, animated, content_type, size, sha256)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            self._custom_emoji_parameters(emoji),
+        )
+
+    def upsert_custom_emoji(self, emoji: CanonicalCustomEmoji) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO custom_emojis
+                (emoji_id, name, animated, content_type, size, sha256)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(emoji_id) DO UPDATE SET
+                name = excluded.name,
+                animated = excluded.animated,
+                content_type = excluded.content_type,
+                size = excluded.size,
+                sha256 = excluded.sha256
+            """,
+            self._custom_emoji_parameters(emoji),
+        )
+
+    @staticmethod
+    def _row_to_custom_emoji(row: sqlite3.Row) -> CanonicalCustomEmoji:
+        return CanonicalCustomEmoji(
+            id=EmojiId(row["emoji_id"]),
+            name=row["name"],
+            animated=bool(row["animated"]),
+            content_type=row["content_type"],
+            size=int(row["size"]),
+            sha256=row["sha256"],
+        )
+
+    def iter_custom_emojis(self) -> Iterator[CanonicalCustomEmoji]:
+        rows = self._connection.execute(
+            "SELECT emoji_id, name, animated, content_type, size, sha256 FROM custom_emojis ORDER BY emoji_id"
+        )
+        for row in rows:
+            yield self._row_to_custom_emoji(row)
+
+    def get_custom_emoji(self, emoji_id: EmojiId) -> CanonicalCustomEmoji | None:
+        row = self._connection.execute(
+            "SELECT emoji_id, name, animated, content_type, size, sha256 FROM custom_emojis WHERE emoji_id = ?",
+            (str(emoji_id),),
+        ).fetchone()
+        return None if row is None else self._row_to_custom_emoji(row)
 
     #
     # Attachments

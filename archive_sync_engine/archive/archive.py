@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from archive_sync_engine.models import (
     CanonicalAttachment,
     CanonicalConversation,
+    CanonicalCustomEmoji,
     CanonicalIdentity,
     CanonicalMessage,
     CanonicalReaction,
@@ -168,6 +169,17 @@ class Archive:
         """
 
         return self._store.iter_attachments()
+
+    #
+    # Custom emojis
+    #
+
+    def iter_custom_emojis(self) -> Iterator[CanonicalCustomEmoji]:
+        """Iterate over every custom emoji archived from the source."""
+        return self._store.iter_custom_emojis()
+
+    def custom_emoji(self, emoji_id) -> CanonicalCustomEmoji | None:
+        return self._store.get_custom_emoji(emoji_id)
 
     #
     # Identities

@@ -1213,6 +1213,37 @@ def test_plan_custom_emoji_reconciliation_is_allowed_when_supported() -> None:
     ]
 
 
+def test_plan_replays_unchanged_reactions_when_destination_supports_idempotent_replay() -> None:
+    archive = _archive()
+    conversation = _conversation("conversation-001")
+    reaction = _reaction(emoji="👍")
+    message = _message("message-001", "conversation-001")
+    desired_message = replace(message, reactions=(reaction,))
+    archive.iter_identities.return_value = iter([])
+    archive.iter_conversations.return_value = iter([conversation])
+    archive.iter_messages.return_value = iter([desired_message])
+    state = _state_for_message(message, reactions=(reaction,))
+
+    operations = list(
+        Planner().plan(
+            archive,
+            state,
+            _capabilities(
+                supports_idempotent_reaction_replay=True,
+            ),
+        ),
+    )
+
+    assert operations == [
+        AddReactionOperation(
+            message_id=desired_message.id,
+            reaction=reaction,
+            resulting_reactions=(reaction,),
+            canonical_fingerprint=canonical_fingerprint(desired_message),
+        ),
+    ]
+
+
 def test_plan_message_changes_decompose_content_reaction_and_pin() -> None:
     archive = _archive()
     conversation = _conversation("conversation-001")
@@ -1646,17 +1677,15 @@ def test_fluxer_capabilities_plan_custom_reaction_before_execution() -> None:
         ),
     ).capabilities
 
-    with pytest.raises(
-        CapabilityError,
-        match="supports_custom_emoji.*reconcile custom emoji reactions",
-    ):
-        list(
-            Planner().plan(
-                archive=archive,
-                synchronization_state=state,
-                capabilities=capabilities,
-            ),
-        )
+    operations = list(
+        Planner().plan(
+            archive=archive,
+            synchronization_state=state,
+            capabilities=capabilities,
+        ),
+    )
+
+    assert any(isinstance(operation, AddReactionOperation) for operation in operations)
 
 
 def test_plan_rejects_unsupported_message_pinning() -> None:

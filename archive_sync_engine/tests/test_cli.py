@@ -69,6 +69,71 @@ def test_print_import_progress_renders_adapter_neutral_phases(capsys) -> None:
     assert "Import refresh completed: mode=incremental; examined=3; attachments_downloaded=1; attachments_reused=2." in output
 
 
+def test_import_cli_auto_initializes_new_archive(tmp_path: Path, capsys) -> None:
+    archive_path = tmp_path / "archive"
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.import_to_archive.return_value = type(
+        "Report",
+        (),
+        dict(identities=1, conversations=1, messages=1, attachments=0),
+    )()
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    registry.build_config.return_value = type(
+        "DiscordConfig",
+        (),
+        {"token": "discord-secret"},
+    )()
+
+    with patch(
+        "archive_sync_engine.cli.default_source_runtime_registry",
+        return_value=registry,
+    ):
+        assert main(["import", "--config", str(config)]) == 0
+
+    paths = ArchivePaths(archive_path.resolve())
+    assert paths.database.is_file()
+    assert paths.manifest.is_file()
+    assert "Initialized Archive Package:" in capsys.readouterr().out
+
+
+def test_import_cli_rejects_nonempty_uninitialized_archive(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    archive_path.mkdir()
+    (archive_path / "unexpected.txt").write_text("not an archive", encoding="utf-8")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit):
+        main(["import", "--config", str(config)])
+
+    assert not (archive_path / "archive.sqlite").exists()
+    assert not (archive_path / "manifest.json").exists()
+
+
 def test_import_cli_reports_connection_and_phase_status(tmp_path: Path, capsys) -> None:
     archive_path = tmp_path / "archive"
     ArchivePackage.initialize(ArchivePaths(archive_path))

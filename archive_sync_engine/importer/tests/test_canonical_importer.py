@@ -495,3 +495,23 @@ def test_incremental_refresh_reports_source_cursor_diagnostics(tmp_path: Path) -
     assert refresh_events[1].lookback_seconds == 7 * 24 * 60 * 60
     assert refresh_events[-1].traversal == "completed"
     assert refresh_events[-1].examined == 0
+
+
+def test_canonical_importer_ignores_absent_optional_custom_emoji_hook(tmp_path) -> None:
+    """Older/duck-typed source test doubles may omit optional emoji hooks."""
+    from types import SimpleNamespace
+
+    source = SimpleNamespace(
+        name="minimal source",
+        iter_identities=lambda: (),
+        iter_conversations=lambda: (),
+        iter_custom_emojis=None,
+    )
+    paths = ArchivePaths(tmp_path / "archive")
+    with ArchiveWriter(paths) as writer:
+        CanonicalImporter().import_source(
+            source,
+            writer,
+            AssetStore(paths.root),
+        )
+        writer.commit()

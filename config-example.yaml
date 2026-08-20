@@ -55,6 +55,11 @@ user_mappings:
       fluxer_username: "AliceOnFluxer#1136"
       fluxer_auth_key: "auth_key_for_alice_goes_here"
 
+    # An identity may explicitly use the default Fluxer bot account. This is
+    # intentional and must not be confused with an omitted mapping.
+    "345678901234567890":
+      fluxer_bot: true
+
   fluxer:
     "1375567890027713164":
       # Destination Fluxer account for this Fluxer user.
@@ -65,3 +70,12 @@ user_mappings:
       # Destination Fluxer account for this Fluxer user.
       fluxer_username: "AliceOnFluxer#1136"
       fluxer_auth_key: "auth_key_for_alice_goes_here"
+
+# --- Custom emoji mappings ---
+# Source custom emoji IDs are platform-local. Map them explicitly to an
+# existing Fluxer emoji before exporting custom emoji reactions.
+# emoji_mappings:
+#   discord:
+#     "123456789":
+#       fluxer_emoji_id: "987654321"
+#       fluxer_emoji_name: "example_emoji"

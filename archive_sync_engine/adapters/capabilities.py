@@ -31,6 +31,7 @@ class DestinationCapabilities:
     supports_message_pinning: bool = True
     supports_reactions: bool = True
     supports_custom_emoji: bool = True
+    supports_idempotent_reaction_replay: bool = False
     supports_attachments: bool = True
     supports_attachment_removal: bool = True
     supports_initial_message_attachments: bool = False

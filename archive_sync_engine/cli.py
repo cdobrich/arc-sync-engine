@@ -933,10 +933,14 @@ def _run_import(args: argparse.Namespace) -> int:
     )
     paths = ArchivePaths(archive_path)
     if not paths.database.is_file() or not paths.manifest.is_file():
-        raise ConfigurationError(
-            f"Archive Package is not initialized: {paths.root}. "
-            "Run 'archive-sync-engine init --archive <path>' first."
-        )
+        if not args.resume and (not paths.root.exists() or not any(paths.root.iterdir())):
+            ArchivePackage.initialize(paths)
+            print(f"Initialized Archive Package: {paths.root}", flush=True)
+        else:
+            raise ConfigurationError(
+                f"Archive Package is not initialized: {paths.root}. "
+                "Run 'archive-sync-engine init --archive <path>' first."
+            )
     report = validate_archive_package(paths)
     if not report.valid:
         raise ConfigurationError(

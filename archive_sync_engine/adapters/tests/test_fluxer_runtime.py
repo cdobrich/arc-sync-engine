@@ -54,6 +54,9 @@ class FakeHTTPClient:
     async def delete_channel(self, channel_id):
         return None
 
+    async def get_guild_emojis(self, guild_id):
+        return [{"id": "emoji-1", "name": "party_parrot"}]
+
     async def add_reaction(self, channel_id, message_id, emoji):
         return None
 
@@ -129,6 +132,15 @@ def test_fluxer_runtime_constructs_bot_http_client() -> None:
             },
         ),
     ]
+
+
+def test_fluxer_http_destination_client_gets_guild_emojis() -> None:
+    http = FakeHTTPClient("token")
+    client = FluxerHttpDestinationClient(http, guild_id="guild-1")
+
+    emojis = asyncio.run(client.get_guild_emojis())
+
+    assert emojis == [{"id": "emoji-1", "name": "party_parrot"}]
 
 
 def test_fluxer_runtime_constructs_user_http_client_without_gateway() -> None:
@@ -377,6 +389,20 @@ def test_runtime_rejects_ambiguous_attachment_filename() -> None:
     runtime.close()
 
 
+
+
+def test_build_fluxer_destination_runtime_config_propagates_custom_emoji_mappings() -> None:
+    from archive_sync_engine.adapters.fluxer import FluxerCustomEmojiMapping
+    from archive_sync_engine.adapters.fluxer_runtime import build_fluxer_destination_runtime_config
+
+    mapping = FluxerCustomEmojiMapping("123", "456", "party_parrot")
+    config = build_fluxer_destination_runtime_config(
+        SimpleNamespace(fluxer_token="configured-token", identity_mappings=(), custom_emoji_mappings=(mapping,)),
+        ("server-123",),
+        {},
+    )
+
+    assert config["custom_emoji_mappings"] == (mapping,)
 
 
 def test_build_fluxer_destination_runtime_config_uses_override_token() -> None:

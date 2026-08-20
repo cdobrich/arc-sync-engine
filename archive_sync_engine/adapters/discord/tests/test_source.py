@@ -1113,3 +1113,116 @@ def test_iter_messages_since_uses_bounded_discord_history_window() -> None:
     ]
     assert channel.history_after == datetime(2026, 8, 10, tzinfo=timezone.utc)
     assert adapter.incremental_refresh_lookback == timedelta(days=7)
+
+
+
+def test_iter_custom_emojis_fetches_authoritative_guild_emoji_list() -> None:
+    content = b"fetched-mewheart"
+
+    class FakeEmoji:
+        id = 1513447466333110352
+        name = "mewheart"
+        animated = False
+        url = SimpleNamespace(read=lambda: _read())
+
+    async def _read():
+        return content
+
+    class FetchingGuild(FakeGuild):
+        def __init__(self) -> None:
+            super().__init__()
+            self.emojis = []
+            self.fetch_emojis_calls = 0
+
+        async def fetch_emojis(self):
+            self.fetch_emojis_calls += 1
+            return [FakeEmoji()]
+
+    guild = FetchingGuild()
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    emojis = list(adapter.iter_custom_emojis())
+
+    assert [str(emoji.id) for emoji in emojis] == ["1513447466333110352"]
+    assert adapter.custom_emoji_bytes(emojis[0]) == content
+    assert guild.fetch_emojis_calls == 1
+
+
+
+def test_iter_custom_emojis_reads_discord_partial_emoji_directly() -> None:
+    """discord.py exposes PartialEmoji.url as a string, not an Asset."""
+
+    content = b"partial-emoji-png"
+
+    class PartialEmojiLike:
+        id = 1513447466333110352
+        name = "mewheart"
+        animated = False
+        url = "https://cdn.discordapp.com/emojis/1513447466333110352.png"
+
+        async def read(self):
+            return content
+
+    guild = FakeGuild()
+    guild.emojis = [PartialEmojiLike()]
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    emojis = list(adapter.iter_custom_emojis())
+
+    assert [str(emoji.id) for emoji in emojis] == ["1513447466333110352"]
+    assert adapter.custom_emoji_bytes(emojis[0]) == content
+
+
+def test_iter_custom_emojis_archives_source_asset_bytes() -> None:
+    content = b"mewheart-png"
+
+    class FakeEmoji:
+        id = 1513447466333110352
+        name = "mewheart"
+        animated = False
+        url = SimpleNamespace(read=lambda: _read())
+
+    async def _read():
+        return content
+
+    guild = FakeGuild()
+    guild.emojis = [FakeEmoji()]
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    emojis = list(adapter.iter_custom_emojis())
+
+    assert len(emojis) == 1
+    assert str(emojis[0].id) == "1513447466333110352"
+    assert emojis[0].name == "mewheart"
+    assert emojis[0].size == len(content)
+    assert emojis[0].sha256 == hashlib.sha256(content).hexdigest()
+    assert adapter.custom_emoji_bytes(emojis[0]) == content
+
+
+def test_iter_custom_emojis_archives_reaction_emoji_from_another_guild() -> None:
+    content = b"reaction-only-mewheart"
+
+    async def _read():
+        return content
+
+    emoji = SimpleNamespace(
+        id=1513447466333110352,
+        name="mewheart",
+        animated=False,
+        url=SimpleNamespace(read=lambda: _read()),
+    )
+    message = SimpleNamespace(
+        reactions=[SimpleNamespace(emoji=emoji)],
+    )
+
+    guild = FakeGuild()
+    guild.emojis = []
+    guild.fetch_emojis = None
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    adapter._message_cache["discord:conversation:123"] = (message,)
+
+    emojis = list(adapter.iter_custom_emojis())
+
+    assert [str(item.id) for item in emojis] == ["1513447466333110352"]
+    assert emojis[0].name == "mewheart"
+    assert adapter.custom_emoji_bytes(emojis[0]) == content

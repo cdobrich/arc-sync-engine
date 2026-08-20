@@ -78,6 +78,11 @@ class OperationExecutor:
     ) -> None:
         self._asset_store = asset_store
 
+    @property
+    def asset_store(self) -> AssetStore | None:
+        """Return the content-addressed archive asset store, when configured."""
+        return self._asset_store
+
     def execute(
         self,
         operation: SyncOperation,

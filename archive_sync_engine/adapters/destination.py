@@ -55,6 +55,16 @@ class DestinationAdapter(ABC):
         """
         del operations
 
+    def prepare_archive(self, archive, asset_store) -> None:
+        """Prepare destination resources required by the canonical archive.
+
+        This hook runs after complete-plan validation and before any sync
+        operation executes. Destination adapters may use it to provision
+        canonical resources such as custom emojis whose identifiers are local
+        to the destination platform. The default implementation is a no-op.
+        """
+        del archive, asset_store
+
     @property
     @abstractmethod
     def capabilities(self) -> DestinationCapabilities:

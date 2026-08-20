@@ -37,6 +37,7 @@ from archive_sync_engine.adapters.source import SourceAdapter, SourceRefreshCurs
 from archive_sync_engine.models import (
     CanonicalAttachment,
     CanonicalConversation,
+    CanonicalCustomEmoji,
     CanonicalIdentity,
     CanonicalMessage,
     CanonicalReaction,
@@ -77,6 +78,7 @@ class DiscordSourceAdapter(SourceAdapter):
         self._conversation_channels: dict[str, Any] = {}
         self._message_cache: dict[str, tuple[Any, ...]] = {}
         self._attachment_bytes: dict[str, bytes] = {}
+        self._custom_emoji_bytes: dict[str, bytes] = {}
         self._runner: Callable[[Awaitable[Any]], Any] | None = None
 
     @property
@@ -178,6 +180,87 @@ class DiscordSourceAdapter(SourceAdapter):
                 )
 
         return [conversations[key] for key in sorted(conversations)]
+
+    def iter_custom_emojis(self) -> Iterable[CanonicalCustomEmoji]:
+        """Enumerate custom emojis required by the archive scope.
+
+        The archive must preserve custom emojis that occur in reactions even
+        when the emoji is owned by another guild. Discord permits a message
+        in the configured guild to use an emoji from another shared guild, so
+        enumerating only ``guild.emojis`` is insufficient.
+
+        Identity discovery populates ``_message_cache`` before this method is
+        called by the importer. We therefore combine authoritative guild
+        emoji discovery with custom emojis encountered in cached reactions.
+        """
+        emojis: dict[str, Any] = {}
+
+        for guild in self._iter_guilds():
+            fetch_emojis = getattr(guild, "fetch_emojis", None)
+            if callable(fetch_emojis):
+                guild_emojis = self._run(fetch_emojis())
+            else:
+                guild_emojis = getattr(guild, "emojis", ())
+            for emoji in guild_emojis or ():
+                emoji_id = getattr(emoji, "id", None)
+                if emoji_id is not None:
+                    emojis[str(emoji_id)] = emoji
+
+        # Reaction-only custom emojis are not necessarily members of the
+        # configured guild. Recover them from the raw messages already
+        # traversed for identity discovery.
+        for messages in self._message_cache.values():
+            for message in messages:
+                for reaction in getattr(message, "reactions", ()) or ():
+                    emoji = getattr(reaction, "emoji", None)
+                    emoji_id = getattr(emoji, "id", None) if emoji is not None else None
+                    if emoji_id is not None:
+                        emojis.setdefault(str(emoji_id), emoji)
+
+        for emoji_id in sorted(emojis):
+            emoji = emojis[emoji_id]
+            name = getattr(emoji, "name", None)
+            if not name:
+                continue
+            # discord.py 2.x exposes ``PartialEmoji.url`` as a string, while
+            # the emoji object itself provides the asynchronous ``read()``
+            # method.  Guild Emoji objects expose the same read interface.
+            # Older test doubles and compatibility shims may instead expose
+            # a URL-like object with ``read()``.  Prefer the canonical emoji
+            # read method and retain the URL-object fallback for those shims.
+            read_asset = getattr(emoji, "read", None)
+            if callable(read_asset):
+                content = self._run(read_asset())
+            else:
+                asset = getattr(emoji, "url", None)
+                read_asset = getattr(asset, "read", None)
+                if not callable(read_asset):
+                    raise AdapterError(
+                        f"Discord custom emoji {emoji_id} does not expose readable asset bytes."
+                    )
+                content = self._run(read_asset())
+            digest = hashlib.sha256(content).hexdigest()
+            self._custom_emoji_bytes[emoji_id] = bytes(content)
+            animated = bool(getattr(emoji, "animated", False))
+            yield CanonicalCustomEmoji(
+                id=EmojiId(emoji_id),
+                name=str(name),
+                animated=animated,
+                content_type="image/gif" if animated else "image/png",
+                size=len(content),
+                sha256=digest,
+            )
+
+    def custom_emoji_bytes(
+        self,
+        emoji: CanonicalCustomEmoji,
+    ) -> bytes:
+        try:
+            return self._custom_emoji_bytes[str(emoji.id)]
+        except KeyError as exc:
+            raise AdapterError(
+                f"Discord custom emoji bytes were not loaded for {emoji.id}."
+            ) from exc
 
     def iter_messages(
         self,

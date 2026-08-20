@@ -14,7 +14,11 @@ from typing import Any, Mapping, Callable
 
 from .destination import DestinationAdapter
 from .exceptions import AdapterError
-from .fluxer import FluxerDestinationAdapter, FluxerIdentityMapping
+from .fluxer import (
+    FluxerCustomEmojiMapping,
+    FluxerDestinationAdapter,
+    FluxerIdentityMapping,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,6 +215,23 @@ class FluxerHttpDestinationClient:
         await self._http.unpin_message(channel_id, message_id)
         return True
 
+    async def get_guild_emojis(self) -> list[Any]:
+        """Return the destination guild's custom emojis for reaction mapping."""
+        return list(await self._http.get_guild_emojis(self._guild_id))
+
+    async def create_guild_emoji(
+        self,
+        *,
+        name: str,
+        image: bytes,
+    ) -> Any:
+        """Create a destination custom emoji from canonical archived bytes."""
+        return await self._http.create_guild_emoji(
+            self._guild_id,
+            name=name,
+            image=image,
+        )
+
     async def remove_attachment(
         self,
         channel_id: str,
@@ -295,10 +316,12 @@ class FluxerDestinationRuntime:
         if len(request.scope) != 1:
             raise AdapterError("Fluxer destination scope must contain exactly one server ID.")
         identity_mappings = tuple(request.adapter_config.get("identity_mappings", ()))
+        custom_emoji_mappings = tuple(request.adapter_config.get("custom_emoji_mappings", ()))
         return cls(
             guild_id=request.scope[0],
             bot_client=config,
             identity_mappings=identity_mappings,
+            custom_emoji_mappings=custom_emoji_mappings,
             client_factory=request.adapter_config.get("fluxer_client_factory"),
         )
 
@@ -308,6 +331,7 @@ class FluxerDestinationRuntime:
         guild_id: str,
         bot_client: FluxerClientConfig,
         identity_mappings: tuple[FluxerIdentityMapping, ...] = (),
+        custom_emoji_mappings: tuple[FluxerCustomEmojiMapping, ...] = (),
         client_factory: FluxerHttpClientFactory | None = None,
     ) -> None:
         if not guild_id:
@@ -335,6 +359,7 @@ class FluxerDestinationRuntime:
         self._adapter = FluxerDestinationAdapter(
             self._bot_client,
             identity_mappings=identity_mappings,
+            custom_emoji_mappings=custom_emoji_mappings,
             identity_client_factory=self._create_identity_client,
             async_runner=self._run_async,
         )
@@ -469,4 +494,5 @@ def build_fluxer_destination_runtime_config(
             max_retries=int(overrides.get("max_retries", 4)),
         ),
         "identity_mappings": tuple(getattr(credentials, "identity_mappings", ())),
+        "custom_emoji_mappings": tuple(getattr(credentials, "custom_emoji_mappings", ())),
     }

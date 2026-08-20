@@ -22,6 +22,7 @@ from typing import Any, Mapping
 from archive_sync_engine.models import (
     CanonicalAttachment,
     CanonicalConversation,
+    CanonicalCustomEmoji,
     CanonicalIdentity,
     CanonicalMessage,
 )
@@ -95,7 +96,19 @@ class SourceAdapter(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
+    def iter_custom_emojis(self) -> Iterable[CanonicalCustomEmoji]:
+        """Enumerate custom emojis that are part of the source archive scope."""
+        return ()
+
+    def custom_emoji_bytes(
+        self,
+        emoji: CanonicalCustomEmoji,
+    ) -> bytes:
+        """Retrieve archived source bytes for a canonical custom emoji."""
+        raise NotImplementedError(
+            f"Source adapter {self.name!r} does not provide custom emoji bytes."
+        )
+
     def iter_messages(
         self,
         conversation: CanonicalConversation,

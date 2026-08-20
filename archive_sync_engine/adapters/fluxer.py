@@ -36,6 +36,28 @@ from archive_sync_engine.models import (
 
 
 @dataclass(frozen=True, slots=True)
+class FluxerCustomEmojiMapping:
+    """Map a canonical/source custom emoji to an existing Fluxer emoji.
+
+    Custom emoji IDs are platform-local, so the canonical source emoji ID must
+    never be sent directly to Fluxer unless an explicit destination mapping
+    establishes that correspondence.
+    """
+
+    source_emoji_id: str
+    fluxer_emoji_id: str
+    fluxer_emoji_name: str
+
+    def __post_init__(self) -> None:
+        if not self.source_emoji_id:
+            raise ValueError("Fluxer custom emoji source ID must not be empty.")
+        if not self.fluxer_emoji_id:
+            raise ValueError("Fluxer custom emoji destination ID must not be empty.")
+        if not self.fluxer_emoji_name:
+            raise ValueError("Fluxer custom emoji destination name must not be empty.")
+
+
+@dataclass(frozen=True, slots=True)
 class FluxerIdentityMapping:
     """Destination mapping for one canonical identity.
 
@@ -164,6 +186,17 @@ class FluxerClientProtocol(Protocol):
     ) -> bool:
         ...
 
+    async def get_guild_emojis(self) -> list[Any]:
+        ...
+
+    async def create_guild_emoji(
+        self,
+        *,
+        name: str,
+        image: bytes,
+    ) -> Any:
+        ...
+
 
 class FluxerDestinationAdapter(DestinationAdapter):
     """Destination adapter for the currently supported Fluxer API surface."""
@@ -175,6 +208,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
         client: FluxerClientProtocol,
         *,
         identity_mappings: tuple[FluxerIdentityMapping, ...] = (),
+        custom_emoji_mappings: tuple[FluxerCustomEmojiMapping, ...] = (),
         identity_client_factory: Callable[[FluxerIdentityMapping], Any] | None = None,
         reaction_client_factory: Callable[[str], Any] | None = None,
         async_runner: Callable[[Any], Any] | None = None,
@@ -213,6 +247,17 @@ class FluxerDestinationAdapter(DestinationAdapter):
 
         self._identity_mappings = mappings
 
+        emoji_mappings: dict[str, FluxerCustomEmojiMapping] = {}
+        for mapping in custom_emoji_mappings:
+            if mapping.source_emoji_id in emoji_mappings:
+                raise ValueError(
+                    "Fluxer custom emoji mappings must not contain duplicate "
+                    f"source emoji IDs: {mapping.source_emoji_id!r}."
+                )
+            emoji_mappings[mapping.source_emoji_id] = mapping
+        self._custom_emoji_mappings = emoji_mappings
+        self._archive_custom_emojis_prepared = False
+
     @property
     def name(self) -> str:
         return self._NAME
@@ -227,6 +272,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
         mapped. Validate the complete plan here so an unmapped reaction actor
         cannot cause a partial export after earlier operations have succeeded.
         """
+        custom_reactions = []
         for operation in operations:
             if not isinstance(operation, (AddReactionOperation, RemoveReactionOperation)):
                 continue
@@ -237,6 +283,103 @@ class FluxerDestinationAdapter(DestinationAdapter):
                     "Fluxer reaction synchronization requires an identity "
                     f"mapping for reaction actor {operation.reaction.identity_key}."
                 )
+
+            if operation.reaction.is_custom:
+                custom_reactions.append(operation.reaction)
+
+        if self._archive_custom_emojis_prepared:
+            unresolved = [
+                str(reaction.emoji_id)
+                for reaction in custom_reactions
+                if reaction.emoji_id is not None
+                and str(reaction.emoji_id) not in self._custom_emoji_mappings
+            ]
+            if unresolved:
+                raise CapabilityError(
+                    "Fluxer custom emoji reaction synchronization requires a "
+                    "destination emoji mapping for source emoji(s): "
+                    + ", ".join(sorted(set(unresolved)))
+                    + "."
+                )
+
+    def prepare_archive(self, archive, asset_store) -> None:
+        """Provision every canonical custom emoji required by the archive."""
+        try:
+            destination_emojis = self._run(self._client.get_guild_emojis())
+        except Exception as exc:
+            raise AdapterError(
+                "Unable to discover Fluxer guild emojis while preparing "
+                "canonical custom emojis."
+            ) from exc
+
+        by_name: dict[str, list[Any]] = {}
+        for emoji in destination_emojis or ():
+            name = getattr(emoji, "name", None)
+            emoji_id = getattr(emoji, "id", None)
+            if isinstance(emoji, dict):
+                name = emoji.get("name", name)
+                emoji_id = emoji.get("id", emoji_id)
+            if name is not None and emoji_id is not None:
+                by_name.setdefault(str(name), []).append(emoji)
+
+        for canonical in archive.iter_custom_emojis():
+            source_id = str(canonical.id)
+            if source_id in self._custom_emoji_mappings:
+                continue
+
+            candidates = by_name.get(canonical.name, [])
+            if len(candidates) > 1:
+                raise CapabilityError(
+                    "Fluxer custom emoji synchronization cannot uniquely resolve "
+                    f"archive emoji {source_id} ({canonical.name!r}); multiple "
+                    "destination emojis have that name. Configure an explicit "
+                    "emoji_mappings.discord entry."
+                )
+
+            if len(candidates) == 1:
+                destination = candidates[0]
+                destination_id = getattr(destination, "id", None)
+                destination_name = getattr(destination, "name", None)
+                if isinstance(destination, dict):
+                    destination_id = destination.get("id", destination_id)
+                    destination_name = destination.get("name", destination_name)
+                self._custom_emoji_mappings[source_id] = FluxerCustomEmojiMapping(
+                    source_emoji_id=source_id,
+                    fluxer_emoji_id=str(destination_id),
+                    fluxer_emoji_name=str(destination_name or canonical.name),
+                )
+                continue
+
+            try:
+                image = asset_store.get(canonical.sha256)
+                created = self._run(
+                    self._client.create_guild_emoji(
+                        name=canonical.name,
+                        image=image,
+                    )
+                )
+            except Exception as exc:
+                raise AdapterError(
+                    "Unable to create Fluxer custom emoji "
+                    f"{canonical.name!r} ({source_id})."
+                ) from exc
+
+            destination_id = getattr(created, "id", None)
+            destination_name = getattr(created, "name", None)
+            if isinstance(created, dict):
+                destination_id = created.get("id", destination_id)
+                destination_name = created.get("name", destination_name)
+            if destination_id is None:
+                raise AdapterError(
+                    f"Fluxer did not return an ID when creating custom emoji {canonical.name!r}."
+                )
+            self._custom_emoji_mappings[source_id] = FluxerCustomEmojiMapping(
+                source_emoji_id=source_id,
+                fluxer_emoji_id=str(destination_id),
+                fluxer_emoji_name=str(destination_name or canonical.name),
+            )
+
+        self._archive_custom_emojis_prepared = True
 
     @property
     def capabilities(self) -> DestinationCapabilities:
@@ -250,12 +393,15 @@ class FluxerDestinationAdapter(DestinationAdapter):
             # Canonical reactions are per-identity. Fluxer can only preserve
             # that identity when a masquerade mapping is configured.
             supports_reactions=bool(self._identity_mappings),
-            # Custom-emoji reaction synchronization is intentionally not
-            # implemented. The Fluxer reaction endpoint requires destination
-            # emoji semantics that are not yet represented safely by the
-            # current adapter, so the planner must reject these operations
-            # before any destination mutation occurs.
-            supports_custom_emoji=False,
+            # Re-adding an existing reaction is idempotent at the Fluxer
+            # reaction endpoint, so replay can repair state established by a
+            # prior run whose destination reaction was not retained.
+            supports_idempotent_reaction_replay=bool(self._identity_mappings),
+            # Fluxer natively supports custom emoji reactions.  Whether a
+            # particular source emoji can be represented is validated against
+            # explicit mappings or destination emoji discovery before any
+            # export mutation occurs.
+            supports_custom_emoji=True,
             supports_attachments=False,
             supports_attachment_removal=True,
             supports_initial_message_attachments=True,
@@ -601,23 +747,108 @@ class FluxerDestinationAdapter(DestinationAdapter):
             return self._client_for_identity(reaction.identity_key)
         return self._client
 
-    @staticmethod
-    def _require_supported_reaction(reaction: CanonicalReaction) -> None:
-        if reaction.is_custom:
+    def _require_supported_reaction(self, reaction: CanonicalReaction) -> None:
+        if reaction.is_custom and reaction.emoji_id is None:
             raise CapabilityError(
-                "Fluxer custom emoji reaction synchronization is not "
-                "supported by the current adapter."
+                "Fluxer custom emoji reactions require a canonical emoji ID."
             )
 
-    @staticmethod
-    def _reaction_identifier(reaction: CanonicalReaction) -> str:
+
+    def _resolve_unmapped_custom_emojis(
+        self,
+        reactions: list[CanonicalReaction],
+    ) -> None:
+        """Resolve source custom emojis against explicit or destination mappings.
+
+        The canonical reaction retains the stable source emoji ID and name, but
+        destination emoji IDs are platform-local.  Explicit configuration always
+        wins.  For mappings omitted from configuration, Fluxer emojis are looked
+        up by exact name; a name must resolve uniquely.  The destination server
+        must therefore already contain the emoji when no explicit mapping is
+        supplied.  Creating a new emoji is intentionally not attempted here
+        because the canonical reaction model does not contain the source emoji
+        image bytes or animation metadata required to recreate it.
+        """
+        missing = {
+            str(reaction.emoji_id): reaction
+            for reaction in reactions
+            if reaction.emoji_id is not None
+            and str(reaction.emoji_id) not in self._custom_emoji_mappings
+        }
+        if not missing:
+            return
+
+        getter = getattr(self._client, "get_guild_emojis", None)
+        if getter is None:
+            raise CapabilityError(
+                "Fluxer custom emoji reaction synchronization requires either "
+                "an explicit emoji mapping or a destination client that can "
+                "discover guild emojis."
+            )
+
+        try:
+            destination_emojis = self._run(getter())
+        except Exception as exc:
+            raise AdapterError(
+                "Unable to discover Fluxer guild emojis while resolving custom "
+                "reaction mappings."
+            ) from exc
+
+        by_name: dict[str, list[Any]] = {}
+        for emoji in destination_emojis or ():
+            name = getattr(emoji, "name", None)
+            emoji_id = getattr(emoji, "id", None)
+            if name is None and isinstance(emoji, dict):
+                name = emoji.get("name")
+                emoji_id = emoji.get("id")
+            if name is None or emoji_id is None:
+                continue
+            by_name.setdefault(str(name), []).append(emoji)
+
+        unresolved: list[str] = []
+        for source_id, reaction in missing.items():
+            candidates = by_name.get(reaction.emoji, [])
+            if len(candidates) != 1:
+                unresolved.append(
+                    f"{source_id} ({reaction.emoji!r})"
+                )
+                continue
+            destination = candidates[0]
+            destination_id = getattr(destination, "id", None)
+            destination_name = getattr(destination, "name", None)
+            if isinstance(destination, dict):
+                destination_id = destination.get("id")
+                destination_name = destination.get("name")
+            assert destination_id is not None
+            assert destination_name is not None
+            self._custom_emoji_mappings[source_id] = FluxerCustomEmojiMapping(
+                source_emoji_id=source_id,
+                fluxer_emoji_id=str(destination_id),
+                fluxer_emoji_name=str(destination_name),
+            )
+
+        if unresolved:
+            raise CapabilityError(
+                "Fluxer custom emoji reaction synchronization could not resolve "
+                "destination emojis for: " + ", ".join(unresolved) + ". "
+                "Configure an explicit emoji_mappings.discord entry or create "
+                "the corresponding emoji on the Fluxer server."
+            )
+
+    def _reaction_identifier(self, reaction: CanonicalReaction) -> str:
         if not reaction.is_custom:
             return reaction.emoji
         if reaction.emoji_id is None:
-            raise ValueError(
-                "Custom Fluxer reactions require emoji_id."
-            )
-        return f"{reaction.emoji}:{reaction.emoji_id}"
+            raise ValueError("Custom Fluxer reactions require emoji_id.")
+        try:
+            mapping = self._custom_emoji_mappings[str(reaction.emoji_id)]
+        except KeyError as exc:
+            raise CapabilityError(
+                "Fluxer custom emoji reaction synchronization requires a "
+                "destination emoji mapping for source emoji "
+                f"{reaction.emoji_id}."
+            ) from exc
+        return f"{mapping.fluxer_emoji_name}:{mapping.fluxer_emoji_id}"
 
     def _author_name_for(
         self,

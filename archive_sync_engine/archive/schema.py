@@ -20,7 +20,7 @@ class ArchiveSchema:
     Canonical Archive Package database schema.
     """
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     @classmethod
     def create(
@@ -78,6 +78,27 @@ class ArchiveSchema:
             )
 
         version = int(row["value"])
+
+        if version == 1:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_emojis
+                (
+                    emoji_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    animated INTEGER NOT NULL,
+                    content_type TEXT,
+                    size INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "UPDATE archive_metadata SET value = ? WHERE key = 'schema_version'",
+                (str(cls.SCHEMA_VERSION),),
+            )
+            connection.commit()
+            return
 
         if version != cls.SCHEMA_VERSION:
             raise RuntimeError(
@@ -188,6 +209,16 @@ class ArchiveSchema:
                 REFERENCES attachments (
                     attachment_id
                 )
+            );
+
+            CREATE TABLE custom_emojis
+            (
+                emoji_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                animated INTEGER NOT NULL,
+                content_type TEXT,
+                size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL
             );
 
             CREATE TABLE message_reactions (

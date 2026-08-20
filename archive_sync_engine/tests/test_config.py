@@ -642,6 +642,35 @@ user_mappings:
     assert mapping.fluxer_username is None
 
 
+def test_load_yaml_setup_supports_explicit_fluxer_custom_emoji_mapping(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord
+  guild_id: 123
+fluxer:
+  token: fluxer
+  server_id: 456
+emoji_mappings:
+  discord:
+    "987654321":
+      fluxer_emoji_id: "123456789"
+      fluxer_emoji_name: party_parrot
+""",
+        encoding="utf-8",
+    )
+
+    setup = load_setup_configuration(config)
+    mapping = setup.resolve_credentials(required_adapters=("fluxer",)).custom_emoji_mappings[0]
+
+    assert mapping.source_emoji_id == "987654321"
+    assert mapping.fluxer_emoji_id == "123456789"
+    assert mapping.fluxer_emoji_name == "party_parrot"
+
+
 def test_load_yaml_setup_rejects_fluxer_bot_with_authentication(tmp_path: Path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text(

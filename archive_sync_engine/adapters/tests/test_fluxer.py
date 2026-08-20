@@ -10,6 +10,7 @@ from archive_sync_engine.adapters import (
     CapabilityError,
     DestinationConversationRef,
     DestinationMessageRef,
+    FluxerCustomEmojiMapping,
     FluxerDestinationAdapter,
     FluxerIdentityMapping,
 )
@@ -20,10 +21,12 @@ from archive_sync_engine.operations import (
 from archive_sync_engine.models import (
     CanonicalAttachment,
     CanonicalConversation,
+    CanonicalCustomEmoji,
     CanonicalMessage,
     CanonicalReaction,
 )
 from archive_sync_engine.models.enums import ConversationType
+from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.models.ids import (
     AttachmentId,
     ConversationId,
@@ -36,6 +39,7 @@ from archive_sync_engine.models.ids import (
 class FakeFluxerClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
+        self.guild_emojis: list[dict[str, str]] = []
         self.send_result = {
             "id": "fluxer-message-1",
             "channel_id": "fluxer-channel-1",
@@ -148,6 +152,16 @@ class FakeFluxerClient:
         )
         return True
 
+    async def get_guild_emojis(self):
+        self.calls.append(("get_guild_emojis", (), {}))
+        return list(self.guild_emojis)
+
+    async def create_guild_emoji(self, *, name, image):
+        self.calls.append(("create_guild_emoji", (), {"name": name, "image": image}))
+        emoji = {"id": "created-emoji-1", "name": name}
+        self.guild_emojis.append(emoji)
+        return emoji
+
     async def remove_attachment(self, channel_id, message_id, filename):
         self.calls.append((
             "remove_attachment",
@@ -224,7 +238,7 @@ def test_fluxer_adapter_reports_current_capabilities() -> None:
     assert capabilities.supports_conversation_deletion is True
     assert capabilities.supports_message_pinning is True
     assert capabilities.supports_reactions is True
-    assert capabilities.supports_custom_emoji is False
+    assert capabilities.supports_custom_emoji is True
     assert capabilities.supports_attachments is False
     assert capabilities.supports_attachment_removal is True
     assert capabilities.supports_initial_message_attachments is True
@@ -431,6 +445,17 @@ def test_pin_and_unpin_use_persisted_conversation_id() -> None:
     ]
 
 
+def test_capabilities_advertise_idempotent_reaction_replay_with_mappings() -> None:
+    adapter = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", None),
+        ),
+    )
+
+    assert adapter.capabilities.supports_idempotent_reaction_replay is True
+
+
 def test_capabilities_advertise_standard_reaction_synchronization_only_with_mappings() -> None:
     assert (
         FluxerDestinationAdapter(FakeFluxerClient())
@@ -447,7 +472,7 @@ def test_capabilities_advertise_standard_reaction_synchronization_only_with_mapp
     )
 
     assert adapter.capabilities.supports_reactions is True
-    assert adapter.capabilities.supports_custom_emoji is False
+    assert adapter.capabilities.supports_custom_emoji is True
 
 
 
@@ -644,6 +669,157 @@ def test_reaction_removal_uses_masquerade_auth_key() -> None:
     )
 
     assert client.calls[-1][2]["auth_key"] == "user-auth-key"
+
+
+def test_custom_reaction_is_supported_with_explicit_destination_mapping() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(FluxerIdentityMapping("identity-1", "auth-key"),),
+        custom_emoji_mappings=(
+            FluxerCustomEmojiMapping(
+                source_emoji_id="1234567890",
+                fluxer_emoji_id="9876543210",
+                fluxer_emoji_name="party_parrot",
+            ),
+        ),
+    )
+
+    assert adapter.capabilities.supports_custom_emoji is True
+
+    reaction = CanonicalReaction(
+        identity_key=IdentityKey("identity-1"),
+        emoji="party_parrot",
+        emoji_id=EmojiId("1234567890"),
+        is_custom=True,
+    )
+    adapter.validate_operations((AddReactionOperation(
+        message_id=MessageId("message-1"), reaction=reaction
+    ),))
+    adapter.add_reaction(_message_ref(), reaction)
+
+    assert client.calls[-1][2]["emoji"] == "party_parrot:9876543210"
+    assert client.calls[-1][2]["auth_key"] == "auth-key"
+
+
+def test_custom_reaction_requires_archived_emoji_asset_when_destination_missing(tmp_path) -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(FluxerIdentityMapping("identity-1", "auth-key"),),
+    )
+
+    reaction = CanonicalReaction(
+        identity_key=IdentityKey("identity-1"),
+        emoji="party_parrot",
+        emoji_id=EmojiId("1234567890"),
+        is_custom=True,
+    )
+
+    class EmptyArchive:
+        def iter_custom_emojis(self):
+            return ()
+
+    adapter.prepare_archive(EmptyArchive(), AssetStore(tmp_path))
+    with pytest.raises(CapabilityError, match="destination emoji mapping"):
+        adapter.validate_operations((AddReactionOperation(
+            message_id=MessageId("message-1"), reaction=reaction
+        ),))
+
+
+def test_custom_reaction_auto_resolves_unique_destination_emoji_by_name(tmp_path) -> None:
+    client = FakeFluxerClient()
+    client.guild_emojis = [{"id": "9876543210", "name": "party_parrot"}]
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(FluxerIdentityMapping("identity-1", "auth-key"),),
+    )
+    content = b"emoji-bytes"
+    import hashlib
+    digest = hashlib.sha256(content).hexdigest()
+    emoji = CanonicalCustomEmoji(
+        id=EmojiId("1234567890"),
+        name="party_parrot",
+        animated=False,
+        content_type="image/png",
+        size=len(content),
+        sha256=digest,
+    )
+    AssetStore(tmp_path).put(content)
+
+    class ArchiveWithEmoji:
+        def iter_custom_emojis(self):
+            return (emoji,)
+
+    adapter.prepare_archive(ArchiveWithEmoji(), AssetStore(tmp_path))
+    reaction = CanonicalReaction(
+        identity_key=IdentityKey("identity-1"),
+        emoji="party_parrot",
+        emoji_id=EmojiId("1234567890"),
+        is_custom=True,
+    )
+    adapter.validate_operations((AddReactionOperation(
+        message_id=MessageId("message-1"), reaction=reaction
+    ),))
+    adapter.add_reaction(_message_ref(), reaction)
+
+    assert client.calls[-1][0] == "apply_reaction"
+    assert client.calls[-1][2]["emoji"] == "party_parrot:9876543210"
+
+
+def test_custom_reaction_provisions_missing_destination_emoji(tmp_path) -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(FluxerIdentityMapping("identity-1", "auth-key"),),
+    )
+    content = b"emoji-bytes"
+    import hashlib
+    digest = hashlib.sha256(content).hexdigest()
+    emoji = CanonicalCustomEmoji(
+        id=EmojiId("1234567890"), name="party_parrot", animated=False,
+        content_type="image/png", size=len(content), sha256=digest,
+    )
+    assets = AssetStore(tmp_path)
+    assets.put(content)
+
+    class ArchiveWithEmoji:
+        def iter_custom_emojis(self):
+            return (emoji,)
+
+    adapter.prepare_archive(ArchiveWithEmoji(), assets)
+    reaction = CanonicalReaction(
+        identity_key=IdentityKey("identity-1"), emoji="party_parrot",
+        emoji_id=EmojiId("1234567890"), is_custom=True,
+    )
+    adapter.validate_operations((AddReactionOperation(
+        message_id=MessageId("message-1"), reaction=reaction
+    ),))
+    adapter.add_reaction(_message_ref(), reaction)
+
+    assert any(call[0] == "create_guild_emoji" for call in client.calls)
+    assert client.calls[-1][2]["emoji"] == "party_parrot:created-emoji-1"
+
+
+def test_custom_reaction_removal_uses_destination_emoji_mapping() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(
+        client,
+        identity_mappings=(FluxerIdentityMapping("identity-1", None),),
+        custom_emoji_mappings=(
+            FluxerCustomEmojiMapping("123", "456", "target_emoji"),
+        ),
+    )
+    reaction = CanonicalReaction(
+        identity_key=IdentityKey("identity-1"),
+        emoji="source_emoji",
+        emoji_id=EmojiId("123"),
+        is_custom=True,
+    )
+
+    adapter.remove_reaction(_message_ref(), reaction)
+
+    assert client.calls[-1][2]["emoji_id_or_name"] == "target_emoji:456"
 
 
 def test_custom_reaction_add_is_rejected_before_http_call() -> None:

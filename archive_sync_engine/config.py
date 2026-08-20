@@ -15,7 +15,10 @@ import re
 
 import yaml
 
-from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
+from archive_sync_engine.adapters.fluxer import (
+    FluxerCustomEmojiMapping,
+    FluxerIdentityMapping,
+)
 
 
 class ConfigurationError(ValueError):
@@ -52,6 +55,23 @@ class SecretSource:
         if not secret:
             raise ConfigurationError(f"{label} file {str(path)!r} is empty.")
         return secret
+
+
+@dataclass(frozen=True, slots=True)
+class SetupCustomEmojiMapping:
+    """Map a stable source custom emoji ID to an existing Fluxer emoji."""
+
+    source_platform: Literal["discord"]
+    source_emoji_id: str
+    fluxer_emoji_id: str
+    fluxer_emoji_name: str
+
+    def resolve(self) -> FluxerCustomEmojiMapping:
+        return FluxerCustomEmojiMapping(
+            source_emoji_id=self.source_emoji_id,
+            fluxer_emoji_id=self.fluxer_emoji_id,
+            fluxer_emoji_name=self.fluxer_emoji_name,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +173,7 @@ class ResolvedSetupCredentials:
     discord_user_auth: Mapping[str, str]
     fluxer_user_auth: Mapping[str, str]
     identity_mappings: tuple[FluxerIdentityMapping, ...]
+    custom_emoji_mappings: tuple[FluxerCustomEmojiMapping, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +190,7 @@ class SetupConfiguration:
     fluxer_guild_id: str | None
     identity_mappings: tuple[SetupUserMapping, ...] = ()
     fluxer_user_mappings: tuple[SetupUserMapping, ...] = ()
+    custom_emoji_mappings: tuple[SetupCustomEmojiMapping, ...] = ()
     between_messages_seconds: float = 0.0
     between_channels_seconds: float = 0.0
 
@@ -241,6 +263,7 @@ class SetupConfiguration:
         discord_user_auth: dict[str, str] = {}
         fluxer_user_auth: dict[str, str] = {}
         identity_mappings: tuple[FluxerIdentityMapping, ...] = ()
+        custom_emoji_mappings: tuple[FluxerCustomEmojiMapping, ...] = ()
 
         if "discord" in required:
             if self.discord_token is None:
@@ -281,6 +304,9 @@ class SetupConfiguration:
                 mapping.resolve(base_dir=base_dir)
                 for mapping in self.identity_mappings
             )
+            custom_emoji_mappings = tuple(
+                mapping.resolve() for mapping in self.custom_emoji_mappings
+            )
 
         return ResolvedSetupCredentials(
             discord_token=discord_token,
@@ -288,6 +314,7 @@ class SetupConfiguration:
             discord_user_auth=discord_user_auth,
             fluxer_user_auth=fluxer_user_auth,
             identity_mappings=identity_mappings,
+            custom_emoji_mappings=custom_emoji_mappings,
         )
 
     def resolve_discord_token(self) -> str:
@@ -365,6 +392,7 @@ def load_setup_configuration(
     delays = _mapping(raw, "delays", required=False)
     input_config = _mapping(raw, "input", required=False)
     mappings = _mapping(raw, "user_mappings", required=False)
+    emoji_mappings = _mapping(raw, "emoji_mappings", required=False)
 
     archive_path = _required_string(archive, "path", "archive.path")
 
@@ -420,6 +448,7 @@ def load_setup_configuration(
         mappings,
         validate_fluxer_fields="fluxer" in required,
     )
+    custom_emoji_mappings = _parse_custom_emoji_mappings(emoji_mappings)
 
     between_messages = _nonnegative_float(
         delays.get("between_messages_seconds", 0.0),
@@ -441,9 +470,49 @@ def load_setup_configuration(
         fluxer_guild_id=fluxer_guild_id,
         identity_mappings=identity_mappings,
         fluxer_user_mappings=fluxer_user_mappings,
+        custom_emoji_mappings=custom_emoji_mappings,
         between_messages_seconds=between_messages,
         between_channels_seconds=between_channels,
     )
+
+
+def _parse_custom_emoji_mappings(value: Mapping[str, Any]) -> tuple[SetupCustomEmojiMapping, ...]:
+    discord_entries = value.get("discord")
+    if discord_entries is None:
+        return ()
+    if not isinstance(discord_entries, Mapping):
+        raise ConfigurationError("emoji_mappings.discord must be a YAML mapping.")
+
+    mappings: list[SetupCustomEmojiMapping] = []
+    seen: set[str] = set()
+    for source_id, raw_mapping in discord_entries.items():
+        source_emoji_id = _stable_id(source_id, "emoji_mappings.discord", "emoji ID")
+        if source_emoji_id in seen:
+            raise ConfigurationError(
+                f"emoji_mappings.discord contains duplicate source emoji ID {source_emoji_id!r}."
+            )
+        seen.add(source_emoji_id)
+        if not isinstance(raw_mapping, Mapping):
+            raise ConfigurationError(
+                f"emoji_mappings.discord.{source_emoji_id} must be a YAML mapping."
+            )
+        fluxer_emoji_id = _required_identifier(
+            raw_mapping, "fluxer_emoji_id",
+            f"emoji_mappings.discord.{source_emoji_id}.fluxer_emoji_id",
+        )
+        fluxer_emoji_name = _required_string(
+            raw_mapping, "fluxer_emoji_name",
+            f"emoji_mappings.discord.{source_emoji_id}.fluxer_emoji_name",
+        )
+        mappings.append(
+            SetupCustomEmojiMapping(
+                source_platform="discord",
+                source_emoji_id=source_emoji_id,
+                fluxer_emoji_id=fluxer_emoji_id,
+                fluxer_emoji_name=fluxer_emoji_name,
+            )
+        )
+    return tuple(mappings)
 
 
 def _parse_user_mappings(
@@ -581,6 +650,13 @@ def _parse_user_mappings(
         )
 
     return tuple(discord_mappings), tuple(fluxer_mappings)
+
+
+def _stable_id(value: Any, path: str, label: str) -> str:
+    text = str(value).strip()
+    if not text:
+        raise ConfigurationError(f"{path} {label} must not be empty.")
+    return text
 
 
 def _stable_user_id(value: Any, label: str, *, platform: str) -> str:

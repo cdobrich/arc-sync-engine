@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from archive_sync_engine.models import (
     CanonicalConversation,
+    CanonicalCustomEmoji,
     CanonicalIdentity, CanonicalMessage, CanonicalAttachment,
 )
 from .package import ArchivePackage
@@ -61,6 +62,16 @@ class ArchiveWriter:
         self._package = ArchivePackage(
             paths,
         )
+
+    #
+    # Custom emojis
+    #
+
+    def add_custom_emoji(self, emoji: CanonicalCustomEmoji) -> None:
+        self._store.insert_custom_emoji(emoji)
+
+    def upsert_custom_emoji(self, emoji: CanonicalCustomEmoji) -> None:
+        self._store.upsert_custom_emoji(emoji)
 
     #
     # Attachments

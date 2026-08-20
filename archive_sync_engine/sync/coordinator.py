@@ -132,14 +132,35 @@ class SyncCoordinator:
         )
 
         # Static capabilities cannot express every configuration-dependent
-        # constraint. Give the destination adapter the complete plan before
-        # executing anything so such constraints cannot fail halfway through
-        # an export after channels/messages have already been created.
+        # constraint. Destination preparation must therefore happen before
+        # plan validation: preparation may provision destination-local
+        # resources (for example, Fluxer custom emojis) that validation needs
+        # to resolve reaction operations. Both stages still occur before the
+        # first destination mutation.
         validate_operations = getattr(
             self._destination,
             "validate_operations",
             None,
         )
+
+        prepare_archive = getattr(self._destination, "prepare_archive", None)
+        prepare_impl = type(self._destination).__dict__.get("prepare_archive")
+        if prepare_archive is not None and prepare_impl is not None:
+            try:
+                custom_emojis = tuple(self._archive.iter_custom_emojis())
+            except (AttributeError, TypeError):
+                custom_emojis = ()
+            if custom_emojis:
+                asset_store = getattr(self._executor, "asset_store", None)
+                if asset_store is None:
+                    raise RuntimeError(
+                        "Destination archive preparation requires an AssetStore."
+                    )
+                prepare_archive(
+                    self._archive,
+                    asset_store,
+                )
+
         if validate_operations is not None:
             validate_operations(operations)
 

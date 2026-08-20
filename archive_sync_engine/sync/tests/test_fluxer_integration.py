@@ -11,12 +11,11 @@ import pytest
 
 from archive_sync_engine.adapters import (
     AdapterError,
-    CapabilityError,
     FluxerDestinationAdapter,
     FluxerIdentityMapping,
 )
 from archive_sync_engine.asset_store import AssetStore
-from archive_sync_engine.models import CanonicalAttachment, CanonicalReaction
+from archive_sync_engine.models import CanonicalAttachment, CanonicalReaction, CanonicalCustomEmoji
 from archive_sync_engine.models.ids import AttachmentId
 import hashlib
 from archive_sync_engine.archive import Archive
@@ -148,6 +147,13 @@ class FakeFluxerClient:
         )
         return True
 
+    async def get_guild_emojis(self):
+        return [{"id": "1234567890", "name": "party_parrot"}]
+
+    async def create_guild_emoji(self, *, name: str, image: bytes):
+        self.calls.append(("create_guild_emoji", (), {"name": name, "image": image}))
+        return {"id": "created-emoji-1", "name": name}
+
     async def delete_channel(self, channel_id: str) -> bool:
         self.calls.append(
             (
@@ -226,6 +232,8 @@ class FakeFluxerClient:
 def _archive(
     conversation: CanonicalConversation,
     message: CanonicalMessage | None,
+    *,
+    custom_emojis=(),
 ) -> Archive:
     archive = Mock(spec=Archive)
     archive.iter_identities.return_value = iter(())
@@ -233,6 +241,7 @@ def _archive(
     archive.iter_messages.return_value = (
         iter((message,)) if message is not None else iter(())
     )
+    archive.iter_custom_emojis.side_effect = lambda: iter(custom_emojis)
     return archive
 
 
@@ -800,7 +809,9 @@ def test_fluxer_initial_reply_and_reaction_complete_together(
 
 
 
-def test_fluxer_custom_reaction_is_rejected_before_full_sync(tmp_path: Path) -> None:
+def test_fluxer_custom_reaction_is_synchronized_through_full_sync(
+    tmp_path: Path,
+) -> None:
     conversation = _conversation()
     reaction = CanonicalReaction(
         identity_key=IdentityKey("reactor-1"),
@@ -811,25 +822,45 @@ def test_fluxer_custom_reaction_is_rejected_before_full_sync(tmp_path: Path) -> 
     message = _message("hello", reactions=(reaction,))
     path = tmp_path / "state.sqlite3"
     client = FakeFluxerClient()
+    emoji_bytes = b"archived-emoji"
+    emoji_digest = hashlib.sha256(emoji_bytes).hexdigest()
+    custom_emoji = CanonicalCustomEmoji(
+        id="1234567890", name="party_parrot", animated=False,
+        content_type="image/png", size=len(emoji_bytes), sha256=emoji_digest,
+    )
+    assets = AssetStore(tmp_path / "assets")
+    assets.put(emoji_bytes)
 
     with SQLiteStateRepository(path) as repository:
-        with pytest.raises(
-            CapabilityError,
-            match="supports_custom_emoji.*reconcile custom emoji reactions",
-        ):
-            _coordinator(
-                _archive(conversation, message),
-                client,
-                repository,
-                identity_mappings=(
-                    FluxerIdentityMapping(
-                        "reactor-1",
-                        "reactor-auth-key",
-                    ),
+        _coordinator(
+            _archive(conversation, message, custom_emojis=(custom_emoji,)),
+            client,
+            repository,
+            asset_store=assets,
+            identity_mappings=(
+                FluxerIdentityMapping(
+                    "reactor-1",
+                    "reactor-auth-key",
                 ),
-            ).synchronize()
+            ),
+        ).synchronize()
 
-    assert not [call for call in client.calls if call[0] == "apply_reaction"]
+    reaction_calls = [
+        call for call in client.calls if call[0] == "apply_reaction"
+    ]
+    assert len(reaction_calls) == 1
+    assert reaction_calls[0][2] == {
+        "channel_id": "fluxer-channel-1",
+        "message_id": "fluxer-message-1",
+        "emoji": "party_parrot:1234567890",
+        "auth_key": "reactor-auth-key",
+    }
+
+    with SQLiteStateRepository(path) as repository:
+        state = repository.load_synchronization_state()
+
+    assert state.message_reactions["message-1"] == (reaction,)
+    assert state.message_fingerprints["message-1"]
 
 
 def test_fluxer_threads_are_preserved_in_archive_but_skipped_for_export(

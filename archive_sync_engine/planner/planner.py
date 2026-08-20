@@ -613,6 +613,11 @@ class Planner:
                 not reply_baseline_present
                 or previous_reply_to != message.reply_to
             )
+            reaction_replay_requested = (
+                capabilities.supports_idempotent_reaction_replay
+                and bool(current_reactions)
+                and not reactions_changed
+            )
 
             if not (
                 content_changed
@@ -620,6 +625,7 @@ class Planner:
                 or attachments_changed
                 or pinned_changed
                 or reply_changed
+                or reaction_replay_requested
             ):
                 if previous_fingerprint != fingerprint:
                     raise RuntimeError(
@@ -760,6 +766,38 @@ class Planner:
                         canonical_fingerprint=fingerprint,
                     ),
                 )
+
+            # Some destinations, including Fluxer, expose an idempotent
+            # reaction endpoint. Replaying the desired reaction set on every
+            # synchronization run gives the destination an opportunity to
+            # repair a missing reaction without requiring the synchronization
+            # state to pretend that the remote destination was queried. This
+            # is explicitly a destination capability rather than a global
+            # planner policy.
+            if (
+                reaction_replay_requested
+            ):
+                self._require_capability(
+                    capabilities.supports_reactions,
+                    "supports_reactions",
+                    "replay message reactions",
+                )
+                if any(reaction.is_custom for reaction in current_reactions):
+                    self._require_capability(
+                        capabilities.supports_custom_emoji,
+                        "supports_custom_emoji",
+                        "replay custom emoji reactions",
+                    )
+
+                replay_reactions = list(current_reactions)
+                for reaction in replay_reactions:
+                    operations.append(
+                        AddReactionOperation(
+                            message_id=message.id,
+                            reaction=reaction,
+                            resulting_reactions=tuple(replay_reactions),
+                        ),
+                    )
 
             if operations:
                 if reply_changed:
