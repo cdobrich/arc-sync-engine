@@ -22,6 +22,10 @@ from archive_sync_engine.adapters.references import (
     DestinationIdentityRef,
     DestinationMessageRef,
 )
+from archive_sync_engine.operations import (
+    AddReactionOperation,
+    RemoveReactionOperation,
+)
 from archive_sync_engine.models import (
     CanonicalAttachment,
     CanonicalConversation,
@@ -212,6 +216,27 @@ class FluxerDestinationAdapter(DestinationAdapter):
     @property
     def name(self) -> str:
         return self._NAME
+
+    def validate_operations(self, operations) -> None:
+        """Validate configuration-dependent Fluxer operations before export.
+
+        Fluxer reaction operations require an explicit mapping for the
+        reaction actor. Static destination capabilities only indicate that
+        reaction synchronization is possible when mappings exist; they cannot
+        express whether every actor appearing in this particular plan is
+        mapped. Validate the complete plan here so an unmapped reaction actor
+        cannot cause a partial export after earlier operations have succeeded.
+        """
+        for operation in operations:
+            if not isinstance(operation, (AddReactionOperation, RemoveReactionOperation)):
+                continue
+
+            identity_key = str(operation.reaction.identity_key)
+            if identity_key not in self._identity_mappings:
+                raise CapabilityError(
+                    "Fluxer reaction synchronization requires an identity "
+                    f"mapping for reaction actor {operation.reaction.identity_key}."
+                )
 
     @property
     def capabilities(self) -> DestinationCapabilities:

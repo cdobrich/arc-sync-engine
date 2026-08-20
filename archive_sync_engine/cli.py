@@ -15,6 +15,7 @@ from archive_sync_engine.logging_support import (
 )
 
 from archive_sync_engine.adapters.fluxer import FluxerIdentityMapping
+from archive_sync_engine.adapters.exceptions import CapabilityError
 from archive_sync_engine.adapters import (
     DestinationRuntimeRequest,
     SourceRuntimeRequest,
@@ -1477,7 +1478,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_adapters(args)
         if args.command == "diagnostics":
             return _run_diagnostics(args)
-    except (ValueError, ConfigurationError) as exc:
+    except (ValueError, ConfigurationError, CapabilityError) as exc:
         report_expected_error(exc)
         parser.exit(2, f"{parser.prog}: error: {exc}\n")
     except Exception as exc:

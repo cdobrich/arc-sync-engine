@@ -171,6 +171,39 @@ def test_synchronize_loads_state_and_plans_operations() -> None:
     executor.execute.assert_not_called()
 
 
+def test_synchronize_validates_complete_plan_before_execution() -> None:
+    archive = _archive()
+    planner = _planner()
+    executor = _executor()
+    destination = _destination()
+    capabilities = _capabilities()
+    state_repository = _state_repository()
+    state_repository.load_synchronization_state.return_value = SynchronizationState()
+
+    operation_one = Mock(spec=SyncOperation)
+    operation_two = Mock(spec=SyncOperation)
+    planner.plan.return_value = iter((operation_one, operation_two))
+    destination.validate_operations.side_effect = RuntimeError("invalid destination plan")
+
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=planner,
+        executor=executor,
+        destination=destination,
+        capabilities=capabilities,
+        state_repository=state_repository,
+    )
+
+    with pytest.raises(RuntimeError, match="invalid destination plan"):
+        coordinator.synchronize()
+
+    destination.validate_operations.assert_called_once_with(
+        (operation_one, operation_two),
+    )
+    executor.execute.assert_not_called()
+    state_repository.record_execution.assert_not_called()
+
+
 def test_synchronize_executes_operations_in_planner_order() -> None:
     archive = _archive()
     planner = _planner()

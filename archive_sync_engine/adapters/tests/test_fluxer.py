@@ -13,6 +13,10 @@ from archive_sync_engine.adapters import (
     FluxerDestinationAdapter,
     FluxerIdentityMapping,
 )
+from archive_sync_engine.operations import (
+    AddReactionOperation,
+    RemoveReactionOperation,
+)
 from archive_sync_engine.models import (
     CanonicalAttachment,
     CanonicalConversation,
@@ -467,6 +471,49 @@ def test_duplicate_identity_mappings_are_rejected() -> None:
                 FluxerIdentityMapping("identity-1", "auth-key-2"),
             ),
         )
+
+
+def test_validate_operations_rejects_unmapped_reaction_before_execution() -> None:
+    adapter = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("other-identity", "other-auth-key"),
+        ),
+    )
+
+    operation = AddReactionOperation(
+        message_id=MessageId("message-1"),
+        reaction=CanonicalReaction(
+            identity_key=IdentityKey("identity-1"),
+            emoji="👍",
+            emoji_id=None,
+            is_custom=False,
+        ),
+    )
+
+    with pytest.raises(CapabilityError, match="identity mapping"):
+        adapter.validate_operations((operation,))
+
+
+def test_validate_operations_accepts_mapped_bot_reaction() -> None:
+    adapter = FluxerDestinationAdapter(
+        FakeFluxerClient(),
+        identity_mappings=(
+            FluxerIdentityMapping("identity-1", None),
+        ),
+    )
+
+    operation = RemoveReactionOperation(
+        message_id=MessageId("message-1"),
+        reaction=CanonicalReaction(
+            identity_key=IdentityKey("identity-1"),
+            emoji="👍",
+            emoji_id=None,
+            is_custom=False,
+        ),
+    )
+
+    adapter.validate_operations((operation,))
 
 
 def test_standard_reaction_requires_identity_mapping() -> None:

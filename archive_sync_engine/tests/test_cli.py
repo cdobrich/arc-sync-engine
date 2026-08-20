@@ -1377,6 +1377,27 @@ def test_cli_expected_application_error_does_not_print_usage(capsys, tmp_path: P
     assert "archive-sync-engine: error:" in captured.err
 
 
+def test_cli_capability_error_is_reported_as_expected_error(capsys, monkeypatch) -> None:
+    def fail(_args):
+        from archive_sync_engine.adapters.exceptions import CapabilityError
+
+        raise CapabilityError(
+            "Fluxer reaction synchronization requires an identity mapping "
+            "for reaction actor discord:user:123."
+        )
+
+    monkeypatch.setattr("archive_sync_engine.cli._run_export", fail)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["export", "--config", "/tmp/archive-sync-engine-test.yaml"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "usage:" not in captured.err
+    assert "archive-sync-engine: error: Fluxer reaction synchronization" in captured.err
+    assert "Unexpected application error" not in captured.err
+
+
 def test_cli_unexpected_application_error_does_not_print_usage(capsys, monkeypatch) -> None:
     def fail(_args):
         raise RuntimeError("boom")

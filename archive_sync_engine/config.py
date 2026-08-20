@@ -69,6 +69,7 @@ class SetupUserMapping:
     fluxer_username: str | None
     fluxer_auth: SecretSource | None
     discord_auth: SecretSource | None = None
+    fluxer_bot: bool = False
 
     @property
     def discord_user_id(self) -> str:
@@ -95,10 +96,18 @@ class SetupUserMapping:
                 "Only Discord source user mappings can currently be resolved "
                 "into Fluxer destination identity mappings."
             )
+        if self.fluxer_bot:
+            return FluxerIdentityMapping(
+                username=self.canonical_identity_key,
+                fluxer_auth_key=None,
+                fluxer_username=self.fluxer_username,
+            )
+
         if self.fluxer_auth is None:
             raise ConfigurationError(
                 f"No Fluxer authentication is configured for Discord user "
-                f"{self.external_user_id}."
+                f"{self.external_user_id}. Set fluxer_bot: true if this identity "
+                "should intentionally use the default Fluxer bot account."
             )
         fluxer_username = _required_fluxer_username(
             {"fluxer_username": self.fluxer_username},
@@ -464,10 +473,28 @@ def _parse_user_mappings(
                 f"user_mappings.discord.{user_id} must be a YAML mapping."
             )
 
-        if validate_fluxer_fields:
+        fluxer_bot = _optional_bool(
+            raw_mapping,
+            "fluxer_bot",
+            f"user_mappings.discord.{user_id}.fluxer_bot",
+        )
+        if fluxer_bot:
+            fluxer_username = _optional_string(
+                raw_mapping,
+                "fluxer_username",
+                f"user_mappings.discord.{user_id}.fluxer_username",
+            )
+            fluxer_auth = None
+        elif validate_fluxer_fields:
             fluxer_username = _required_fluxer_username(
                 raw_mapping,
                 f"user_mappings.discord.{user_id}.fluxer_username",
+            )
+            fluxer_auth = _secret_source(
+                raw_mapping,
+                "fluxer_auth_key",
+                "fluxer_auth_key_file",
+                f"user_mappings.discord.{user_id}",
             )
         else:
             fluxer_username = _optional_string(
@@ -475,21 +502,20 @@ def _parse_user_mappings(
                 "fluxer_username",
                 f"user_mappings.discord.{user_id}.fluxer_username",
             )
-        fluxer_auth = (
-            _secret_source(
+            fluxer_auth = _optional_secret_source(
                 raw_mapping,
                 "fluxer_auth_key",
                 "fluxer_auth_key_file",
                 f"user_mappings.discord.{user_id}",
             )
-            if validate_fluxer_fields
-            else _optional_secret_source(
-                raw_mapping,
-                "fluxer_auth_key",
-                "fluxer_auth_key_file",
-                f"user_mappings.discord.{user_id}",
+        if fluxer_bot and (
+            raw_mapping.get("fluxer_auth_key") is not None
+            or raw_mapping.get("fluxer_auth_key_file") is not None
+        ):
+            raise ConfigurationError(
+                f"user_mappings.discord.{user_id} must not configure Fluxer "
+                "authentication when fluxer_bot is true."
             )
-        )
         discord_auth = _optional_secret_source(
             raw_mapping,
             "discord_auth_key",
@@ -503,6 +529,7 @@ def _parse_user_mappings(
                 fluxer_username=fluxer_username,
                 fluxer_auth=fluxer_auth,
                 discord_auth=discord_auth,
+                fluxer_bot=fluxer_bot,
             )
         )
 
@@ -566,6 +593,17 @@ def _stable_user_id(value: Any, label: str, *, platform: str) -> str:
             f"Received {user_id!r}."
         )
     return user_id
+
+
+def _optional_bool(
+    mapping: Mapping[str, Any],
+    key: str,
+    label: str,
+) -> bool:
+    value = mapping.get(key, False)
+    if not isinstance(value, bool):
+        raise ConfigurationError(f"{label} must be true or false when provided.")
+    return value
 
 
 def _optional_string(

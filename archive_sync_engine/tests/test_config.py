@@ -612,3 +612,82 @@ user_mappings:
     setup = load_setup_configuration(config)
 
     assert setup.resolve_identity_mappings()[0].fluxer_auth_key == "fluxer-user-secret"
+
+
+def test_load_yaml_setup_supports_explicit_fluxer_bot_identity_mapping(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord
+  guild_id: 123
+fluxer:
+  token: fluxer
+  server_id: 456
+user_mappings:
+  discord:
+    "1306866454733258784":
+      fluxer_bot: true
+""",
+        encoding="utf-8",
+    )
+
+    setup = load_setup_configuration(config)
+    mapping = setup.resolve_identity_mappings()[0]
+
+    assert mapping.username == "discord:user:1306866454733258784"
+    assert mapping.fluxer_auth_key is None
+    assert mapping.fluxer_username is None
+
+
+def test_load_yaml_setup_rejects_fluxer_bot_with_authentication(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord
+  guild_id: 123
+fluxer:
+  token: fluxer
+  server_id: 456
+user_mappings:
+  discord:
+    "1":
+      fluxer_bot: true
+      fluxer_auth_key: secret
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="must not configure Fluxer authentication"):
+        load_setup_configuration(config)
+
+
+def test_load_yaml_setup_requires_explicit_mapping_for_non_bot_fluxer_identity(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord
+  guild_id: 123
+fluxer:
+  token: fluxer
+  server_id: 456
+user_mappings:
+  discord:
+    "1":
+      fluxer_username: User#0001
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="must define exactly one"):
+        load_setup_configuration(config).resolve_identity_mappings()

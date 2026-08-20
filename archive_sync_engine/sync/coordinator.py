@@ -123,11 +123,25 @@ class SyncCoordinator:
 
         results: list[ExecutionResult] = []
 
-        operations: Iterator[SyncOperation] = self._planner.plan(
-            archive=self._archive,
-            synchronization_state=synchronization_state,
-            capabilities=self._capabilities,
+        operations: tuple[SyncOperation, ...] = tuple(
+            self._planner.plan(
+                archive=self._archive,
+                synchronization_state=synchronization_state,
+                capabilities=self._capabilities,
+            )
         )
+
+        # Static capabilities cannot express every configuration-dependent
+        # constraint. Give the destination adapter the complete plan before
+        # executing anything so such constraints cannot fail halfway through
+        # an export after channels/messages have already been created.
+        validate_operations = getattr(
+            self._destination,
+            "validate_operations",
+            None,
+        )
+        if validate_operations is not None:
+            validate_operations(operations)
 
         previous_channel_id: str | None = None
         seen_message_operation = False

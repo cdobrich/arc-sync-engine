@@ -43,6 +43,18 @@ class DestinationAdapter(ABC):
         """
         raise NotImplementedError
 
+    def validate_operations(self, operations) -> None:
+        """Validate a complete planned operation stream before execution.
+
+        Destination adapters may reject destination-specific configuration
+        problems that cannot be represented by static capabilities alone.
+        The default implementation accepts every operation.
+
+        Validation is performed against the complete plan so a destination
+        can reject an otherwise executable plan before any side effects occur.
+        """
+        del operations
+
     @property
     @abstractmethod
     def capabilities(self) -> DestinationCapabilities:
