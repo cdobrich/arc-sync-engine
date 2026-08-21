@@ -31,8 +31,9 @@ from archive_sync_engine.config import ConfigurationError, load_setup_configurat
 from archive_sync_engine.archive import Archive, validate_archive_package
 from archive_sync_engine.exporter import CanonicalExporter
 from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
-from archive_sync_engine.repository.scope import synchronization_state_path, synchronization_state_paths
 from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
+from archive_sync_engine.sync.state_path import synchronization_state_path
+from archive_sync_engine.sync.state_namespace import destination_state_namespace
 from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
 from archive_sync_engine.importer.progress import ImportProgress
 from archive_sync_engine.sync.progress import SyncProgress
@@ -141,6 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--fluxer-api-url",
         default=None,
         help="Optional Fluxer API URL for self-hosted deployments.",
+    )
+    export_command.add_argument(
+        "--compatibility-mode",
+        action="store_true",
+        help="Continue export after destination authorization failures; skipped operations remain pending for a later retry.",
     )
     export_command.add_argument(
         "--fluxer-max-retries",
@@ -374,6 +380,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of records to display (default: 100).",
     )
     diagnostics.add_argument(
+        "--destination-adapter",
+        default=None,
+        help="Destination adapter whose scoped synchronization state should be inspected.",
+    )
+    diagnostics.add_argument(
+        "--destination-scope",
+        action="append",
+        default=[],
+        help="Opaque destination scope value; repeat as needed.",
+    )
+    diagnostics.add_argument(
         "--json",
         action="store_true",
         dest="as_json",
@@ -473,22 +490,24 @@ def _run_adapters(args: argparse.Namespace) -> int:
 
 
 def _run_diagnostics(args: argparse.Namespace) -> int:
-    if args.limit <= 0:
-        raise SystemExit("diagnostics --limit must be positive")
     if args.summary:
         return _run_diagnostics_summary(args)
 
-    entries = []
-    for repository_path in synchronization_state_paths(args.archive):
-        with SQLiteStateRepository(repository_path) as repository:
-            entries.extend(
-                repository.query_execution_log(
-                    canonical_id=args.canonical_id,
-                    operation_type=args.operation_type,
-                    limit=args.limit,
-                )
-            )
-    entries = sorted(entries, key=lambda entry: entry.id, reverse=True)[:args.limit]
+    if getattr(args, "destination_adapter", None) is not None:
+        from archive_sync_engine.sync.state_path import synchronization_state_path
+        repository_path = synchronization_state_path(
+            args.archive,
+            adapter=args.destination_adapter,
+            scope=tuple(getattr(args, "destination_scope", ())),
+        )
+    else:
+        repository_path = args.archive / "synchronization.sqlite"
+    with SQLiteStateRepository(repository_path) as repository:
+        entries = repository.query_execution_log(
+            canonical_id=args.canonical_id,
+            operation_type=args.operation_type,
+            limit=args.limit,
+        )
 
     if args.as_json:
         import json
@@ -572,28 +591,28 @@ def _run_diagnostics_summary(args: argparse.Namespace) -> int:
             "updated_at": session.updated_at.isoformat(),
         }
 
-    state_paths = synchronization_state_paths(paths.root)
-    if state_paths:
+    if getattr(args, "destination_adapter", None) is not None:
+        repository_path = synchronization_state_path(
+            paths.root,
+            adapter=args.destination_adapter,
+            scope=tuple(getattr(args, "destination_scope", ())),
+        )
+    else:
+        repository_path = paths.root / "synchronization.sqlite"
+    if repository_path.is_file():
         from archive_sync_engine.repository.execution_log import SQLiteExecutionLog
         from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
 
-        execution_count = 0
-        conversations = identities = messages = 0
-        for repository_path in state_paths:
-            with SQLiteStateRepository(repository_path) as repository:
-                state = repository.load_synchronization_state()
-            with SQLiteExecutionLog(repository_path) as execution_log:
-                execution_count += execution_log.count()
-            conversations += len(state.conversations)
-            identities += len(state.identities)
-            messages += len(state.messages)
+        with SQLiteStateRepository(repository_path) as repository:
+            state = repository.load_synchronization_state()
+        with SQLiteExecutionLog(repository_path) as execution_log:
+            execution_count = execution_log.count()
         summary["synchronization"] = {
             "state_present": True,
-            "state_databases": len(state_paths),
             "executions": execution_count,
-            "conversations": conversations,
-            "identities": identities,
-            "messages": messages,
+            "conversations": len(state.conversations),
+            "identities": len(state.identities),
+            "messages": len(state.messages),
         }
 
     if args.as_json:
@@ -1156,10 +1175,18 @@ def _run_export(args: argparse.Namespace) -> int:
         adapter=destination_adapter,
         scope=destination_scope,
     )
+    repository_path.parent.mkdir(parents=True, exist_ok=True)
+    state_namespace = destination_state_namespace(
+        destination_adapter,
+        destination_scope,
+    )
     with (
         Archive(paths) as archive,
         runtime,
-        SQLiteStateRepository(repository_path) as state_repository,
+        SQLiteStateRepository(
+            repository_path,
+            state_namespace=state_namespace,
+        ) as state_repository,
     ):
         export_report = CanonicalExporter().export(
             archive=archive,
@@ -1169,11 +1196,19 @@ def _run_export(args: argparse.Namespace) -> int:
             between_messages_seconds=setup.between_messages_seconds,
             between_channels_seconds=setup.between_channels_seconds,
             state_repository=state_repository,
+            compatibility_mode=args.compatibility_mode or setup.compatibility_mode,
         )
 
-    print(
-        f"Export completed: {export_report.executed_operations} operations."
-    )
+    skipped_operations = getattr(export_report, "skipped_operations", 0)
+    if skipped_operations:
+        print(
+            f"Export completed: {export_report.executed_operations} operations; "
+            f"{skipped_operations} operations skipped in compatibility mode."
+        )
+    else:
+        print(
+            f"Export completed: {export_report.executed_operations} operations."
+        )
 
     return 0
 

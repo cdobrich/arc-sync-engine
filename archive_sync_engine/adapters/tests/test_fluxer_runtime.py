@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from archive_sync_engine.adapters import DestinationConversationRef
+from archive_sync_engine.adapters import DestinationConversationRef, DestinationMessageRef
 from archive_sync_engine.adapters.exceptions import AdapterError
 from archive_sync_engine.models import CanonicalConversation, CanonicalMessage
 from archive_sync_engine.models.enums import ConversationType
@@ -64,10 +64,16 @@ class FakeHTTPClient:
         return None
 
     async def pin_message(self, channel_id, message_id):
+        self.pinned_message_id = message_id
         return None
 
     async def unpin_message(self, channel_id, message_id):
+        self.pinned_message_id = None
         return None
+
+    async def list_pinned_messages(self, channel_id):
+        message_id = getattr(self, "pinned_message_id", None)
+        return ([{"id": message_id}] if message_id is not None else [])
 
     async def get_message(self, channel_id, message_id):
         return {
@@ -290,7 +296,7 @@ def test_runtime_reuses_actor_client_for_multiple_operations() -> None:
         client_factory=_factory(),
     )
 
-    from archive_sync_engine.adapters import DestinationConversationRef
+    from archive_sync_engine.adapters import DestinationConversationRef, DestinationMessageRef
 
     message = CanonicalMessage(
         id=MessageId("message-1"),
@@ -495,3 +501,20 @@ def test_runtime_reuses_one_event_loop_for_multiple_http_operations() -> None:
 
     assert len(loop_ids) == 3
     assert len(set(loop_ids)) == 1
+
+
+def test_runtime_pin_verifies_fluxer_pinned_message_state() -> None:
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=_factory(),
+    )
+    runtime.adapter.pin_message(
+        DestinationMessageRef("message-1", conversation_id="channel-1")
+    )
+    assert FakeHTTPClient.instances[0].pinned_message_id == "message-1"
+    runtime.adapter.unpin_message(
+        DestinationMessageRef("message-1", conversation_id="channel-1")
+    )
+    assert FakeHTTPClient.instances[0].pinned_message_id is None
+    runtime.close()

@@ -36,6 +36,7 @@ from archive_sync_engine.importer import ImportProgress, ImportState
 from archive_sync_engine.importer.canonical_importer import (
     CanonicalImporter,
 )
+from archive_sync_engine.models import CanonicalMessage
 from archive_sync_engine.rate_limit import OperationRateLimiter
 from archive_sync_engine.sync.session import (
     SyncDirection,
@@ -124,6 +125,18 @@ class CanonicalImportCoordinator:
         )
 
         try:
+            existing_messages_by_conversation: dict[str, tuple[CanonicalMessage, ...]] = {}
+            if incremental_refresh and previous_session is not None and previous_session.completed:
+                from archive_sync_engine.archive import Archive
+
+                with Archive(self._paths) as existing_archive:
+                    existing_messages_by_conversation = {
+                        str(conversation.id): tuple(
+                            existing_archive.iter_messages_for_conversation(conversation.id)
+                        )
+                        for conversation in existing_archive.iter_conversations()
+                    }
+
             resume_state = None
             if resume and not incremental_refresh:
                 resume_state = self.load_import_state()
@@ -192,6 +205,9 @@ class CanonicalImportCoordinator:
                     resume_state=resume_state,
                     incremental_refresh=incremental_refresh,
                     rate_limiter=rate_limiter,
+                    **({
+                        "existing_messages_by_conversation": existing_messages_by_conversation,
+                    } if existing_messages_by_conversation else {}),
                 )
 
             finished_at = datetime.now(

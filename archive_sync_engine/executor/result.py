@@ -58,6 +58,9 @@ class ExecutionResult:
 
     deleted: bool = False
 
+    skipped: bool = False
+    skip_reason: str | None = None
+
     deleted_entity: DeletedEntityType | None = None
 
     conversation_parent_id: str | None = None

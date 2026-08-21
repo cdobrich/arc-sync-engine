@@ -959,7 +959,10 @@ delays:
     assert exporter.export.call_args.kwargs["archive"].package.paths.root == archive_path.resolve()
     assert exporter.export.call_args.kwargs["between_messages_seconds"] == 0.75
     assert exporter.export.call_args.kwargs["between_channels_seconds"] == 3.0
-    assert isinstance(exporter.export.call_args.kwargs["state_repository"], SQLiteStateRepository)
+    repository = exporter.export.call_args.kwargs["state_repository"]
+    assert isinstance(repository, SQLiteStateRepository)
+    assert repository.state_namespace == "fluxer:fluxer-server"
+    repository.close()
 
 
 def test_export_cli_allows_destination_scope_override(tmp_path: Path) -> None:

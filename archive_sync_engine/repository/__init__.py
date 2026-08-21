@@ -16,8 +16,7 @@ Instead they store engine metadata such as:
 from .execution_log import ExecutionLogEntry, SQLiteExecutionLog
 from .in_memory_state_repository import InMemoryStateRepository
 from .sqlite_state_repository import SQLiteStateRepository
-from .state_repository import StateRepository
-from .scope import synchronization_state_path, synchronization_state_paths
+from .state_repository import StateRepository, synchronization_state_path
 
 __all__ = [
     "ExecutionLogEntry",
@@ -25,5 +24,4 @@ __all__ = [
     "SQLiteExecutionLog",
     "StateRepository",
     "synchronization_state_path",
-    "synchronization_state_paths",
 ]

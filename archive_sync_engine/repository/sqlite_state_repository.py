@@ -34,7 +34,7 @@ from .execution_log import ExecutionLogEntry
 from .state_repository import StateRepository
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 class SQLiteStateRepository(StateRepository):
@@ -46,8 +46,11 @@ class SQLiteStateRepository(StateRepository):
     snapshot and records the successful execution that produced it.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, state_namespace: str = "default") -> None:
+        if not state_namespace or not state_namespace.strip():
+            raise ValueError("SQLite synchronization state namespace must not be empty.")
         self._path = str(path)
+        self._state_namespace = state_namespace.strip()
         self._connection = sqlite3.connect(self._path)
         self._connection.row_factory = sqlite3.Row
         self._initialize()
@@ -61,6 +64,11 @@ class SQLiteStateRepository(StateRepository):
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
+
+    @property
+    def state_namespace(self) -> str:
+        """Return the destination-specific synchronization-state namespace."""
+        return self._state_namespace
 
     def save_import_session(self, session: ImportSession) -> None:
         """Persist the current import session as JSON metadata."""
@@ -120,9 +128,15 @@ class SQLiteStateRepository(StateRepository):
 
     def load_synchronization_state(self) -> SynchronizationState:
         """Load the current synchronization-state snapshot."""
-        row = self._connection.execute(
-            "SELECT payload FROM synchronization_state WHERE id = 1",
-        ).fetchone()
+        if self._state_namespace == "default":
+            row = self._connection.execute(
+                "SELECT payload FROM synchronization_state WHERE id = 1",
+            ).fetchone()
+        else:
+            row = self._connection.execute(
+                "SELECT payload FROM synchronization_states WHERE namespace = ?",
+                (self._state_namespace,),
+            ).fetchone()
 
         if row is None:
             return SynchronizationState()
@@ -147,24 +161,36 @@ class SQLiteStateRepository(StateRepository):
         operation_type = type(operation).__name__
 
         with self._connection:
-            self._connection.execute(
-                """
-                INSERT INTO synchronization_state (id, payload)
-                VALUES (1, ?)
-                ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
-                """,
-                (state_payload,),
-            )
+            if self._state_namespace == "default":
+                self._connection.execute(
+                    """
+                    INSERT INTO synchronization_state (id, payload)
+                    VALUES (1, ?)
+                    ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
+                    """,
+                    (state_payload,),
+                )
+            else:
+                self._connection.execute(
+                    """
+                    INSERT INTO synchronization_states (namespace, payload)
+                    VALUES (?, ?)
+                    ON CONFLICT(namespace) DO UPDATE SET payload = excluded.payload
+                    """,
+                    (self._state_namespace, state_payload),
+                )
             self._connection.execute(
                 """
                 INSERT INTO execution_log (
+                    namespace,
                     operation_type,
                     canonical_id,
                     deleted,
                     deleted_entity
-                ) VALUES (?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
+                    self._state_namespace,
                     operation_type,
                     result.canonical_id,
                     int(result.deleted),
@@ -198,6 +224,8 @@ class SQLiteStateRepository(StateRepository):
             clauses.append("operation_type = ?")
             parameters.append(operation_type)
 
+        clauses.insert(0, "namespace = ?")
+        parameters.insert(0, self._state_namespace)
         query = "SELECT id, operation_type, canonical_id, deleted, deleted_entity FROM execution_log"
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
@@ -240,15 +268,18 @@ class SQLiteStateRepository(StateRepository):
                 "SELECT schema_version FROM repository_metadata WHERE id = 1",
             ).fetchone()
             if row is None:
+                old_schema_version = None
                 self._connection.execute(
                     "INSERT INTO repository_metadata (id, schema_version) VALUES (1, ?)",
                     (_SCHEMA_VERSION,),
                 )
-            elif int(row["schema_version"]) != _SCHEMA_VERSION:
-                raise RuntimeError(
-                    "Unsupported SQLite StateRepository schema version: "
-                    f"{row['schema_version']}."
-                )
+            else:
+                old_schema_version = int(row["schema_version"])
+                if old_schema_version not in {1, _SCHEMA_VERSION}:
+                    raise RuntimeError(
+                        "Unsupported SQLite StateRepository schema version: "
+                        f"{row['schema_version']}."
+                    )
 
             self._connection.execute(
                 """
@@ -260,8 +291,40 @@ class SQLiteStateRepository(StateRepository):
             )
             self._connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS synchronization_states (
+                    namespace TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL
+                )
+                """,
+            )
+
+            # VS 157 introduces destination-scoped state while preserving the
+            # pre-existing single-state database as the ``default`` namespace.
+            # The legacy state is intentionally never copied into an arbitrary
+            # destination namespace: doing so could reuse channel/message IDs
+            # belonging to another server.
+            legacy_state = self._connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'synchronization_state'"
+            ).fetchone()
+            if legacy_state is not None:
+                existing_default = self._connection.execute(
+                    "SELECT 1 FROM synchronization_states WHERE namespace = 'default'"
+                ).fetchone()
+                if existing_default is None:
+                    payload = self._connection.execute(
+                        "SELECT payload FROM synchronization_state WHERE id = 1"
+                    ).fetchone()
+                    if payload is not None:
+                        self._connection.execute(
+                            "INSERT INTO synchronization_states (namespace, payload) VALUES ('default', ?)",
+                            (payload["payload"],),
+                        )
+
+            self._connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS execution_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    namespace TEXT NOT NULL DEFAULT 'default',
                     operation_type TEXT NOT NULL,
                     canonical_id TEXT,
                     deleted INTEGER NOT NULL,
@@ -269,6 +332,24 @@ class SQLiteStateRepository(StateRepository):
                 )
                 """,
             )
+
+            columns = {
+                str(info[1])
+                for info in self._connection.execute(
+                    "PRAGMA table_info(execution_log)"
+                ).fetchall()
+            }
+            if "namespace" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE execution_log ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'"
+                )
+
+            if old_schema_version == 1:
+                self._connection.execute(
+                    "UPDATE repository_metadata SET schema_version = ? WHERE id = 1",
+                    (_SCHEMA_VERSION,),
+                )
+
             self._connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS import_session (

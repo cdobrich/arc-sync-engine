@@ -11,6 +11,9 @@ State Repositories intentionally do not own canonical content.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import hashlib
+import json
+from pathlib import Path
 
 from archive_sync_engine.executor import ExecutionResult
 from archive_sync_engine.importer import ImportSession
@@ -97,3 +100,31 @@ class StateRepository(ABC):
         """
         raise NotImplementedError
 
+
+
+def synchronization_state_path(
+    archive_root: str | Path,
+    *,
+    adapter: str,
+    scope: tuple[str, ...],
+) -> Path:
+    """Return the durable synchronization-state path for one destination.
+
+    Destination synchronization state is scoped by adapter and opaque
+    destination scope values. Canonical Archive content remains shared, but
+    destination references and reconciliation baselines must never be shared
+    between independent targets.
+    """
+    normalized_adapter = adapter.strip().lower()
+    if not normalized_adapter:
+        raise ValueError("Synchronization-state adapter must not be empty.")
+    if any(not value.strip() for value in scope):
+        raise ValueError("Synchronization-state scope values must not be empty.")
+
+    scope_payload = json.dumps(
+        [normalized_adapter, [value.strip() for value in scope]],
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hashlib.sha256(scope_payload).hexdigest()[:24]
+    root = Path(archive_root)
+    return root / f"synchronization-{normalized_adapter}-{digest}.sqlite"

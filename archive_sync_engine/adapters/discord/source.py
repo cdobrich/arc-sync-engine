@@ -77,6 +77,7 @@ class DiscordSourceAdapter(SourceAdapter):
         )
         self._conversation_channels: dict[str, Any] = {}
         self._message_cache: dict[str, tuple[Any, ...]] = {}
+        self._incremental_message_cache: dict[str, tuple[Any, ...]] = {}
         self._attachment_bytes: dict[str, bytes] = {}
         self._custom_emoji_bytes: dict[str, bytes] = {}
         self._runner: Callable[[Awaitable[Any]], Any] | None = None
@@ -106,8 +107,10 @@ class DiscordSourceAdapter(SourceAdapter):
         complete without moving platform-specific logic into the importer.
 
         The historical message scan is cached as raw Discord messages.
-        ``iter_messages()`` reuses that scan rather than making a second
-        history request during the same adapter instance's import.
+        ``iter_messages()`` reuses that complete scan rather than making a
+        second history request during the same adapter instance's import.
+        Incremental refresh windows use a separate cache so they can never
+        masquerade as a complete source traversal.
         """
         identities: dict[str, CanonicalIdentity] = {}
 
@@ -209,7 +212,10 @@ class DiscordSourceAdapter(SourceAdapter):
         # Reaction-only custom emojis are not necessarily members of the
         # configured guild. Recover them from the raw messages already
         # traversed for identity discovery.
-        for messages in self._message_cache.values():
+        for messages in (
+            *self._message_cache.values(),
+            *self._incremental_message_cache.values(),
+        ):
             for message in messages:
                 for reaction in getattr(message, "reactions", ()) or ():
                     emoji = getattr(reaction, "emoji", None)
@@ -310,7 +316,7 @@ class DiscordSourceAdapter(SourceAdapter):
             messages = self._run(
                 self._collect_incremental_raw_messages(channel, cursor),
             )
-            self._message_cache[str(conversation.id)] = tuple(messages)
+            self._incremental_message_cache[str(conversation.id)] = tuple(messages)
             for message in messages:
                 author = getattr(message, "author", None)
                 if author is not None:
@@ -341,14 +347,14 @@ class DiscordSourceAdapter(SourceAdapter):
                 f"Discord conversation {conversation.id} is not available."
             )
 
-        cached_messages = self._message_cache.get(str(conversation.id))
+        cached_messages = self._incremental_message_cache.get(str(conversation.id))
         if cached_messages is None:
             cached_messages = tuple(
                 self._run(
                     self._collect_incremental_raw_messages(channel, cursor),
                 )
             )
-            self._message_cache[str(conversation.id)] = cached_messages
+            self._incremental_message_cache[str(conversation.id)] = cached_messages
 
         messages = self._run(
             self._canonicalize_cached_messages(cached_messages, channel),

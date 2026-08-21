@@ -807,6 +807,25 @@ class ArchiveStore:
             (message_id_text,),
         )
 
+    def delete_message(
+        self,
+        message_id: MessageId,
+    ) -> None:
+        """Delete one canonical message and its normalized relationships."""
+        message_key = str(message_id)
+        self._connection.execute(
+            "DELETE FROM message_attachments WHERE message_id = ?",
+            (message_key,),
+        )
+        self._connection.execute(
+            "DELETE FROM message_reactions WHERE message_id = ?",
+            (message_key,),
+        )
+        self._connection.execute(
+            "DELETE FROM messages WHERE message_id = ?",
+            (message_key,),
+        )
+
     def get_message(
         self,
         message_id: MessageId,

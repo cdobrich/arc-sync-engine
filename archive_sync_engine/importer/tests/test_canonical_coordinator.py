@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -643,6 +644,95 @@ def test_completed_import_resume_refreshes_new_messages_attachments_and_reaction
             ),
         )
         assert messages[1].attachments[0].id == AttachmentId("attachment-001")
+
+
+
+def test_completed_import_resume_removes_messages_deleted_at_source(
+    tmp_path: Path,
+) -> None:
+    """A completed refresh removes both text-only and attachment-only deletions."""
+    class DeletingSource(SourceAdapter):
+        def __init__(self) -> None:
+            self.deleted = False
+            self.identity = CanonicalIdentity(
+                identity_key=IdentityKey("identity-001"),
+                display_name="Alice",
+            )
+            self.conversation = CanonicalConversation(
+                id=ConversationId("conversation-001"),
+                conversation_type=ConversationType.CHANNEL,
+                title="General",
+            )
+
+        @property
+        def name(self) -> str:
+            return "Deleting source"
+
+        def iter_identities(self):
+            yield self.identity
+
+        def iter_conversations(self):
+            yield self.conversation
+
+        def iter_messages(self, conversation):
+            yield CanonicalMessage(
+                id=MessageId("message-keep"),
+                conversation_id=conversation.id,
+                identity_key=self.identity.identity_key,
+                content="keep",
+                created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            )
+            if not self.deleted:
+                yield CanonicalMessage(
+                    id=MessageId("message-delete"),
+                    conversation_id=conversation.id,
+                    identity_key=self.identity.identity_key,
+                    content="delete me",
+                    created_at=datetime(2026, 8, 2, tzinfo=timezone.utc),
+                )
+                data = b"attachment to delete"
+                yield CanonicalMessage(
+                    id=MessageId("message-delete-attachment"),
+                    conversation_id=conversation.id,
+                    identity_key=self.identity.identity_key,
+                    content="",
+                    created_at=datetime(2026, 8, 3, tzinfo=timezone.utc),
+                    attachments=(CanonicalAttachment(
+                        id=AttachmentId("attachment-delete"),
+                        filename="delete.bin",
+                        content_type="application/octet-stream",
+                        size=len(data),
+                        sha256=hashlib.sha256(data).hexdigest(),
+                    ),),
+                )
+
+        def iter_messages_since(self, conversation, cursor):
+            # A bounded cursor cannot see either old deletion.
+            yield from self.iter_messages(conversation) if False else (
+                CanonicalMessage(
+                    id=MessageId("message-keep"),
+                    conversation_id=conversation.id,
+                    identity_key=self.identity.identity_key,
+                    content="keep",
+                    created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                ),
+            )
+
+        def attachment_bytes(self, attachment):
+            return b"attachment to delete"
+
+    paths = ArchivePaths(root=tmp_path)
+    source = DeletingSource()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    coordinator.run(source)
+    source.deleted = True
+    coordinator.run(source, resume=True)
+
+    with Archive(paths) as archive:
+        assert archive._store.get_message(MessageId("message-delete")) is None
+        assert archive._store.get_message(MessageId("message-delete-attachment")) is None
+        assert archive._store.get_message(MessageId("message-keep")) is not None
 
 
 def test_incremental_refresh_reconciles_mutable_message_state_from_source_window(

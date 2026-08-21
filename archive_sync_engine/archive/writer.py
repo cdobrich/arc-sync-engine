@@ -29,7 +29,7 @@ from .package import ArchivePackage
 
 from .paths import ArchivePaths
 from .store import ArchiveStore
-from archive_sync_engine.models.ids import AttachmentId, IdentityKey, EmojiId
+from archive_sync_engine.models.ids import AttachmentId, IdentityKey, EmojiId, MessageId
 from archive_sync_engine.models.provenance import CanonicalProvenance, CanonicalTransfer
 
 
@@ -251,6 +251,13 @@ class ArchiveWriter:
 
     def delete_message(self, message_id) -> None:
         """Remove a canonical message from the archive."""
+        self._store.delete_message(message_id)
+
+    def delete_message(
+        self,
+        message_id: MessageId,
+    ) -> None:
+        """Remove a message and its normalized Archive relationships."""
         self._store.delete_message(message_id)
 
     #

@@ -32,6 +32,7 @@ from archive_sync_engine.archive.writer import ArchiveWriter
 from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.importer.progress import ImportProgress
 from archive_sync_engine.importer.state import ImportState
+from archive_sync_engine.models import CanonicalMessage
 from archive_sync_engine.rate_limit import OperationRateLimiter
 
 
@@ -58,6 +59,7 @@ class CanonicalImporter:
         resume_state: ImportState | None = None,
         incremental_refresh: bool = False,
         rate_limiter: OperationRateLimiter | None = None,
+        existing_messages_by_conversation: dict[str, tuple[CanonicalMessage, ...]] | None = None,
     ) -> None:
         """
         Import all canonical information available from a source.
@@ -83,6 +85,7 @@ class CanonicalImporter:
 
         attachments_downloaded = 0
         attachments_reused = 0
+        existing_messages_by_conversation = existing_messages_by_conversation or {}
 
         if on_status is not None and incremental_refresh:
             on_status(
@@ -394,6 +397,26 @@ class CanonicalImporter:
                         conversation_id,
                         refresh_cursors[conversation_id],
                     )
+
+        if incremental_refresh and existing_messages_by_conversation:
+            # Cursor-based traversal cannot reveal records deleted before the
+            # refresh window.  Perform a complete source traversal solely to
+            # detect deletions, while retaining the incremental traversal for
+            # actual writes and attachment downloads.
+            current_conversations = {
+                str(conversation.id): conversation
+                for conversation in source.iter_conversations()
+            }
+            for conversation_id, existing in existing_messages_by_conversation.items():
+                conversation = current_conversations.get(conversation_id)
+                if conversation is None:
+                    continue
+                current_ids = {
+                    str(message.id)
+                    for message in source.iter_messages(conversation)
+                }
+                for deleted_id in {str(message.id) for message in existing} - current_ids:
+                    writer.delete_message(deleted_id)
 
         if on_status is not None:
             on_status(

@@ -187,6 +187,55 @@ This program reads a `config.yaml` file, in its root program directory. This is 
       between_messages_seconds: 0.5
       between_channels_seconds: 5.0
 
+    user_mappings:
+      discord:
+        "STABLE_ID":
+          fluxer_username: "EXPORT_TARGET_USERNAME"
+          fluxer_auth_key_file: "./dist/fluxer_user-my_name.token"
+        "STABLE_ID":
+          fluxer_bot: true
+          fluxer_username: "MyBot#1234"
+
+### Example Configuration YAML File with Masquerading
+
+For the bot itself:
+```
+"147347117134754":
+  fluxer_bot: true
+```
+Do not provide a Fluxer user authentication credential in the latter case.
+
+```
+archive:
+  path: "./dist/archive"
+
+# --- Discord source configuration ---
+discord:
+  # Use either token or token_file, not both.
+  token_file: "./dist/discord_bot.token"
+  guild_id: "1514424954310920479"
+
+# --- Fluxer destination configuration ---
+fluxer:
+  token_file: "./dist/fluxer_export-bot.token"
+  server_id: "1459964012871908"
+
+# --- Migration delays ---
+delays:
+  between_messages_seconds: 0.5
+  between_channels_seconds: 2.5
+
+user_mappings:
+  discord:
+    "132866533258784":
+      fluxer_username: "Lee#0153"
+      fluxer_auth_key_file: "./dist/fluxer_user-lee.token"
+    "147347117134754":
+      fluxer_bot: true
+      fluxer_username: "MyBot#1586"
+#      fluxer_auth_key_file: "./dist/fluxer_user-bot.token"
+```
+
 ---
       
 ## Automatically Install: Run the Setup.sh Script

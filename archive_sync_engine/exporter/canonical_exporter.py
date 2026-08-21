@@ -30,6 +30,7 @@ class ExportReport:
     """Summary of one completed Archive export."""
 
     executed_operations: int
+    skipped_operations: int = 0
 
 
 class CanonicalExporter:
@@ -50,6 +51,7 @@ class CanonicalExporter:
         between_messages_seconds: float = 0.0,
         between_channels_seconds: float = 0.0,
         state_repository: StateRepository | None = None,
+        compatibility_mode: bool = False,
     ) -> ExportReport:
         """
         Reproduce the canonical Archive at the destination.
@@ -78,7 +80,12 @@ class CanonicalExporter:
             on_status=on_status,
             between_messages_seconds=between_messages_seconds,
             between_channels_seconds=between_channels_seconds,
+            compatibility_mode=compatibility_mode,
         )
 
         results = coordinator.synchronize()
-        return ExportReport(executed_operations=len(results))
+        skipped = sum(1 for result in results if result.skipped)
+        return ExportReport(
+            executed_operations=len(results) - skipped,
+            skipped_operations=skipped,
+        )

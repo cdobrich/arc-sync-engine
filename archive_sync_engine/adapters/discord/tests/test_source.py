@@ -370,6 +370,35 @@ class MessageChannel(FakeChannel):
         return list(self._pinned)
 
 
+def test_iter_messages_does_not_reuse_incremental_refresh_cache() -> None:
+    """A complete traversal must never be truncated to the incremental window."""
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "general", 1, created)
+    old_message = FakeMessage(100, channel, user, created, "old")
+    recent_message = FakeMessage(101, channel, user, created, "recent")
+    channel._messages = (old_message, recent_message)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    # Model the cache populated by an incremental identity refresh.  This
+    # contains only the bounded recent window and must not affect the full
+    # source traversal used for deletion reconciliation.
+    adapter._incremental_message_cache[str(conversation.id)] = (recent_message,)
+
+    messages = list(adapter.iter_messages(conversation))
+
+    assert [str(message.id) for message in messages] == [
+        "discord:message:100",
+        "discord:message:101",
+    ]
+    assert channel.history_calls == 1
+
+
 def test_iter_messages_preserves_metadata_only_embed_message() -> None:
     created = datetime(2026, 1, 1, tzinfo=timezone.utc)
     user = FakeUser(1, "Alice")

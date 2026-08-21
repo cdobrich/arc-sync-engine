@@ -504,3 +504,63 @@ def test_sqlite_repository_round_trips_message_conversation_reference(
         restored = repository.load_synchronization_state()
 
     assert restored.messages == state.messages
+
+
+def test_sqlite_repository_isolates_destination_state_namespaces(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    first_state = SynchronizationState(
+        conversations={"conversation-1": DestinationConversationRef("fluxer-channel-a")},
+        conversation_fingerprints={"conversation-1": "a"},
+        conversation_parent_ids={"conversation-1": None},
+    )
+    second_state = SynchronizationState(
+        conversations={"conversation-1": DestinationConversationRef("fluxer-channel-b")},
+        conversation_fingerprints={"conversation-1": "b"},
+        conversation_parent_ids={"conversation-1": None},
+    )
+
+    operation = EditMessageOperation(message=_message())
+
+    with SQLiteStateRepository(path, state_namespace="fluxer:server-a") as repository:
+        repository.record_execution(
+            operation,
+            ExecutionResult(canonical_id="conversation-1"),
+            first_state,
+        )
+
+    with SQLiteStateRepository(path, state_namespace="fluxer:server-b") as repository:
+        assert repository.load_synchronization_state() == SynchronizationState()
+        repository.record_execution(
+            operation,
+            ExecutionResult(canonical_id="conversation-1"),
+            second_state,
+        )
+
+    with SQLiteStateRepository(path, state_namespace="fluxer:server-a") as repository:
+        assert repository.load_synchronization_state() == first_state
+        assert len(repository.query_execution_log()) == 1
+
+    with SQLiteStateRepository(path, state_namespace="fluxer:server-b") as repository:
+        assert repository.load_synchronization_state() == second_state
+        assert len(repository.query_execution_log()) == 1
+
+
+def test_sqlite_repository_does_not_reuse_legacy_default_state_for_scoped_destination(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = SynchronizationState(
+        conversations={"conversation-1": DestinationConversationRef("old-channel")},
+        conversation_fingerprints={"conversation-1": "old"},
+        conversation_parent_ids={"conversation-1": None},
+    )
+
+    with SQLiteStateRepository(path) as repository:
+        repository.record_execution(
+            EditMessageOperation(message=_message()),
+            ExecutionResult(canonical_id="conversation-1"),
+            state,
+        )
+
+    with SQLiteStateRepository(path, state_namespace="fluxer:new-server") as repository:
+        assert repository.load_synchronization_state() == SynchronizationState()

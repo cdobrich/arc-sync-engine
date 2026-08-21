@@ -193,6 +193,7 @@ class SetupConfiguration:
     custom_emoji_mappings: tuple[SetupCustomEmojiMapping, ...] = ()
     between_messages_seconds: float = 0.0
     between_channels_seconds: float = 0.0
+    compatibility_mode: bool = False
 
     @property
     def config_directory(self) -> Path:
@@ -390,6 +391,7 @@ def load_setup_configuration(
     discord = _mapping(raw, "discord", required="discord" in required)
     fluxer = _mapping(raw, "fluxer", required="fluxer" in required)
     delays = _mapping(raw, "delays", required=False)
+    export = _mapping(raw, "export", required=False)
     input_config = _mapping(raw, "input", required=False)
     mappings = _mapping(raw, "user_mappings", required=False)
     emoji_mappings = _mapping(raw, "emoji_mappings", required=False)
@@ -473,6 +475,7 @@ def load_setup_configuration(
         custom_emoji_mappings=custom_emoji_mappings,
         between_messages_seconds=between_messages,
         between_channels_seconds=between_channels,
+        compatibility_mode=_boolean(export.get("compatibility_mode", False), "export.compatibility_mode"),
     )
 
 
@@ -804,6 +807,12 @@ def _guild_ids(value: Any, label: str) -> tuple[int, ...]:
     if not result:
         raise ConfigurationError(f"{label} must contain at least one guild ID.")
     return result
+
+
+def _boolean(value: object, label: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ConfigurationError(f"{label} must be a boolean.")
 
 
 def _nonnegative_float(value: Any, label: str) -> float:

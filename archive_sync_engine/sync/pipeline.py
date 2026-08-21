@@ -15,6 +15,7 @@ from archive_sync_engine.repository import InMemoryStateRepository, SQLiteStateR
 from archive_sync_engine.operations import SyncOperation
 
 from .coordinator import SyncCoordinator
+from .state_namespace import destination_state_namespace
 
 
 class ArchiveSyncPipeline:
@@ -30,8 +31,12 @@ class ArchiveSyncPipeline:
         *,
         archive_paths: ArchivePaths,
         state_repository_path: str | Path | None = None,
+        state_namespace: str = "default",
     ) -> None:
         self._archive_paths = archive_paths
+        if not state_namespace.strip():
+            raise ValueError("Synchronization state namespace must not be empty.")
+        self._state_namespace = state_namespace.strip()
         self._state_repository_path = (
             Path(state_repository_path)
             if state_repository_path is not None
@@ -54,6 +59,7 @@ class ArchiveSyncPipeline:
             if Path(self._state_repository_path).is_file():
                 with SQLiteStateRepository(
                     self._state_repository_path,
+                    state_namespace=self._state_namespace,
                 ) as state_repository:
                     return SyncCoordinator(
                         archive=archive,
@@ -99,6 +105,7 @@ class ArchiveSyncPipeline:
         with Archive(self._archive_paths) as archive:
             with SQLiteStateRepository(
                 self._state_repository_path,
+                state_namespace=self._state_namespace,
             ) as state_repository:
                 SyncCoordinator(
                     archive=archive,

@@ -292,6 +292,64 @@ class SynchronizationState:
             message_reply_to=dict(self.message_reply_to),
         )
 
+    def without_messages_for_conversation(
+        self,
+        conversation_id: str,
+    ) -> SynchronizationState:
+        """Return state with all destination message mappings for a conversation removed."""
+        message_ids = {
+            canonical_id
+            for canonical_id, reference in self.messages.items()
+            if reference.conversation_id == conversation_id
+        }
+        if not message_ids:
+            return self
+
+        messages = {
+            key: value for key, value in self.messages.items()
+            if key not in message_ids
+        }
+        fingerprints = {
+            key: value for key, value in self.message_fingerprints.items()
+            if key not in message_ids
+        }
+        content_fingerprints = {
+            key: value for key, value in self.message_content_fingerprints.items()
+            if key not in message_ids
+        }
+        reactions = {
+            key: value for key, value in self.message_reactions.items()
+            if key not in message_ids
+        }
+        attachments = {
+            key: value for key, value in self.message_attachments.items()
+            if key not in message_ids
+        }
+        pinned = {
+            key: value for key, value in self.message_pinned.items()
+            if key not in message_ids
+        }
+        replies = {
+            key: (None if reply_to is not None and str(reply_to) in message_ids else reply_to)
+            for key, reply_to in self.message_reply_to.items()
+            if key not in message_ids
+        }
+
+        return SynchronizationState(
+            conversations=dict(self.conversations),
+            identities=dict(self.identities),
+            messages=messages,
+            conversation_fingerprints=dict(self.conversation_fingerprints),
+            conversation_parent_ids=dict(self.conversation_parent_ids),
+            identity_fingerprints=dict(self.identity_fingerprints),
+            message_fingerprints=fingerprints,
+            message_content_fingerprints=content_fingerprints,
+            message_reactions=reactions,
+            message_attachments=attachments,
+            message_pinned=pinned,
+            message_reply_to=replies,
+        )
+
     def without_message(
         self,
         canonical_id: str,
@@ -445,6 +503,15 @@ class SynchronizationState:
         """
 
         if canonical_id is None:
+            return self
+
+        if result.skipped:
+            if result.deleted or any((
+                result.conversation is not None,
+                result.identity is not None,
+                result.message is not None,
+            )):
+                raise ValueError("Skipped ExecutionResult cannot mutate synchronization state.")
             return self
 
         if result.deleted:

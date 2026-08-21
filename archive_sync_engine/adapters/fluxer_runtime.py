@@ -110,6 +110,9 @@ class FluxerHttpDestinationClient:
             type=int(channel_data["type"]),
         )
 
+    async def get_channel(self, channel_id: str) -> Any:
+        return await self._http.get_channel(channel_id)
+
     async def update_channel(
         self,
         channel_id: str,
@@ -121,10 +124,7 @@ class FluxerHttpDestinationClient:
             "/channels/{channel_id}",
             channel_id=channel_id,
         )
-        return await self._http.request(
-            route,
-            json={"name": name},
-        )
+        return await self._http.request(route, json={"name": name})
 
     async def send_message(
         self,

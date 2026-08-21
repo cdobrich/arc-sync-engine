@@ -12,6 +12,7 @@ from unittest.mock import ANY, Mock, call
 import pytest
 
 from archive_sync_engine.adapters import (
+    AuthorizationError,
     DestinationAdapter,
     DestinationCapabilities,
 )
@@ -1795,3 +1796,110 @@ def test_export_rate_limiter_applies_message_and_channel_delays() -> None:
     ).synchronize()
 
     assert sleeps == [2.0, 0.5]
+
+
+def test_synchronize_compatibility_mode_skips_authorization_failure_and_continues() -> None:
+    archive = _archive()
+    planner = _planner()
+    executor = _executor()
+    destination = _destination()
+    capabilities = _capabilities()
+    state_repository = _state_repository()
+    state = SynchronizationState()
+
+    message = CanonicalMessage(
+        id=MessageId("message-1"),
+        conversation_id=ConversationId("conversation-1"),
+        identity_key=IdentityKey("identity-1"),
+        content="updated",
+        attachments=(),
+        created_at=datetime.now(timezone.utc),
+    )
+    operation = EditMessageOperation(
+        message=message,
+        canonical_fingerprint=canonical_fingerprint(message),
+    )
+    executor.execute.side_effect = [
+        __import__("archive_sync_engine.adapters.exceptions", fromlist=["AuthorizationError"]).AuthorizationError(
+            "Fluxer message cannot be edited by the authenticated identity."
+        ),
+        ExecutionResult(canonical_id="conversation-1"),
+    ]
+    second_operation = Mock()
+    planner.plan.return_value = iter((operation, second_operation))
+    state_repository.load_synchronization_state.return_value = state
+
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=planner,
+        executor=executor,
+        destination=destination,
+        capabilities=capabilities,
+        state_repository=state_repository,
+        compatibility_mode=True,
+    )
+
+    results = coordinator.synchronize()
+
+    assert len(results) == 2
+    assert results[0].skipped is True
+    assert results[0].canonical_id == "message-1"
+    assert results[1].canonical_id == "conversation-1"
+    assert executor.execute.call_count == 2
+    assert state_repository.record_execution.call_count == 2
+
+
+def test_synchronize_strict_mode_propagates_authorization_failure() -> None:
+    archive = _archive()
+    planner = _planner()
+    executor = _executor()
+    destination = _destination()
+    capabilities = _capabilities()
+    state_repository = _state_repository()
+    state_repository.load_synchronization_state.return_value = SynchronizationState()
+    planner.plan.return_value = iter(())
+
+    from archive_sync_engine.adapters.exceptions import AuthorizationError
+    executor.execute.side_effect = AuthorizationError("forbidden")
+    planner.plan.return_value = iter((Mock(),))
+
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=planner,
+        executor=executor,
+        destination=destination,
+        capabilities=capabilities,
+        state_repository=state_repository,
+    )
+
+    with pytest.raises(AuthorizationError, match="forbidden"):
+        coordinator.synchronize()
+
+
+def test_synchronize_non_compatibility_mode_propagates_authorization_failure() -> None:
+    """Normal synchronization must not hide authorization failures."""
+    archive = _archive()
+    planner = _planner()
+    executor = _executor()
+    destination = _destination()
+    capabilities = _capabilities()
+    state_repository = _state_repository()
+    state_repository.load_synchronization_state.return_value = SynchronizationState()
+    operation = Mock(spec=SyncOperation)
+    planner.plan.return_value = iter((operation,))
+    error = AuthorizationError("cannot edit another user's message")
+    executor.execute.side_effect = error
+
+    coordinator = SyncCoordinator(
+        archive=archive,
+        planner=planner,
+        executor=executor,
+        destination=destination,
+        capabilities=capabilities,
+        state_repository=state_repository,
+    )
+
+    with pytest.raises(AuthorizationError, match="cannot edit"):
+        coordinator.synchronize()
+
+    state_repository.record_execution.assert_not_called()

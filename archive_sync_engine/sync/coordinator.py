@@ -33,6 +33,7 @@ from archive_sync_engine.executor import (
     OperationExecutor,
 )
 from archive_sync_engine.operations import SyncOperation
+from archive_sync_engine.adapters.exceptions import AuthorizationError
 from archive_sync_engine.planner import Planner
 from archive_sync_engine.repository import StateRepository
 
@@ -64,6 +65,7 @@ class SyncCoordinator:
         between_channels_seconds: float = 0.0,
         rate_limiter: OperationRateLimiter | None = None,
         on_status: Callable[[SyncProgress], None] | None = None,
+        compatibility_mode: bool = False,
     ) -> None:
         self._archive = archive
         self._planner = planner
@@ -72,6 +74,7 @@ class SyncCoordinator:
         self._capabilities = capabilities
         self._state_repository = state_repository
         self._on_status = on_status
+        self._compatibility_mode = compatibility_mode
         self._rate_limiter = rate_limiter or OperationRateLimiter(
             between_messages_seconds=between_messages_seconds,
             between_channels_seconds=between_channels_seconds,
@@ -116,6 +119,17 @@ class SyncCoordinator:
         synchronization_state: SynchronizationState = (
             self._state_repository.load_synchronization_state()
         )
+
+        reconcile_state = getattr(
+            self._destination,
+            "reconcile_synchronization_state",
+            None,
+        )
+        if reconcile_state is not None:
+            repaired_state = reconcile_state(synchronization_state)
+            if repaired_state != synchronization_state:
+                self._state_repository.save_synchronization_state(repaired_state)
+                synchronization_state = repaired_state
 
         execution_context = ExecutionContext.from_synchronization_state(
             synchronization_state,
@@ -227,11 +241,21 @@ class SyncCoordinator:
             if channel_id is not None:
                 previous_channel_id = channel_id
 
-            result: ExecutionResult = self._executor.execute(
-                operation=operation,
-                destination=self._destination,
-                context=execution_context,
-            )
+            try:
+                result: ExecutionResult = self._executor.execute(
+                    operation=operation,
+                    destination=self._destination,
+                    context=execution_context,
+                )
+            except AuthorizationError as exc:
+                if not self._compatibility_mode:
+                    raise
+                canonical_id = _operation_canonical_id(operation)
+                result = ExecutionResult(
+                    canonical_id=canonical_id,
+                    skipped=True,
+                    skip_reason=str(exc),
+                )
 
             synchronization_state = (
                 synchronization_state.apply_execution_result(
@@ -240,7 +264,7 @@ class SyncCoordinator:
                 )
             )
 
-            self._state_repository.record_execution(
+            self._persist_execution_checkpoint(
                 operation=operation,
                 result=result,
                 synchronization_state=synchronization_state,
@@ -248,6 +272,35 @@ class SyncCoordinator:
             results.append(result)
 
         return tuple(results)
+
+    def _persist_execution_checkpoint(
+        self,
+        *,
+        operation: SyncOperation,
+        result: ExecutionResult,
+        synchronization_state: SynchronizationState,
+    ) -> None:
+        """Persist one execution through the repository checkpoint contract."""
+        self._state_repository.record_execution(
+            operation=operation,
+            result=result,
+            synchronization_state=synchronization_state,
+        )
+
+
+def _operation_canonical_id(operation: SyncOperation) -> str | None:
+    """Return the canonical identifier for a skipped operation."""
+    for attribute in ("message", "conversation", "identity"):
+        value = getattr(operation, attribute, None)
+        if value is not None:
+            identifier = getattr(value, "id", getattr(value, "identity_key", None))
+            if identifier is not None:
+                return str(identifier)
+    for attribute in ("message_id", "conversation_id", "identity_key"):
+        value = getattr(operation, attribute, None)
+        if value is not None:
+            return str(value)
+    return None
 
 
 def _progress_phase(operation: SyncOperation) -> str:

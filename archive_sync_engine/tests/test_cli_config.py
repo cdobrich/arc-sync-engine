@@ -214,3 +214,23 @@ fluxer:
 
     assert credentials.discord_token == "discord-secret"
     assert credentials.fluxer_token == ""
+
+
+def test_load_setup_configuration_parses_export_compatibility_mode(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+fluxer:
+  token: fluxer-secret
+  server_id: fluxer-server
+export:
+  compatibility_mode: true
+""",
+        encoding="utf-8",
+    )
+
+    setup = load_setup_configuration(config, required_adapters=("fluxer",))
+
+    assert setup.compatibility_mode is True

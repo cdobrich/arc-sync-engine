@@ -26,10 +26,10 @@ from archive_sync_engine.adapters.fluxer_runtime import (
     FluxerHttpClientFactory,
 )
 from archive_sync_engine.archive.paths import ArchivePaths
-from archive_sync_engine.repository.scope import synchronization_state_path
 
 from .pipeline import ArchiveSyncPipeline
 from .runtime_request import SyncRuntimeRequest
+from .state_namespace import destination_state_namespace
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +42,7 @@ class DiscordFluxerSyncConfig:
     archive_paths: ArchivePaths
     identity_mappings: tuple[FluxerIdentityMapping, ...] = ()
     state_repository_path: str | None = None
+    state_namespace: str = "default"
 
     def __post_init__(self) -> None:
         if not self.fluxer_guild_id:
@@ -71,20 +72,16 @@ class DiscordFluxerSyncRuntime:
             raise AdapterError("Runtime configuration for 'fluxer' is invalid.")
         if len(request.destination_scope) != 1:
             raise AdapterError("Fluxer destination scope must contain exactly one server ID.")
-        archive_paths = ArchivePaths(request.archive_path)
         return cls(
             DiscordFluxerSyncConfig(
                 discord=discord,
                 fluxer=fluxer,
                 fluxer_guild_id=request.destination_scope[0],
-                archive_paths=archive_paths,
+                archive_paths=ArchivePaths(request.archive_path),
                 identity_mappings=tuple(request.adapter_config.get("identity_mappings", ())),
-                state_repository_path=str(
-                    synchronization_state_path(
-                        archive_paths.root,
-                        adapter=request.destination_adapter,
-                        scope=request.destination_scope,
-                    )
+                state_namespace=destination_state_namespace(
+                    request.destination_adapter,
+                    request.destination_scope,
                 ),
             )
         )
@@ -104,6 +101,7 @@ class DiscordFluxerSyncRuntime:
         self._pipeline = pipeline or ArchiveSyncPipeline(
             archive_paths=config.archive_paths,
             state_repository_path=config.state_repository_path,
+            state_namespace=config.state_namespace,
         )
 
         discord_factory = discord_factory or DiscordClientFactory()
