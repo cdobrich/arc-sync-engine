@@ -143,6 +143,15 @@ class SourceAdapter(ABC):
         yield from self.iter_identities()
 
     @property
+    def supports_incremental_deletion_reconciliation(self) -> bool:
+        """Whether incremental traversal is a complete snapshot of its window.
+
+        Adapters may opt in when messages absent from the bounded refresh
+        window are authoritative evidence of source deletion.
+        """
+        return False
+
+    @property
     def incremental_refresh_lookback(self) -> timedelta:
         """Return the mutation-detection overlap used by incremental refreshes."""
         return timedelta(0)

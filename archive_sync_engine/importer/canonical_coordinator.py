@@ -178,6 +178,10 @@ class CanonicalImportCoordinator:
                     between_channels_seconds=between_channels_seconds,
                 )
 
+                # Keep the coordinator invocation aligned with the public
+                # CanonicalImporter.import_source contract. Coordinator-only
+                # reconciliation data must not be passed here unless the
+                # importer explicitly accepts and implements it.
                 importer.import_source(
                     source=source,
                     writer=writer,

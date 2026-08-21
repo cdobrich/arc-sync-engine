@@ -222,15 +222,14 @@ class DiscordSourceAdapter(SourceAdapter):
             name = getattr(emoji, "name", None)
             if not name:
                 continue
-            # discord.py 2.x exposes ``PartialEmoji.url`` as a string, while
-            # the emoji object itself provides the asynchronous ``read()``
-            # method.  Guild Emoji objects expose the same read interface.
-            # Older test doubles and compatibility shims may instead expose
-            # a URL-like object with ``read()``.  Prefer the canonical emoji
-            # read method and retain the URL-object fallback for those shims.
-            read_asset = getattr(emoji, "read", None)
-            if callable(read_asset):
-                content = self._run(read_asset())
+            # discord.py exposes the CDN URL as a string, while the emoji
+            # object itself provides ``read()`` for retrieving the asset bytes.
+            # Prefer the real discord.py API.  The URL-reader fallback is kept
+            # for lightweight source doubles and older adapter integrations
+            # whose URL object exposes an async ``read()`` method.
+            read_emoji = getattr(emoji, "read", None)
+            if callable(read_emoji):
+                content = self._run(read_emoji())
             else:
                 asset = getattr(emoji, "url", None)
                 read_asset = getattr(asset, "read", None)

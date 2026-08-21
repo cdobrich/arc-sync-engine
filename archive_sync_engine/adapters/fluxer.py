@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
@@ -106,6 +107,14 @@ class FluxerClientProtocol(Protocol):
     async def update_thread(
         self,
         thread_id: str,
+        *,
+        name: str,
+    ) -> Any:
+        ...
+
+    async def update_channel(
+        self,
+        channel_id: str,
         *,
         name: str,
     ) -> Any:
@@ -257,6 +266,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
             emoji_mappings[mapping.source_emoji_id] = mapping
         self._custom_emoji_mappings = emoji_mappings
         self._archive_custom_emojis_prepared = False
+        self._custom_emoji_name_mappings: dict[str, FluxerCustomEmojiMapping] = {}
 
     @property
     def name(self) -> str:
@@ -379,6 +389,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
                 fluxer_emoji_name=str(destination_name or canonical.name),
             )
 
+        self._rebuild_custom_emoji_name_mappings(archive)
         self._archive_custom_emojis_prepared = True
 
     @property
@@ -386,7 +397,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
         return DestinationCapabilities(
             supports_threads=False,
             supports_message_editing=True,
-            supports_conversation_updates=False,
+            supports_conversation_updates=True,
             supports_message_deletion=True,
             supports_conversation_deletion=True,
             supports_message_pinning=True,
@@ -445,20 +456,30 @@ class FluxerDestinationAdapter(DestinationAdapter):
         conversation: CanonicalConversation,
         destination: DestinationConversationRef,
     ) -> None:
-        if conversation.parent_id is None:
-            raise CapabilityError(
-                "Fluxer conversation updates are only supported for threads "
-                "through the current adapter."
-            )
-
         name = conversation.title or str(conversation.id)
-        self._require_success(
-            self._run(
+
+        if conversation.parent_id is not None:
+            if not self.capabilities.supports_threads:
+                raise CapabilityError(
+                    "Fluxer thread conversation updates are not supported by "
+                    "the current adapter."
+                )
+            result = self._run(
                 self._client.update_thread(
                     destination.id,
                     name=name,
                 )
-            ),
+            )
+        else:
+            result = self._run(
+                self._client.update_channel(
+                    destination.id,
+                    name=name,
+                )
+            )
+
+        self._require_success(
+            result,
             f"update Fluxer conversation {destination.id}",
         )
 
@@ -561,7 +582,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
         result = self._run(
             client.send_message(
                 channel_id=destination.id,
-                content=message.content,
+                content=self._render_message_content(message.content),
                 attachments=attachment_payloads or None,
                 author_name=self._author_name_for(message),
                 reply_to_id=(reply_to.id if reply_to is not None else None),
@@ -591,7 +612,7 @@ class FluxerDestinationAdapter(DestinationAdapter):
                 self._client.edit_message(
                     channel_id=conversation_id,
                     message_id=destination.id,
-                    new_content=message.content,
+                    new_content=self._render_message_content(message.content),
                 )
             ),
             f"edit Fluxer message {destination.id}",
@@ -834,6 +855,43 @@ class FluxerDestinationAdapter(DestinationAdapter):
                 "Configure an explicit emoji_mappings.discord entry or create "
                 "the corresponding emoji on the Fluxer server."
             )
+
+    def _rebuild_custom_emoji_name_mappings(self, archive: Any) -> None:
+        """Build unambiguous source-name lookups for message-content rendering."""
+        by_name: dict[str, list[FluxerCustomEmojiMapping]] = {}
+        for canonical in archive.iter_custom_emojis():
+            mapping = self._custom_emoji_mappings.get(str(canonical.id))
+            if mapping is not None:
+                by_name.setdefault(canonical.name, []).append(mapping)
+        self._custom_emoji_name_mappings = {
+            name: mappings[0]
+            for name, mappings in by_name.items()
+            if len(mappings) == 1
+        }
+
+    def _render_message_content(self, content: str) -> str:
+        """Translate Discord custom-emoji markup and unqualified shortcodes."""
+        if not content or not self._archive_custom_emojis_prepared:
+            return content
+
+        custom_markup = re.compile(r"<(?P<animated>a?):(?P<name>[^:>]+):(?P<id>\d+)>")
+
+        def replace_markup(match: re.Match[str]) -> str:
+            mapping = self._custom_emoji_mappings.get(match.group("id"))
+            if mapping is None:
+                return match.group(0)
+            return f"<:{mapping.fluxer_emoji_name}:{mapping.fluxer_emoji_id}>"
+
+        rendered = custom_markup.sub(replace_markup, content)
+        shortcode = re.compile(r"(?<![\w:]):(?P<name>[A-Za-z0-9_~+-]+):(?![\w:])")
+
+        def replace_shortcode(match: re.Match[str]) -> str:
+            mapping = self._custom_emoji_name_mappings.get(match.group("name"))
+            if mapping is None:
+                return match.group(0)
+            return f"<:{mapping.fluxer_emoji_name}:{mapping.fluxer_emoji_id}>"
+
+        return shortcode.sub(replace_shortcode, rendered)
 
     def _reaction_identifier(self, reaction: CanonicalReaction) -> str:
         if not reaction.is_custom:

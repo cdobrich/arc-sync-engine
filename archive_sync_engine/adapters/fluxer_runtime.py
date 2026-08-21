@@ -110,6 +110,22 @@ class FluxerHttpDestinationClient:
             type=int(channel_data["type"]),
         )
 
+    async def update_channel(
+        self,
+        channel_id: str,
+        *,
+        name: str,
+    ) -> Any:
+        route = self._http._route(
+            "PATCH",
+            "/channels/{channel_id}",
+            channel_id=channel_id,
+        )
+        return await self._http.request(
+            route,
+            json={"name": name},
+        )
+
     async def send_message(
         self,
         channel_id: str,

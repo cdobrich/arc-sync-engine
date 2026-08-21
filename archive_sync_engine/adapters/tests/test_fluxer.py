@@ -49,6 +49,14 @@ class FakeFluxerClient:
         self.calls.append(("create_conversation", (), channel_data))
         return {"id": "fluxer-channel-1"}
 
+    async def update_channel(self, channel_id, *, name):
+        self.calls.append(("update_channel", (channel_id,), {"name": name}))
+        return True
+
+    async def update_thread(self, thread_id, *, name):
+        self.calls.append(("update_thread", (thread_id,), {"name": name}))
+        return True
+
     async def send_message(
         self,
         channel_id,
@@ -233,7 +241,7 @@ def test_fluxer_adapter_reports_current_capabilities() -> None:
 
     assert capabilities.supports_threads is False
     assert capabilities.supports_message_editing is True
-    assert capabilities.supports_conversation_updates is False
+    assert capabilities.supports_conversation_updates is True
     assert capabilities.supports_message_deletion is True
     assert capabilities.supports_conversation_deletion is True
     assert capabilities.supports_message_pinning is True
@@ -1025,19 +1033,25 @@ def test_identity_creation_is_rejected() -> None:
         )
 
 
-def test_conversation_update_is_rejected() -> None:
-    adapter = FluxerDestinationAdapter(FakeFluxerClient())
+def test_conversation_update_renames_fluxer_channel() -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(client)
     conversation = CanonicalConversation(
         id=ConversationId("conversation-1"),
         conversation_type=ConversationType.CHANNEL,
-        title="general",
+        title="renamed",
     )
 
-    with pytest.raises(CapabilityError):
-        adapter.update_conversation(
-            conversation,
-            DestinationConversationRef("fluxer-channel-1"),
-        )
+    adapter.update_conversation(
+        conversation,
+        DestinationConversationRef("fluxer-channel-1"),
+    )
+
+    assert client.calls[-1] == (
+        "update_channel",
+        ("fluxer-channel-1",),
+        {"name": "renamed"},
+    )
 
 
 def test_failed_message_creation_raises_adapter_error() -> None:
@@ -1275,4 +1289,71 @@ def test_remove_attachment_uses_destination_message_reference() -> None:
             "message_id": "fluxer-message-1",
             "filename": "hello.txt",
         },
+    )
+
+
+def test_create_message_rewrites_discord_custom_emoji_markup_to_destination_id(tmp_path) -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(client)
+    content = b"emoji-bytes"
+    import hashlib
+    digest = hashlib.sha256(content).hexdigest()
+    emoji = CanonicalCustomEmoji(
+        id=EmojiId("1234567890"), name="mewheart", animated=False,
+        content_type="image/png", size=len(content), sha256=digest,
+    )
+    assets = AssetStore(tmp_path)
+    assets.put(content)
+
+    class ArchiveWithEmoji:
+        def iter_custom_emojis(self):
+            return (emoji,)
+
+    client.guild_emojis = [{"id": "9876543210", "name": "mewheart"}]
+    adapter.prepare_archive(ArchiveWithEmoji(), assets)
+
+    adapter.create_message(
+        CanonicalMessage(
+            id=MessageId("message-emoji"),
+            conversation_id=ConversationId("conversation-1"),
+            identity_key=IdentityKey("identity-1"),
+            content="You like the new <:mewheart:1234567890> emoji?",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ),
+        DestinationConversationRef("fluxer-channel-1"),
+    )
+
+    assert client.calls[-1][2]["content"] == (
+        "You like the new <:mewheart:9876543210> emoji?"
+    )
+    assert "1234567890" not in client.calls[-1][2]["content"]
+
+
+
+def test_create_message_rewrites_unqualified_custom_emoji_shortcode_when_unambiguous(tmp_path) -> None:
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(client)
+    content = b"emoji-bytes"
+    import hashlib
+    digest = hashlib.sha256(content).hexdigest()
+    emoji = CanonicalCustomEmoji(
+        id=EmojiId("1234567890"), name="mewheart", animated=False,
+        content_type="image/png", size=len(content), sha256=digest,
+    )
+    assets = AssetStore(tmp_path)
+    assets.put(content)
+
+    class ArchiveWithEmoji:
+        def iter_custom_emojis(self):
+            return (emoji,)
+
+    client.guild_emojis = [{"id": "9876543210", "name": "mewheart"}]
+    adapter.prepare_archive(ArchiveWithEmoji(), assets)
+    adapter.create_message(
+        _message(content="You like :mewheart: emoji?"),
+        DestinationConversationRef("fluxer-channel-1"),
+    )
+
+    assert client.calls[-1][2]["content"] == (
+        "You like <:mewheart:9876543210> emoji?"
     )

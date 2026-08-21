@@ -1147,29 +1147,29 @@ def test_iter_custom_emojis_fetches_authoritative_guild_emoji_list() -> None:
     assert adapter.custom_emoji_bytes(emojis[0]) == content
     assert guild.fetch_emojis_calls == 1
 
+def test_iter_custom_emojis_reads_real_discord_emoji_asset_api() -> None:
+    content = b"discord-read-mewheart"
 
+    async def _read():
+        return content
 
-def test_iter_custom_emojis_reads_discord_partial_emoji_directly() -> None:
-    """discord.py exposes PartialEmoji.url as a string, not an Asset."""
-
-    content = b"partial-emoji-png"
-
-    class PartialEmojiLike:
+    class RealApiEmoji:
         id = 1513447466333110352
         name = "mewheart"
         animated = False
         url = "https://cdn.discordapp.com/emojis/1513447466333110352.png"
 
         async def read(self):
-            return content
+            return await _read()
 
     guild = FakeGuild()
-    guild.emojis = [PartialEmojiLike()]
+    guild.emojis = [RealApiEmoji()]
     adapter = DiscordSourceAdapter(FakeClient(guild), [123])
 
     emojis = list(adapter.iter_custom_emojis())
 
-    assert [str(emoji.id) for emoji in emojis] == ["1513447466333110352"]
+    assert len(emojis) == 1
+    assert str(emojis[0].id) == "1513447466333110352"
     assert adapter.custom_emoji_bytes(emojis[0]) == content
 
 

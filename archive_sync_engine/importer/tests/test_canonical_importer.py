@@ -515,3 +515,28 @@ def test_canonical_importer_ignores_absent_optional_custom_emoji_hook(tmp_path) 
             AssetStore(paths.root),
         )
         writer.commit()
+
+
+
+def test_canonical_importer_full_import_reconciles_existing_identity(
+    tmp_path: Path,
+) -> None:
+    """A full import must not fail when its identity already exists."""
+
+    class IdentityOnlySource(FakeSourceAdapter):
+        def iter_conversations(self):
+            return iter(())
+
+    paths = ArchivePaths(root=tmp_path)
+    source = IdentityOnlySource(b"identity retry attachment")
+    importer = CanonicalImporter()
+
+    with ArchiveWriter(paths) as writer:
+        writer.add_identity(source._identity)
+
+    with ArchiveWriter(paths) as writer:
+        asset_store = AssetStore(paths.root)
+        importer.import_source(source, writer, asset_store)
+
+    with Archive(paths) as archive:
+        assert archive.identity(IdentityKey("user-001")) == source._identity

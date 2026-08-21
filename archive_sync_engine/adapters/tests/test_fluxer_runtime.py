@@ -134,6 +134,23 @@ def test_fluxer_runtime_constructs_bot_http_client() -> None:
     ]
 
 
+def test_fluxer_http_destination_client_updates_channel_name() -> None:
+    http = FakeHTTPClient("token")
+    client = FluxerHttpDestinationClient(http, guild_id="guild-1")
+
+    result = asyncio.run(
+        client.update_channel(
+            "channel-1",
+            name="renamed",
+        )
+    )
+
+    assert result is None
+    assert http.request_calls == [
+        ("PATCH", "/channels/{channel_id}", {"name": "renamed"}),
+    ]
+
+
 def test_fluxer_http_destination_client_gets_guild_emojis() -> None:
     http = FakeHTTPClient("token")
     client = FluxerHttpDestinationClient(http, guild_id="guild-1")

@@ -249,6 +249,10 @@ class ArchiveWriter:
         self._validate_message_reactions(message)
         self._persist_message_reactions(message)
 
+    def delete_message(self, message_id) -> None:
+        """Remove a canonical message from the archive."""
+        self._store.delete_message(message_id)
+
     #
     # Provenance
     #

@@ -234,7 +234,7 @@ def test_update_conversation_dispatches() -> None:
         context.conversations[operation.conversation.id],
     )
 
-    assert result.conversation is None
+    assert result.conversation == context.conversations[operation.conversation.id]
     assert result.identity is None
     assert result.message is None
     assert result.canonical_id == "conversation-001"

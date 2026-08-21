@@ -12,6 +12,7 @@ from archive_sync_engine.importer.canonical_coordinator import (
     CanonicalImportCoordinator,
     ImportReport,
 )
+from archive_sync_engine.importer.canonical_importer import CanonicalImporter
 from archive_sync_engine.models import (
     CanonicalConversation,
     CanonicalIdentity,
@@ -232,6 +233,68 @@ def test_canonical_import_coordinator_persists_completed_session(
     assert session.updated_at.tzinfo is not None
 
     assert session.updated_at >= session.started_at
+
+
+def test_canonical_import_coordinator_uses_importer_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The coordinator must only pass arguments supported by
+    CanonicalImporter.import_source().
+
+    This guards the coordinator/importer API boundary against accidentally
+    passing internal reconciliation data that the importer does not accept.
+    """
+
+    captured: dict[str, object] = {}
+
+    def strict_import_source(
+        self,
+        source,
+        writer,
+        asset_store,
+        on_progress=None,
+        on_status=None,
+        on_refresh_cursor=None,
+        resume_state=None,
+        incremental_refresh=False,
+        rate_limiter=None,
+    ) -> None:
+        captured.update(
+            {
+                "source": source,
+                "writer": writer,
+                "asset_store": asset_store,
+                "on_progress": on_progress,
+                "on_status": on_status,
+                "on_refresh_cursor": on_refresh_cursor,
+                "resume_state": resume_state,
+                "incremental_refresh": incremental_refresh,
+                "rate_limiter": rate_limiter,
+            }
+        )
+
+    monkeypatch.setattr(
+        CanonicalImporter,
+        "import_source",
+        strict_import_source,
+    )
+
+    paths = ArchivePaths(root=tmp_path)
+    source = FakeSourceAdapter()
+
+    coordinator = CanonicalImportCoordinator(paths)
+    report = coordinator.run(source)
+
+    assert isinstance(report, ImportReport)
+    assert captured["source"] is source
+    assert captured["asset_store"] is not None
+    assert captured["on_progress"] is not None
+    assert captured["on_refresh_cursor"] is not None
+    assert captured["incremental_refresh"] is False
+    assert captured["rate_limiter"] is not None
+
 
 class FailingSourceAdapter(
     SourceAdapter,

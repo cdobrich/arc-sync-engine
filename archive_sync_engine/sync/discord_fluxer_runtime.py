@@ -26,6 +26,7 @@ from archive_sync_engine.adapters.fluxer_runtime import (
     FluxerHttpClientFactory,
 )
 from archive_sync_engine.archive.paths import ArchivePaths
+from archive_sync_engine.repository.scope import synchronization_state_path
 
 from .pipeline import ArchiveSyncPipeline
 from .runtime_request import SyncRuntimeRequest
@@ -70,13 +71,21 @@ class DiscordFluxerSyncRuntime:
             raise AdapterError("Runtime configuration for 'fluxer' is invalid.")
         if len(request.destination_scope) != 1:
             raise AdapterError("Fluxer destination scope must contain exactly one server ID.")
+        archive_paths = ArchivePaths(request.archive_path)
         return cls(
             DiscordFluxerSyncConfig(
                 discord=discord,
                 fluxer=fluxer,
                 fluxer_guild_id=request.destination_scope[0],
-                archive_paths=ArchivePaths(request.archive_path),
+                archive_paths=archive_paths,
                 identity_mappings=tuple(request.adapter_config.get("identity_mappings", ())),
+                state_repository_path=str(
+                    synchronization_state_path(
+                        archive_paths.root,
+                        adapter=request.destination_adapter,
+                        scope=request.destination_scope,
+                    )
+                ),
             )
         )
 

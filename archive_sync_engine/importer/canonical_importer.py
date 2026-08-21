@@ -131,10 +131,15 @@ class CanonicalImporter:
                 else source.iter_identities()
             )
             for identity in identities:
-                if incremental_refresh:
-                    writer.upsert_identity(identity)
-                else:
-                    writer.add_identity(identity)
+                # Identity discovery is a reconciliation boundary, not a
+                # one-time insert.  A full import can legitimately encounter
+                # an identity already persisted by an earlier/partial import
+                # (for example after an interrupted run or a source adapter
+                # reusing an identity discovered through another traversal).
+                # Keep the canonical identity current without allowing a
+                # duplicate-key failure to abort the import before message
+                # traversal begins.
+                writer.upsert_identity(identity)
                 identity_count += 1
                 if on_status is not None:
                     on_status(

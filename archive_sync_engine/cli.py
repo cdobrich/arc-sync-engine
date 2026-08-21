@@ -31,6 +31,7 @@ from archive_sync_engine.config import ConfigurationError, load_setup_configurat
 from archive_sync_engine.archive import Archive, validate_archive_package
 from archive_sync_engine.exporter import CanonicalExporter
 from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
+from archive_sync_engine.repository.scope import synchronization_state_path, synchronization_state_paths
 from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
 from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
 from archive_sync_engine.importer.progress import ImportProgress
@@ -472,16 +473,22 @@ def _run_adapters(args: argparse.Namespace) -> int:
 
 
 def _run_diagnostics(args: argparse.Namespace) -> int:
+    if args.limit <= 0:
+        raise SystemExit("diagnostics --limit must be positive")
     if args.summary:
         return _run_diagnostics_summary(args)
 
-    repository_path = args.archive / "synchronization.sqlite"
-    with SQLiteStateRepository(repository_path) as repository:
-        entries = repository.query_execution_log(
-            canonical_id=args.canonical_id,
-            operation_type=args.operation_type,
-            limit=args.limit,
-        )
+    entries = []
+    for repository_path in synchronization_state_paths(args.archive):
+        with SQLiteStateRepository(repository_path) as repository:
+            entries.extend(
+                repository.query_execution_log(
+                    canonical_id=args.canonical_id,
+                    operation_type=args.operation_type,
+                    limit=args.limit,
+                )
+            )
+    entries = sorted(entries, key=lambda entry: entry.id, reverse=True)[:args.limit]
 
     if args.as_json:
         import json
@@ -565,21 +572,28 @@ def _run_diagnostics_summary(args: argparse.Namespace) -> int:
             "updated_at": session.updated_at.isoformat(),
         }
 
-    repository_path = paths.root / "synchronization.sqlite"
-    if repository_path.is_file():
+    state_paths = synchronization_state_paths(paths.root)
+    if state_paths:
         from archive_sync_engine.repository.execution_log import SQLiteExecutionLog
         from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
 
-        with SQLiteStateRepository(repository_path) as repository:
-            state = repository.load_synchronization_state()
-        with SQLiteExecutionLog(repository_path) as execution_log:
-            execution_count = execution_log.count()
+        execution_count = 0
+        conversations = identities = messages = 0
+        for repository_path in state_paths:
+            with SQLiteStateRepository(repository_path) as repository:
+                state = repository.load_synchronization_state()
+            with SQLiteExecutionLog(repository_path) as execution_log:
+                execution_count += execution_log.count()
+            conversations += len(state.conversations)
+            identities += len(state.identities)
+            messages += len(state.messages)
         summary["synchronization"] = {
             "state_present": True,
+            "state_databases": len(state_paths),
             "executions": execution_count,
-            "conversations": len(state.conversations),
-            "identities": len(state.identities),
-            "messages": len(state.messages),
+            "conversations": conversations,
+            "identities": identities,
+            "messages": messages,
         }
 
     if args.as_json:
@@ -1137,7 +1151,11 @@ def _run_export(args: argparse.Namespace) -> int:
     except ValueError as exc:
         raise ConfigurationError(str(exc)) from exc
 
-    repository_path = paths.root / "synchronization.sqlite"
+    repository_path = synchronization_state_path(
+        paths.root,
+        adapter=destination_adapter,
+        scope=destination_scope,
+    )
     with (
         Archive(paths) as archive,
         runtime,

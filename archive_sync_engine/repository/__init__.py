@@ -17,10 +17,13 @@ from .execution_log import ExecutionLogEntry, SQLiteExecutionLog
 from .in_memory_state_repository import InMemoryStateRepository
 from .sqlite_state_repository import SQLiteStateRepository
 from .state_repository import StateRepository
+from .scope import synchronization_state_path, synchronization_state_paths
 
 __all__ = [
     "ExecutionLogEntry",
     "InMemoryStateRepository",
     "SQLiteExecutionLog",
     "StateRepository",
+    "synchronization_state_path",
+    "synchronization_state_paths",
 ]

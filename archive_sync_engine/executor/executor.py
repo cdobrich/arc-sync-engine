@@ -148,6 +148,7 @@ class OperationExecutor:
                     canonical_fingerprint=canonical_fingerprint(
                         conversation,
                     ),
+                    conversation=destination_ref,
                     conversation_parent_id=(
                         str(conversation.parent_id)
                         if conversation.parent_id is not None

@@ -222,6 +222,25 @@ def test_apply_execution_result_adds_conversation_reference() -> None:
 
     assert state.conversations == {}
 
+def test_apply_execution_result_updates_conversation_reference_and_fingerprint() -> None:
+    state = SynchronizationState(
+        conversations={"conversation-001": DestinationConversationRef("destination-conversation-001")},
+        conversation_fingerprints={"conversation-001": "old-fingerprint"},
+        conversation_parent_ids={"conversation-001": None},
+    )
+    destination_ref = DestinationConversationRef("destination-conversation-001")
+    result = ExecutionResult(
+        conversation=destination_ref,
+        canonical_fingerprint="new-fingerprint",
+        conversation_parent_id=None,
+    )
+
+    updated = state.apply_execution_result("conversation-001", result)
+
+    assert updated.conversations["conversation-001"] == destination_ref
+    assert updated.conversation_fingerprints["conversation-001"] == "new-fingerprint"
+
+
 def test_apply_execution_result_adds_identity_reference() -> None:
     state = SynchronizationState()
 
