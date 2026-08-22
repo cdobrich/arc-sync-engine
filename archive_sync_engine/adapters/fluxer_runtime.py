@@ -219,6 +219,17 @@ class FluxerHttpDestinationClient:
     ) -> bool:
         del max_retries
         await self._http.pin_message(channel_id, message_id)
+        pinned = await self._http.list_pinned_messages(channel_id)
+        pinned_ids = {
+            str(item.get("id"))
+            for item in (pinned or ())
+            if isinstance(item, dict) and item.get("id") is not None
+        }
+        if str(message_id) not in pinned_ids:
+            raise AdapterError(
+                f"Fluxer reported a successful pin for message {message_id}, "
+                "but the message is not present in the channel's pinned-message list."
+            )
         return True
 
     async def unpin_message(
@@ -229,6 +240,17 @@ class FluxerHttpDestinationClient:
     ) -> bool:
         del max_retries
         await self._http.unpin_message(channel_id, message_id)
+        pinned = await self._http.list_pinned_messages(channel_id)
+        pinned_ids = {
+            str(item.get("id"))
+            for item in (pinned or ())
+            if isinstance(item, dict) and item.get("id") is not None
+        }
+        if str(message_id) in pinned_ids:
+            raise AdapterError(
+                f"Fluxer reported a successful unpin for message {message_id}, "
+                "but the message remains in the channel's pinned-message list."
+            )
         return True
 
     async def get_guild_emojis(self) -> list[Any]:

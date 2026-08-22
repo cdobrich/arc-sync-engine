@@ -30,6 +30,7 @@ class FakeHTTPClient:
         self.created_channel_calls = []
         self.send_message_calls = []
         self.request_calls = []
+        self.pin_state_verification_enabled = True
         type(self).instances.append(self)
 
     async def close(self) -> None:
@@ -72,6 +73,8 @@ class FakeHTTPClient:
         return None
 
     async def list_pinned_messages(self, channel_id):
+        if not self.pin_state_verification_enabled:
+            return []
         message_id = getattr(self, "pinned_message_id", None)
         return ([{"id": message_id}] if message_id is not None else [])
 
@@ -517,4 +520,42 @@ def test_runtime_pin_verifies_fluxer_pinned_message_state() -> None:
         DestinationMessageRef("message-1", conversation_id="channel-1")
     )
     assert FakeHTTPClient.instances[0].pinned_message_id is None
+    runtime.close()
+
+
+def test_runtime_pin_rejects_false_positive_success() -> None:
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=_factory(),
+    )
+    FakeHTTPClient.instances[0].pin_state_verification_enabled = False
+
+    with pytest.raises(AdapterError, match="not present in the channel's pinned-message list"):
+        runtime.adapter.pin_message(
+            DestinationMessageRef("message-1", conversation_id="channel-1")
+        )
+
+    runtime.close()
+
+
+def test_runtime_unpin_rejects_false_positive_success() -> None:
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=_factory(),
+    )
+    client = FakeHTTPClient.instances[0]
+    client.pinned_message_id = "message-1"
+
+    async def stale_pinned_list(channel_id):
+        return [{"id": "message-1"}]
+
+    client.list_pinned_messages = stale_pinned_list
+
+    with pytest.raises(AdapterError, match="remains in the channel's pinned-message list"):
+        runtime.adapter.unpin_message(
+            DestinationMessageRef("message-1", conversation_id="channel-1")
+        )
+
     runtime.close()

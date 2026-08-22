@@ -49,6 +49,21 @@ class FakeFluxerClient:
         )
         return {"id": channel_id}
 
+    async def update_channel(
+        self,
+        channel_id: str,
+        *,
+        name: str,
+    ) -> bool:
+        self.calls.append(
+            (
+                "update_channel",
+                (),
+                {"channel_id": channel_id, "name": name},
+            ),
+        )
+        return True
+
     async def create_thread(
         self,
         parent_channel_id: str,
@@ -312,6 +327,47 @@ def test_fluxer_initial_synchronization_persists_destination_references(
     assert [call[0] for call in client.calls] == [
         "create_conversation",
         "send_message",
+    ]
+
+
+def test_fluxer_reuses_persisted_channel_and_updates_renamed_channel(
+    tmp_path: Path,
+) -> None:
+    initial_conversation = _conversation()
+    initial_message = _message("hello")
+    path = tmp_path / "state.sqlite3"
+    client = FakeFluxerClient()
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            _archive(initial_conversation, initial_message),
+            client,
+            repository,
+        ).synchronize()
+
+    client.calls.clear()
+    renamed_conversation = CanonicalConversation(
+        id=initial_conversation.id,
+        conversation_type=initial_conversation.conversation_type,
+        title="renamed",
+    )
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(
+            _archive(renamed_conversation, initial_message),
+            client,
+            repository,
+        ).synchronize()
+
+    assert client.calls == [
+        (
+            "update_channel",
+            (),
+            {
+                "channel_id": "fluxer-channel-1",
+                "name": "renamed",
+            },
+        ),
     ]
 
 
