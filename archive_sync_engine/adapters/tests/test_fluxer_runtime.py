@@ -30,7 +30,12 @@ class FakeHTTPClient:
         self.created_channel_calls = []
         self.send_message_calls = []
         self.request_calls = []
+        self.pinned_message_id = None
         self.pin_state_verification_enabled = True
+        self.force_stale_pinned_list = False
+        self.stale_pinned_message_id = None
+        self.force_empty_pin_list = False
+        self.force_false_message_pin_state = False
         type(self).instances.append(self)
 
     async def close(self) -> None:
@@ -65,23 +70,30 @@ class FakeHTTPClient:
         return None
 
     async def pin_message(self, channel_id, message_id):
+        self.request_calls.append(("PUT", "/channels/{channel_id}/pins/{message_id}", None))
         self.pinned_message_id = message_id
-        return None
 
     async def unpin_message(self, channel_id, message_id):
+        self.request_calls.append(("DELETE", "/channels/{channel_id}/pins/{message_id}", None))
         self.pinned_message_id = None
-        return None
 
-    async def list_pinned_messages(self, channel_id):
+    async def get_pinned_messages(self, channel_id):
+        self.request_calls.append(("GET", "/channels/{channel_id}/pins", None))
         if not self.pin_state_verification_enabled:
             return []
-        message_id = getattr(self, "pinned_message_id", None)
-        return ([{"id": message_id}] if message_id is not None else [])
+        if self.force_stale_pinned_list:
+            message_id = self.stale_pinned_message_id or self.pinned_message_id
+            if message_id is not None:
+                return [{"id": message_id}]
+        if self.pinned_message_id is None:
+            return []
+        return [{"id": self.pinned_message_id}]
 
     async def get_message(self, channel_id, message_id):
         return {
             "id": message_id,
             "channel_id": channel_id,
+            "pinned": (self.pinned_message_id == message_id) and not self.force_false_message_pin_state,
             "attachments": [
                 {"id": "attachment-1", "filename": "keep.txt"},
                 {"id": "attachment-2", "filename": "remove.txt"},
@@ -94,7 +106,56 @@ class FakeHTTPClient:
 
     async def request(self, route, *, json=None, **kwargs):
         self.request_calls.append((route.method, route.path, json))
+        if route.path == "/channels/{channel_id}/messages/pins/{message_id}":
+            if route.method == "PUT":
+                self.pinned_message_id = route.params["message_id"]
+            elif route.method == "DELETE":
+                self.pinned_message_id = None
+        if route.path in {
+            "/channels/{channel_id}/messages/pins",
+            "/channels/{channel_id}/pins",
+        }:
+            if self.force_empty_pin_list:
+                return {"items": []}
+            if self.force_stale_pinned_list and self.stale_pinned_message_id is not None:
+                return {"items": [{"message_id": self.stale_pinned_message_id}]}
+            if self.pinned_message_id is None:
+                return {"items": []}
+            return {"items": [{"message_id": self.pinned_message_id}]}
+        if route.path == "/channels/{channel_id}/pins/{message_id}":
+            if route.method == "PUT":
+                self.pinned_message_id = route.params["message_id"]
+            elif route.method == "DELETE":
+                self.pinned_message_id = None
+            return None
         return None
+
+
+class NotFound(Exception):
+    def __init__(self) -> None:
+        super().__init__("404 Not Found")
+
+
+class FallbackPinHTTPClient(FakeHTTPClient):
+    def __init__(self, token: str, **kwargs) -> None:
+        super().__init__(token, **kwargs)
+        self.current_pin_route_not_found = True
+        self.current_pin_list_route_not_found = True
+
+    async def request(self, route, *, json=None, **kwargs):
+        if (
+            self.current_pin_route_not_found
+            and route.path == "/channels/{channel_id}/messages/pins/{message_id}"
+        ):
+            self.request_calls.append((route.method, route.path, json))
+            raise NotFound()
+        if (
+            self.current_pin_list_route_not_found
+            and route.path == "/channels/{channel_id}/messages/pins"
+        ):
+            self.request_calls.append((route.method, route.path, json))
+            raise NotFound()
+        return await super().request(route, json=json, **kwargs)
 
 
 @pytest.fixture(autouse=True)
@@ -506,6 +567,48 @@ def test_runtime_reuses_one_event_loop_for_multiple_http_operations() -> None:
     assert len(set(loop_ids)) == 1
 
 
+def test_runtime_pin_uses_current_fluxer_message_pin_endpoints() -> None:
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=_factory(),
+    )
+
+    runtime.adapter.pin_message(
+        DestinationMessageRef("message-1", conversation_id="channel-1")
+    )
+    runtime.adapter.unpin_message(
+        DestinationMessageRef("message-1", conversation_id="channel-1")
+    )
+
+    assert FakeHTTPClient.instances[0].request_calls[-4:] == [
+        ("PUT", "/channels/{channel_id}/messages/pins/{message_id}", None),
+        ("GET", "/channels/{channel_id}/messages/pins", None),
+        ("DELETE", "/channels/{channel_id}/messages/pins/{message_id}", None),
+        ("GET", "/channels/{channel_id}/messages/pins", None),
+    ]
+    runtime.close()
+
+
+def test_runtime_pin_does_not_use_deprecated_fluxer_pin_methods() -> None:
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=_factory(),
+    )
+
+    runtime.adapter.pin_message(
+        DestinationMessageRef("message-1", conversation_id="channel-1")
+    )
+
+    calls = FakeHTTPClient.instances[0].request_calls
+    assert ("PUT", "/channels/{channel_id}/pins/{message_id}", None) not in calls
+    assert ("GET", "/channels/{channel_id}/pins", None) not in calls
+    assert FakeHTTPClient.instances[0].pinned_message_id == "message-1"
+
+    runtime.close()
+
+
 def test_runtime_pin_verifies_fluxer_pinned_message_state() -> None:
     runtime = FluxerDestinationRuntime(
         guild_id="guild-1",
@@ -523,15 +626,33 @@ def test_runtime_pin_verifies_fluxer_pinned_message_state() -> None:
     runtime.close()
 
 
+def test_runtime_pin_accepts_message_pin_field_when_pin_list_is_empty() -> None:
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=_factory(),
+    )
+    client = FakeHTTPClient.instances[0]
+    client.force_empty_pin_list = True
+
+    runtime.adapter.pin_message(
+        DestinationMessageRef("message-1", conversation_id="channel-1")
+    )
+
+    assert client.pinned_message_id == "message-1"
+    runtime.close()
+
+
 def test_runtime_pin_rejects_false_positive_success() -> None:
     runtime = FluxerDestinationRuntime(
         guild_id="guild-1",
         bot_client=FluxerClientConfig(token="bot-token"),
         client_factory=_factory(),
     )
-    FakeHTTPClient.instances[0].pin_state_verification_enabled = False
+    FakeHTTPClient.instances[0].force_empty_pin_list = True
+    FakeHTTPClient.instances[0].force_false_message_pin_state = True
 
-    with pytest.raises(AdapterError, match="not present in the channel's pinned-message list"):
+    with pytest.raises(AdapterError, match="does not report that message as pinned"):
         runtime.adapter.pin_message(
             DestinationMessageRef("message-1", conversation_id="channel-1")
         )
@@ -547,15 +668,98 @@ def test_runtime_unpin_rejects_false_positive_success() -> None:
     )
     client = FakeHTTPClient.instances[0]
     client.pinned_message_id = "message-1"
+    client.force_stale_pinned_list = True
+    client.stale_pinned_message_id = "message-1"
+    client.force_false_message_pin_state = True
 
-    async def stale_pinned_list(channel_id):
-        return [{"id": "message-1"}]
-
-    client.list_pinned_messages = stale_pinned_list
-
-    with pytest.raises(AdapterError, match="remains in the channel's pinned-message list"):
+    with pytest.raises(AdapterError, match="still reports that message as pinned"):
         runtime.adapter.unpin_message(
             DestinationMessageRef("message-1", conversation_id="channel-1")
         )
 
     runtime.close()
+
+
+def test_runtime_pin_falls_back_to_legacy_fluxer_pin_route_on_404() -> None:
+    factory = FluxerHttpClientFactory(
+        importer=lambda: SimpleNamespace(HTTPClient=FallbackPinHTTPClient),
+    )
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=factory,
+    )
+    client = FallbackPinHTTPClient.instances[0]
+
+    runtime.adapter.pin_message(
+        DestinationMessageRef("message-1", conversation_id="channel-1")
+    )
+
+    assert client.request_calls[:2] == [
+        ("PUT", "/channels/{channel_id}/messages/pins/{message_id}", None),
+        ("PUT", "/channels/{channel_id}/pins/{message_id}", None),
+    ]
+    runtime.close()
+
+
+def test_runtime_pin_list_falls_back_to_legacy_fluxer_pin_route_on_404() -> None:
+    factory = FluxerHttpClientFactory(
+        importer=lambda: SimpleNamespace(HTTPClient=FallbackPinHTTPClient),
+    )
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=factory,
+    )
+    client = FallbackPinHTTPClient.instances[0]
+    client.pinned_message_id = "message-1"
+
+    assert runtime.adapter._run(
+        runtime.adapter._client.get_pinned_message_ids("channel-1")
+    ) == {"message-1"}
+    assert client.request_calls[:2] == [
+        ("GET", "/channels/{channel_id}/messages/pins", None),
+        ("GET", "/channels/{channel_id}/pins", None),
+    ]
+    runtime.close()
+
+
+def test_runtime_pin_does_not_fallback_on_non_404_error() -> None:
+    class ForbiddenHTTPClient(FakeHTTPClient):
+        async def request(self, route, *, json=None, **kwargs):
+            if route.path == "/channels/{channel_id}/messages/pins/{message_id}":
+                self.request_calls.append((route.method, route.path, json))
+                raise RuntimeError("403 Forbidden")
+            return await super().request(route, json=json, **kwargs)
+
+    factory = FluxerHttpClientFactory(
+        importer=lambda: SimpleNamespace(HTTPClient=ForbiddenHTTPClient),
+    )
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="bot-token"),
+        client_factory=factory,
+    )
+
+    with pytest.raises(RuntimeError, match="403 Forbidden"):
+        runtime.adapter.pin_message(
+            DestinationMessageRef("message-1", conversation_id="channel-1")
+        )
+
+    client = ForbiddenHTTPClient.instances[0]
+    assert client.request_calls == [
+        ("PUT", "/channels/{channel_id}/messages/pins/{message_id}", None),
+    ]
+    runtime.close()
+
+
+def test_pinned_message_ids_accepts_current_fluxer_pin_items() -> None:
+    assert FluxerHttpDestinationClient._pinned_message_ids(
+        {"items": [{"message_id": "message-101"}, {"message_id": 202}]}
+    ) == {"message-101", "202"}
+
+
+def test_pinned_message_ids_accepts_nested_message_items() -> None:
+    assert FluxerHttpDestinationClient._pinned_message_ids(
+        {"pins": [{"message": {"id": "message-201"}}]}
+    ) == {"message-201"}

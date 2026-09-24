@@ -638,7 +638,7 @@ def test_adapters_cli_lists_registered_roles(capsys) -> None:
     output = capsys.readouterr().out
     assert "NAME\tSOURCE\tDESTINATION" in output
     assert "discord\ttrue\tfalse" in output
-    assert "fluxer\tfalse\ttrue" in output
+    assert "fluxer\ttrue\ttrue" in output
 
 
 def test_adapters_cli_json_is_machine_readable(capsys) -> None:
@@ -960,10 +960,6 @@ delays:
     assert exporter.export.call_args.kwargs["between_messages_seconds"] == 0.75
     assert exporter.export.call_args.kwargs["between_channels_seconds"] == 3.0
     assert isinstance(exporter.export.call_args.kwargs["state_repository"], SQLiteStateRepository)
-    assert (
-        exporter.export.call_args.kwargs["state_repository"].state_namespace
-        == "fluxer:fluxer-server"
-    )
 
 
 def test_export_cli_allows_destination_scope_override(tmp_path: Path) -> None:
@@ -1218,7 +1214,7 @@ def test_adapters_cli_json_is_machine_readable_with_runtime_implementations(caps
 
     assert main(["adapters", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["source_runtimes"] == ["discord"]
+    assert payload["source_runtimes"] == ["discord", "fluxer"]
     assert payload["destination_runtimes"] == ["fluxer"]
     assert payload["sync_runtimes"] == [{"input_adapter": "discord", "destination_adapter": "fluxer"}]
 

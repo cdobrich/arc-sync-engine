@@ -96,6 +96,8 @@ class SourceRuntimeRegistry:
 def default_source_runtime_registry(
     discord_factory: SourceRuntimeFactory | None = None,
     discord_config_factory: SourceRuntimeConfigFactory | None = None,
+    fluxer_factory: SourceRuntimeFactory | None = None,
+    fluxer_config_factory: SourceRuntimeConfigFactory | None = None,
 ) -> SourceRuntimeRegistry:
     """Return source runtimes shipped by the current application."""
     if discord_factory is None or discord_config_factory is None:
@@ -107,7 +109,16 @@ def default_source_runtime_registry(
             discord_factory = DiscordSourceRuntime.from_source_runtime_request
         if discord_config_factory is None:
             discord_config_factory = build_discord_source_runtime_config
+    if fluxer_factory is None or fluxer_config_factory is None:
+        from archive_sync_engine.adapters.fluxer_source_runtime import (
+            FluxerSourceRuntime,
+            build_fluxer_source_runtime_config,
+        )
+        if fluxer_factory is None:
+            fluxer_factory = FluxerSourceRuntime.from_source_runtime_request
+        if fluxer_config_factory is None:
+            fluxer_config_factory = build_fluxer_source_runtime_config
     return SourceRuntimeRegistry(
-        {"discord": discord_factory},
-        {"discord": discord_config_factory},
+        {"discord": discord_factory, "fluxer": fluxer_factory},
+        {"discord": discord_config_factory, "fluxer": fluxer_config_factory},
     )

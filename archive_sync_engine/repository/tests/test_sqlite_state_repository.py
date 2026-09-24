@@ -564,3 +564,47 @@ def test_sqlite_repository_does_not_reuse_legacy_default_state_for_scoped_destin
 
     with SQLiteStateRepository(path, state_namespace="fluxer:new-server") as repository:
         assert repository.load_synchronization_state() == SynchronizationState()
+
+
+def test_sqlite_repository_save_synchronization_state_persists_without_execution_log(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = SynchronizationState(
+        conversations={
+            "conversation-1": DestinationConversationRef("destination-channel-1"),
+        },
+        conversation_fingerprints={"conversation-1": "fingerprint"},
+        conversation_parent_ids={"conversation-1": None},
+    )
+
+    with SQLiteStateRepository(path) as repository:
+        repository.save_synchronization_state(state)
+        assert repository.load_synchronization_state() == state
+        assert repository.query_execution_log() == ()
+
+    with SQLiteStateRepository(path) as repository:
+        assert repository.load_synchronization_state() == state
+        assert repository.query_execution_log() == ()
+
+
+def test_sqlite_repository_save_synchronization_state_is_namespace_scoped(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.sqlite3"
+    state = SynchronizationState(
+        conversations={
+            "conversation-1": DestinationConversationRef("repaired-channel"),
+        },
+    )
+
+    with SQLiteStateRepository(path, state_namespace="fluxer:server-a") as repository:
+        repository.save_synchronization_state(state)
+
+    with SQLiteStateRepository(path, state_namespace="fluxer:server-b") as repository:
+        assert repository.load_synchronization_state() == SynchronizationState()
+        assert repository.query_execution_log() == ()
+
+    with SQLiteStateRepository(path, state_namespace="fluxer:server-a") as repository:
+        assert repository.load_synchronization_state() == state
+        assert repository.query_execution_log() == ()

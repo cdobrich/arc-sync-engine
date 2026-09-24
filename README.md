@@ -263,6 +263,8 @@ To see more specific info about a command, use the format `archive-sync-engine S
 
     archive-sync-engine preflight -h
 
+# Importing to an Archive
+
 ## Create Configuration for an Archive (1st Step)
 
 Nearly all options can be configured into a YAML file (such as `config.yaml`).
@@ -318,6 +320,11 @@ Pressing `CTRL+C` on the keyboard will halt the program, and it can be resumed l
 
     archive-sync-engine import --config ./config.yaml --resume
 
+# Exporting to a Server
+
+    archive-sync-engine export --config ./config.yaml
+
+
 ### A few things to be aware of
 
 - GOOD NEWS: The Archive commits data to itself every time it does the smallest unit of action (importing or exporting).
@@ -326,22 +333,6 @@ Pressing `CTRL+C` on the keyboard will halt the program, and it can be resumed l
 NOTE: new feature for update only since last download is pending.
 
 ---
-
-# Developer Notes
-
-## Multi-threading, Multi-processing and Order Preservation
-
-The current implementation uses Python's asyncio for asynchronous operations, not traditional multi-threading.
-
-Migrating of content from Discord channels is not multi-processed or multi-threaded, in order to preserve order of contents.
-
-The current asynchronous design, combined with the logic of fetching messages `after_message_id` and processing them sequentially within each channel, is designed specifically to preserve chronological order:
-
-- Channel by Channel: The program iterates through Discord channels one by one.
-
-- Chronological Fetching: Within each channel, messages are fetched from Discord in chronological order (oldest to newest) using the after_message_id parameter.
-
-- Sequential Posting: Each fetched message (and its attachments) is then posted to the corresponding Fluxer channel sequentially. A delay is introduced after each message to prevent overwhelming the Fluxer API and to further aid in maintaining order and avoiding rate limits.
 
 # FEATURE STATUS for Migration
 

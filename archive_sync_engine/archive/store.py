@@ -415,6 +415,7 @@ class ArchiveStore:
         str | None,
         str | None,
         str | None,
+        int,
     ]:
         """
         Convert a CanonicalConversation into SQL parameters.
@@ -590,7 +591,8 @@ class ArchiveStore:
                 created_at,
                 edited_at,
                 reply_to_message_id,
-                content
+                content,
+                pinned
             FROM messages
             WHERE conversation_id = ?
             ORDER BY
@@ -747,9 +749,10 @@ class ArchiveStore:
                 created_at,
                 edited_at,
                 reply_to_message_id,
-                content
+                content,
+                pinned
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             self._message_parameters(
                 message,
@@ -765,16 +768,17 @@ class ArchiveStore:
             """
             INSERT INTO messages (
                 message_id, conversation_id, identity_key, created_at,
-                edited_at, reply_to_message_id, content
+                edited_at, reply_to_message_id, content, pinned
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id) DO UPDATE SET
                 conversation_id = excluded.conversation_id,
                 identity_key = excluded.identity_key,
                 created_at = excluded.created_at,
                 edited_at = excluded.edited_at,
                 reply_to_message_id = excluded.reply_to_message_id,
-                content = excluded.content
+                content = excluded.content,
+                pinned = excluded.pinned
             """,
             self._message_parameters(message),
         )
@@ -843,7 +847,8 @@ class ArchiveStore:
                 created_at,
                 edited_at,
                 reply_to_message_id,
-                content
+                content,
+                pinned
             FROM messages
             WHERE message_id = ?
             """,
@@ -877,7 +882,8 @@ class ArchiveStore:
                 created_at,
                 edited_at,
                 reply_to_message_id,
-                content
+                content,
+                pinned
             FROM messages
             ORDER BY
                 created_at,
@@ -926,6 +932,7 @@ class ArchiveStore:
                 else None
             ),
             message.content,
+            int(message.pinned),
         )
 
     def _row_to_message(
@@ -972,6 +979,7 @@ class ArchiveStore:
                 else None
             ),
             content=row["content"],
+            pinned=bool(row["pinned"]),
             attachments=tuple(self.attachments_for_message(message_id)),
             reactions=tuple(self.reactions_for_message(message_id)),
         )

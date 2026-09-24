@@ -33,7 +33,6 @@ from archive_sync_engine.exporter import CanonicalExporter
 from archive_sync_engine.repository.sqlite_state_repository import SQLiteStateRepository
 from archive_sync_engine.sync.run_configuration import RunDirection, SyncRunConfiguration
 from archive_sync_engine.sync.state_path import synchronization_state_path
-from archive_sync_engine.sync.state_namespace import destination_state_namespace
 from archive_sync_engine.sync.runtime_request import SyncRuntimeRequest
 from archive_sync_engine.importer.progress import ImportProgress
 from archive_sync_engine.sync.progress import SyncProgress
@@ -856,7 +855,9 @@ def _run_config_example(args: argparse.Namespace) -> int:
 def _run_init(args: argparse.Namespace) -> int:
     """Create a new empty Archive Package without touching existing data."""
     if args.config is not None:
-        setup = load_setup_configuration(args.config)
+        setup = load_setup_configuration(
+            args.config, require_discord=False, require_fluxer=False
+        )
         archive_path = setup.resolved_archive_path()
         source = str(setup.source_config_path)
     else:
@@ -952,7 +953,12 @@ def _print_import_progress(progress: ImportProgress) -> None:
 
 def _run_import(args: argparse.Namespace) -> int:
     """Import one registered source adapter into an Archive Package."""
-    adapter_name = (args.input_adapter or "discord").strip().lower()
+    adapter_name = (args.input_adapter or "").strip().lower()
+    if not adapter_name:
+        discovery = load_setup_configuration(
+            args.config, require_discord=False, require_fluxer=False
+        )
+        adapter_name = discovery.input_adapter
     try:
         descriptor = default_adapter_registry().require_source(adapter_name)
     except ValueError as exc:
@@ -986,8 +992,8 @@ def _run_import(args: argparse.Namespace) -> int:
             raise ConfigurationError("Input scope values must not be empty.")
     elif setup.input_adapter == adapter_name and setup.input_scope:
         scope = setup.input_scope
-    elif adapter_name == "discord":
-        scope = tuple(str(value) for value in setup.discord_guild_ids)
+    elif adapter_name in {"discord", "fluxer"}:
+        scope = setup.resolve_input_scope(adapter_name)
     else:
         raise ConfigurationError(
             f"Input scope must be provided for source adapter {descriptor.name!r}."
@@ -1176,17 +1182,10 @@ def _run_export(args: argparse.Namespace) -> int:
         scope=destination_scope,
     )
     repository_path.parent.mkdir(parents=True, exist_ok=True)
-    state_namespace = destination_state_namespace(
-        destination_adapter,
-        destination_scope,
-    )
     with (
         Archive(paths) as archive,
         runtime,
-        SQLiteStateRepository(
-            repository_path,
-            state_namespace=state_namespace,
-        ) as state_repository,
+        SQLiteStateRepository(repository_path) as state_repository,
     ):
         export_report = CanonicalExporter().export(
             archive=archive,

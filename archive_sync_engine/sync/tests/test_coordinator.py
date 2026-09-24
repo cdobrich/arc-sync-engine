@@ -102,9 +102,11 @@ def _destination() -> Mock:
     Create a mock DestinationAdapter.
     """
 
-    return Mock(
+    destination = Mock(
         spec=DestinationAdapter,
     )
+    destination.reconcile_synchronization_state.side_effect = lambda state: state
+    return destination
 
 
 def _capabilities() -> DestinationCapabilities:
@@ -203,6 +205,66 @@ def test_synchronize_validates_complete_plan_before_execution() -> None:
     )
     executor.execute.assert_not_called()
     state_repository.record_execution.assert_not_called()
+
+
+
+def test_synchronize_persists_destination_reconciliation_without_fake_execution(
+    tmp_path,
+) -> None:
+    archive = _archive()
+    planner = _planner()
+    executor = _executor()
+    class ReconciliationDestination:
+        def __init__(self, repaired_state):
+            self.repaired_state = repaired_state
+
+        def reconcile_synchronization_state(self, state):
+            self.received_state = state
+            return self.repaired_state
+
+        def validate_operations(self, operations):
+            del operations
+
+        def prepare_archive(self, archive, asset_store):
+            del archive, asset_store
+
+    capabilities = _capabilities()
+
+    initial_state = SynchronizationState(
+        conversations={
+            "conversation-1": DestinationConversationRef("deleted-channel"),
+        },
+        conversation_fingerprints={"conversation-1": "fingerprint"},
+        conversation_parent_ids={"conversation-1": None},
+    )
+    repaired_state = SynchronizationState()
+    destination = ReconciliationDestination(repaired_state)
+    planner.plan.return_value = iter(())
+
+    path = tmp_path / "state.sqlite3"
+    with SQLiteStateRepository(path) as repository:
+        repository.record_execution(
+            operation=Mock(spec=SyncOperation),
+            result=ExecutionResult(canonical_id="conversation-1"),
+            synchronization_state=initial_state,
+        )
+
+    with SQLiteStateRepository(path) as repository:
+        coordinator = SyncCoordinator(
+            archive=archive,
+            planner=planner,
+            executor=executor,
+            destination=destination,
+            capabilities=capabilities,
+            state_repository=repository,
+        )
+
+        assert coordinator.synchronize() == ()
+        assert repository.load_synchronization_state() == repaired_state
+        assert len(repository.query_execution_log()) == 1
+
+    assert destination.received_state == initial_state
+    executor.execute.assert_not_called()
 
 
 def test_synchronize_executes_operations_in_planner_order() -> None:

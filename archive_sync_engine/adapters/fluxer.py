@@ -185,6 +185,12 @@ class FluxerClientProtocol(Protocol):
     ) -> bool:
         ...
 
+    async def get_pinned_message_ids(
+        self,
+        channel_id: str,
+    ) -> set[str]:
+        ...
+
     async def unpin_message(
         self,
         channel_id: str,
@@ -280,13 +286,33 @@ class FluxerDestinationAdapter(DestinationAdapter):
         return self._NAME
 
     def reconcile_synchronization_state(self, synchronization_state):
-        """Invalidate destination references for Fluxer channels deleted externally."""
+        """Repair stale Fluxer destination baselines before planning.
+
+        SynchronizationState records what a previous export successfully
+        established; it is not a live cache of Fluxer.  In particular, an
+        older pin implementation could leave ``message_pinned=True`` even
+        though the remote message was never actually pinned.  If that stale
+        baseline is trusted, a subsequent export quite correctly plans no pin
+        operation and can never repair the destination.
+
+        Channel pin state is therefore verified for channels that contain
+        messages whose persisted pin baseline is true.  A missing remote pin
+        invalidates only that component baseline, allowing the normal planner
+        to emit a fresh PinMessageOperation.  We deliberately do not turn a
+        remote pin into a true baseline when the persisted baseline is false:
+        the Archive remains authoritative and the normal planner must be able
+        to unpin externally-created destination pins.
+        """
         state = synchronization_state
+
+        getter = getattr(self._client, "get_channel", None)
+        if getter is None:
+            http = getattr(self._client, "_http", None)
+            getter = getattr(http, "get_channel", None) if http is not None else None
+
+        pin_getter = getattr(self._client, "get_pinned_message_ids", None)
+
         for canonical_id, destination in tuple(state.conversations.items()):
-            getter = getattr(self._client, "get_channel", None)
-            if getter is None:
-                http = getattr(self._client, "_http", None)
-                getter = getattr(http, "get_channel", None) if http is not None else None
             if getter is None:
                 return state
             try:
@@ -296,6 +322,25 @@ class FluxerDestinationAdapter(DestinationAdapter):
                     raise
                 state = state.without_messages_for_conversation(destination.id)
                 state = state.without_conversation(canonical_id)
+
+        if pin_getter is None:
+            return state
+
+        channel_message_ids: dict[str, list[str]] = {}
+        for message_id, destination in tuple(state.messages.items()):
+            if state.message_pinned.get(message_id) is not True:
+                continue
+            channel_message_ids.setdefault(destination.conversation_id, []).append(message_id)
+
+        for channel_id, canonical_message_ids in channel_message_ids.items():
+            pinned_destination_ids = self._run(pin_getter(channel_id))
+            for canonical_message_id in canonical_message_ids:
+                destination = state.messages.get(canonical_message_id)
+                if destination is None:
+                    continue
+                if str(destination.id) not in pinned_destination_ids:
+                    state = state.with_message_pinned(canonical_message_id, False)
+
         return state
 
     def validate_operations(self, operations) -> None:

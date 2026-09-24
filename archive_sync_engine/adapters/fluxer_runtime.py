@@ -211,6 +211,119 @@ class FluxerHttpDestinationClient:
         )
         return True
 
+    async def _request_channel_pin(
+        self,
+        method: str,
+        channel_id: str,
+        message_id: str,
+    ) -> Any:
+        """Pin or unpin using either Fluxer pin-route generation.
+
+        Fluxer deployments are not uniform here: the current REST surface
+        exposes ``/channels/{channel_id}/messages/pins...``, while deployed
+        Fluxer builds still exist that expose the older
+        ``/channels/{channel_id}/pins...`` surface.  The bundled ``fluxer.py``
+        client itself currently targets the latter.  We therefore prefer the
+        current route and fall back *only* when that route is genuinely a
+        404.  Other failures (403, 400, 5xx after retry, etc.) must propagate
+        instead of being hidden by a fallback.
+        """
+        if method not in {"PUT", "DELETE"}:
+            raise AdapterError(f"Unsupported Fluxer pin method: {method!r}")
+
+        try:
+            return await self._http.request(
+                self._http._route(
+                    method,
+                    "/channels/{channel_id}/messages/pins/{message_id}",
+                    channel_id=channel_id,
+                    message_id=message_id,
+                )
+            )
+        except Exception as exc:
+            if not self._is_fluxer_not_found(exc):
+                raise
+
+        return await self._http.request(
+            self._http._route(
+                method,
+                "/channels/{channel_id}/pins/{message_id}",
+                channel_id=channel_id,
+                message_id=message_id,
+            )
+        )
+
+    async def _list_channel_pins(self, channel_id: str) -> Any:
+        """List pins across both supported Fluxer REST route generations."""
+        try:
+            return await self._http.request(
+                self._http._route(
+                    "GET",
+                    "/channels/{channel_id}/messages/pins",
+                    channel_id=channel_id,
+                )
+            )
+        except Exception as exc:
+            if not self._is_fluxer_not_found(exc):
+                raise
+
+        return await self._http.request(
+            self._http._route(
+                "GET",
+                "/channels/{channel_id}/pins",
+                channel_id=channel_id,
+            )
+        )
+
+    @staticmethod
+    def _is_fluxer_not_found(exc: BaseException) -> bool:
+        """Return whether an optional Fluxer client exception represents HTTP 404."""
+        return type(exc).__name__ == "NotFound" and "404" in str(exc)
+
+    async def _get_message_pin_state(
+        self,
+        channel_id: str,
+        message_id: str,
+    ) -> bool | None:
+        """Read the destination message's explicit ``pinned`` field.
+
+        Some Fluxer-compatible deployments return a pin-list envelope whose
+        shape varies by server version.  The message representation is the
+        second, authoritative verification signal when it exposes ``pinned``.
+        ``None`` means the response did not expose a usable boolean.
+        """
+        getter = getattr(self._http, "get_message", None)
+        if getter is None:
+            return None
+        payload = await getter(channel_id, message_id)
+        if not isinstance(payload, Mapping):
+            return None
+        pinned = payload.get("pinned")
+        return pinned if isinstance(pinned, bool) else None
+
+    @staticmethod
+    def _pinned_message_ids(payload: Any) -> set[str]:
+        if isinstance(payload, Mapping):
+            payload = payload.get("items", payload.get("pins", payload))
+        if not isinstance(payload, (list, tuple)):
+            return set()
+        ids: set[str] = set()
+        for item in payload:
+            if not isinstance(item, Mapping):
+                continue
+            message = item.get("message")
+            if isinstance(message, Mapping):
+                message_id = message.get("id")
+                if message_id is not None:
+                    ids.add(str(message_id))
+                    continue
+            for key in ("message_id", "id"):
+                message_id = item.get(key)
+                if message_id is not None:
+                    ids.add(str(message_id))
+                    break
+        return ids
+
     async def pin_message(
         self,
         channel_id: str,
@@ -218,19 +331,21 @@ class FluxerHttpDestinationClient:
         max_retries: int = 3,
     ) -> bool:
         del max_retries
-        await self._http.pin_message(channel_id, message_id)
-        pinned = await self._http.list_pinned_messages(channel_id)
-        pinned_ids = {
-            str(item.get("id"))
-            for item in (pinned or ())
-            if isinstance(item, dict) and item.get("id") is not None
-        }
-        if str(message_id) not in pinned_ids:
+        await self._request_channel_pin("PUT", channel_id, message_id)
+        pinned = await self._list_channel_pins(channel_id)
+        pinned_ids = self._pinned_message_ids(pinned)
+        message_pinned = await self._get_message_pin_state(channel_id, message_id)
+        if str(message_id) not in pinned_ids and message_pinned is not True:
             raise AdapterError(
                 f"Fluxer reported a successful pin for message {message_id}, "
-                "but the message is not present in the channel's pinned-message list."
+                "but the destination does not report that message as pinned."
             )
         return True
+
+    async def get_pinned_message_ids(self, channel_id: str) -> set[str]:
+        """Return the destination message IDs currently pinned in a channel."""
+        payload = await self._list_channel_pins(channel_id)
+        return self._pinned_message_ids(payload)
 
     async def unpin_message(
         self,
@@ -239,17 +354,14 @@ class FluxerHttpDestinationClient:
         max_retries: int = 3,
     ) -> bool:
         del max_retries
-        await self._http.unpin_message(channel_id, message_id)
-        pinned = await self._http.list_pinned_messages(channel_id)
-        pinned_ids = {
-            str(item.get("id"))
-            for item in (pinned or ())
-            if isinstance(item, dict) and item.get("id") is not None
-        }
-        if str(message_id) in pinned_ids:
+        await self._request_channel_pin("DELETE", channel_id, message_id)
+        pinned = await self._list_channel_pins(channel_id)
+        pinned_ids = self._pinned_message_ids(pinned)
+        message_pinned = await self._get_message_pin_state(channel_id, message_id)
+        if str(message_id) in pinned_ids or message_pinned is True:
             raise AdapterError(
                 f"Fluxer reported a successful unpin for message {message_id}, "
-                "but the message remains in the channel's pinned-message list."
+                "but the destination still reports that message as pinned."
             )
         return True
 

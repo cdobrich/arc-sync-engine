@@ -169,6 +169,10 @@ class FakeFluxerClient:
         )
         return True
 
+    async def get_pinned_message_ids(self, channel_id):
+        self.calls.append(("get_pinned_message_ids", (channel_id,), {}))
+        return set()
+
     async def get_guild_emojis(self):
         self.calls.append(("get_guild_emojis", (), {}))
         return list(self.guild_emojis)
@@ -265,6 +269,62 @@ def test_fluxer_adapter_reports_current_capabilities() -> None:
     assert capabilities.supports_identity_mapping is True
     assert capabilities.supports_identity_updates is False
     assert capabilities.supports_identity_deletion is False
+
+
+def test_fluxer_adapter_repairs_stale_pinned_baseline_before_planning() -> None:
+    from archive_sync_engine.sync.synchronization_state import SynchronizationState
+
+    client = FakeFluxerClient()
+    adapter = FluxerDestinationAdapter(client)
+    state = SynchronizationState(
+        conversations={
+            "conversation-1": DestinationConversationRef("fluxer-channel-1"),
+        },
+        messages={
+            "message-1": DestinationMessageRef(
+                "fluxer-message-1",
+                conversation_id="fluxer-channel-1",
+            ),
+        },
+        message_pinned={"message-1": True},
+    )
+
+    repaired = adapter.reconcile_synchronization_state(state)
+
+    assert repaired.message_pinned["message-1"] is False
+    assert (
+        "get_pinned_message_ids",
+        ("fluxer-channel-1",),
+        {},
+    ) in client.calls
+
+
+def test_fluxer_adapter_does_not_promote_external_pin_into_canonical_baseline() -> None:
+    from archive_sync_engine.sync.synchronization_state import SynchronizationState
+
+    class ExternallyPinnedClient(FakeFluxerClient):
+        async def get_pinned_message_ids(self, channel_id):
+            self.calls.append(("get_pinned_message_ids", (channel_id,), {}))
+            return {"fluxer-message-1"}
+
+    client = ExternallyPinnedClient()
+    adapter = FluxerDestinationAdapter(client)
+    state = SynchronizationState(
+        conversations={
+            "conversation-1": DestinationConversationRef("fluxer-channel-1"),
+        },
+        messages={
+            "message-1": DestinationMessageRef(
+                "fluxer-message-1",
+                conversation_id="fluxer-channel-1",
+            ),
+        },
+        message_pinned={"message-1": False},
+    )
+
+    repaired = adapter.reconcile_synchronization_state(state)
+
+    assert repaired.message_pinned["message-1"] is False
 
 
 def test_fluxer_adapter_reconciles_deleted_destination_channel() -> None:

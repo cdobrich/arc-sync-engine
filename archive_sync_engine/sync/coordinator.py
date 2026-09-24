@@ -125,7 +125,12 @@ class SyncCoordinator:
             "reconcile_synchronization_state",
             None,
         )
-        if reconcile_state is not None:
+        reconcile_impl = getattr(
+            type(self._destination),
+            "reconcile_synchronization_state",
+            None,
+        )
+        if reconcile_state is not None and reconcile_impl is not None:
             repaired_state = reconcile_state(synchronization_state)
             if repaired_state != synchronization_state:
                 self._state_repository.save_synchronization_state(repaired_state)

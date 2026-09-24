@@ -43,6 +43,16 @@ class DestinationAdapter(ABC):
         """
         raise NotImplementedError
 
+    def reconcile_synchronization_state(self, synchronization_state):
+        """Repair stale destination references before planning synchronization.
+
+        The default implementation leaves the persisted synchronization
+        baseline unchanged. Destination adapters may override this hook when
+        they can detect externally deleted or otherwise stale destination
+        resources.
+        """
+        return synchronization_state
+
     def validate_operations(self, operations) -> None:
         """Validate a complete planned operation stream before execution.
 

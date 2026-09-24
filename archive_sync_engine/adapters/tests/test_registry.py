@@ -40,8 +40,7 @@ def test_registry_rejects_unknown_and_wrong_role_adapters() -> None:
 
     with pytest.raises(ValueError, match="Unknown adapter"):
         registry.get("matrix")
-    with pytest.raises(ValueError, match="does not support source"):
-        registry.require_source("fluxer")
+    assert registry.require_source("fluxer").name == "fluxer"
     with pytest.raises(ValueError, match="does not support destination"):
         registry.require_destination("discord")
 

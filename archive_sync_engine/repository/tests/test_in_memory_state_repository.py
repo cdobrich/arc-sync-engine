@@ -144,3 +144,15 @@ def test_query_execution_log_rejects_negative_limit() -> None:
         assert "limit" in str(exc)
     else:
         raise AssertionError("Expected negative limit to be rejected.")
+
+
+def test_save_synchronization_state_replaces_snapshot_without_execution_log() -> None:
+    repository = InMemoryStateRepository()
+    state = SynchronizationState(
+        conversations={"conversation-1": Mock()},
+    )
+
+    repository.save_synchronization_state(state)
+
+    assert repository.load_synchronization_state() is state
+    assert repository.query_execution_log() == ()

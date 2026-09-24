@@ -87,8 +87,9 @@ def default_adapter_registry() -> AdapterRegistry:
             ),
             AdapterDescriptor(
                 name="fluxer",
+                source=True,
                 destination=True,
-                description="Fluxer destination/synchronization adapter.",
+                description="Fluxer source/import and destination/synchronization adapter.",
             ),
         )
     )

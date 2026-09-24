@@ -43,6 +43,8 @@ from .exceptions import (
 )
 from .source import SourceAdapter
 from .discord import DiscordSourceAdapter
+from .fluxer_source import FluxerSourceAdapter
+from .fluxer_source_runtime import FluxerSourceRuntime, FluxerSourceRuntimeConfig
 from .fluxer import (
     FluxerCustomEmojiMapping,
     FluxerDestinationAdapter,
@@ -75,6 +77,9 @@ __all__ = [
     "DestinationCapabilities",
     "DestinationConversationRef",
     "DiscordSourceAdapter",
+    "FluxerSourceAdapter",
+    "FluxerSourceRuntime",
+    "FluxerSourceRuntimeConfig",
     "FluxerClientConfig",
     "FluxerCustomEmojiMapping",
     "FluxerDestinationAdapter",

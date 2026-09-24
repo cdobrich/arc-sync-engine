@@ -20,7 +20,7 @@ class ArchiveSchema:
     Canonical Archive Package database schema.
     """
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     @classmethod
     def create(
@@ -79,20 +79,31 @@ class ArchiveSchema:
 
         version = int(row["value"])
 
-        if version == 1:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS custom_emojis
-                (
-                    emoji_id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    animated INTEGER NOT NULL,
-                    content_type TEXT,
-                    size INTEGER NOT NULL,
-                    sha256 TEXT NOT NULL
+        if version in {1, 2}:
+            if version == 1:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS custom_emojis
+                    (
+                        emoji_id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        animated INTEGER NOT NULL,
+                        content_type TEXT,
+                        size INTEGER NOT NULL,
+                        sha256 TEXT NOT NULL
+                    )
+                    """
                 )
-                """
-            )
+
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(messages)")
+            }
+            if "pinned" not in columns:
+                connection.execute(
+                    "ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"
+                )
+
             connection.execute(
                 "UPDATE archive_metadata SET value = ? WHERE key = 'schema_version'",
                 (str(cls.SCHEMA_VERSION),),
@@ -153,6 +164,7 @@ class ArchiveSchema:
                 edited_at TEXT,
                 reply_to_message_id TEXT,
                 content TEXT,
+                pinned INTEGER NOT NULL DEFAULT 0,
             
                 FOREIGN KEY (
                     conversation_id

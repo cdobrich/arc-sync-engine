@@ -49,6 +49,7 @@ class ArchiveRecomposer:
                 created_at=message.created_at,
                 edited_at=message.edited_at,
                 reply_to=message.reply_to,
+                pinned=message.pinned,
                 attachments=attachments,
                 reactions=reactions,
             )

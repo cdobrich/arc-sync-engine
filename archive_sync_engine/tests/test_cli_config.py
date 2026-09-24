@@ -234,3 +234,121 @@ export:
     setup = load_setup_configuration(config, required_adapters=("fluxer",))
 
     assert setup.compatibility_mode is True
+
+
+def test_import_cli_supports_fluxer_source_configuration(tmp_path: Path) -> None:
+    (tmp_path / "fluxer.token").write_text("fluxer-secret\n", encoding="utf-8")
+    config = tmp_path / "fluxer-source.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+input:
+  adapter: fluxer
+  scope:
+    - source-server
+fluxer:
+  token_file: fluxer.token
+  server_id: source-server
+""",
+        encoding="utf-8",
+    )
+    ArchivePackage.initialize(ArchivePaths(tmp_path / "archive"))
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    registry.build_config.return_value = type("FluxerConfig", (), {"token": "fluxer-secret"})()
+    with patch(
+        "archive_sync_engine.cli.default_source_runtime_registry",
+        return_value=registry,
+    ):
+        assert main(["import", "--config", str(config), "--input-adapter", "fluxer"]) == 0
+
+    request = registry.create.call_args.args[1]
+    assert request.adapter == "fluxer"
+    assert request.scope == ("source-server",)
+    assert request.adapter_config["fluxer"].token == "fluxer-secret"
+
+
+def test_init_cli_accepts_fluxer_only_configuration_without_discord(tmp_path: Path) -> None:
+    config = tmp_path / "config-fluxer.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./dist/archive_fluxer
+fluxer:
+  token_file: ./dist/fluxer_export-bot.token
+  guild_id: "1512345154274119680"
+user_mappings:
+  fluxer:
+    "130686600000258784":
+      fluxer_username: "Lee#0153"
+      fluxer_auth_key_file: ./dist/fluxer_user-lee.token
+    "147325112455597588":
+      fluxer_bot: true
+      fluxer_username: "Porter#1586"
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "fluxer_export-bot.token").write_text("source-token\n", encoding="utf-8")
+    (tmp_path / "dist" / "fluxer_user-lee.token").write_text("lee-token\n", encoding="utf-8")
+
+    assert main(["init", "--config", str(config)]) == 0
+    assert (tmp_path / "dist" / "archive_fluxer" / "archive.sqlite").is_file()
+
+
+def test_fluxer_source_is_inferred_from_sole_fluxer_configuration(tmp_path: Path) -> None:
+    config = tmp_path / "config-fluxer.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+fluxer:
+  token: source-token
+  guild_id: "1512345154274119680"
+""",
+        encoding="utf-8",
+    )
+
+    setup = load_setup_configuration(config, required_adapters=("fluxer",))
+
+    assert setup.input_adapter == "fluxer"
+    assert setup.input_scope == ("1512345154274119680",)
+    assert setup.resolve_input_scope("fluxer") == ("1512345154274119680",)
+    assert setup.fluxer_guild_id == "1512345154274119680"
+
+
+def test_import_cli_infers_fluxer_source_and_guild_id_without_input_section(tmp_path: Path) -> None:
+    (tmp_path / "fluxer.token").write_text("fluxer-secret\n", encoding="utf-8")
+    config = tmp_path / "fluxer-source.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+fluxer:
+  token_file: fluxer.token
+  guild_id: "source-server"
+""",
+        encoding="utf-8",
+    )
+    ArchivePackage.initialize(ArchivePaths(tmp_path / "archive"))
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    registry.build_config.return_value = type("FluxerConfig", (), {"token": "fluxer-secret"})()
+    with patch(
+        "archive_sync_engine.cli.default_source_runtime_registry",
+        return_value=registry,
+    ):
+        assert main(["import", "--config", str(config)]) == 0
+
+    request = registry.create.call_args.args[1]
+    assert request.adapter == "fluxer"
+    assert request.scope == ("source-server",)

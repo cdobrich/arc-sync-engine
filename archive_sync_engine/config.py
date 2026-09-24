@@ -210,6 +210,8 @@ class SetupConfiguration:
             return self.input_scope
         if normalized == "discord" and self.discord_guild_ids:
             return tuple(str(value) for value in self.discord_guild_ids)
+        if normalized == "fluxer" and self.fluxer_guild_id:
+            return (self.fluxer_guild_id,)
         return ()
 
     def resolve_destination_scope(self, adapter: str) -> tuple[str, ...]:
@@ -293,10 +295,7 @@ class SetupConfiguration:
             fluxer_user_auth = {}
             for mapping in self.fluxer_user_mappings:
                 if mapping.fluxer_auth is None:
-                    raise ConfigurationError(
-                        f"No Fluxer authentication is configured for Fluxer user "
-                        f"{mapping.fluxer_user_id}."
-                    )
+                    continue
                 fluxer_user_auth[mapping.fluxer_user_id] = mapping.fluxer_auth.resolve(
                     base_dir=base_dir,
                     label=f"Fluxer auth for Fluxer user {mapping.fluxer_user_id}",
@@ -400,7 +399,14 @@ def load_setup_configuration(
 
     input_adapter_value = input_config.get("adapter")
     if input_adapter_value is None:
-        input_adapter = "discord"
+        # A source-only configuration may omit the explicit input section.
+        # Prefer the sole configured platform; retain Discord as the default
+        # when both platform sections are present for backward compatibility.
+        configured_adapters = [
+            name for name, section in (("discord", discord), ("fluxer", fluxer))
+            if section
+        ]
+        input_adapter = configured_adapters[0] if len(configured_adapters) == 1 else "discord"
     else:
         input_adapter = _required_identifier(
             input_config, "adapter", "input.adapter"
@@ -408,10 +414,24 @@ def load_setup_configuration(
 
     input_scope_value = input_config.get("scope")
     if input_scope_value is None:
-        input_scope = tuple(str(value) for value in (
-            _guild_ids(discord.get("guild_id") if discord.get("guild_id") is not None else discord.get("guild_ids"), "discord.guild_id")
-            if "discord" in required and input_adapter == "discord" else ()
-        ))
+        if input_adapter == "discord" and "discord" in required:
+            input_scope = tuple(
+                str(value)
+                for value in _guild_ids(
+                    discord.get("guild_id")
+                    if discord.get("guild_id") is not None
+                    else discord.get("guild_ids"),
+                    "discord.guild_id",
+                )
+            )
+        elif input_adapter == "fluxer" and "fluxer" in required:
+            input_scope = (
+                _required_identifier(fluxer, "server_id", "fluxer.server_id")
+                if fluxer.get("server_id") is not None
+                else _required_identifier(fluxer, "guild_id", "fluxer.guild_id")
+            ,)
+        else:
+            input_scope = ()
     else:
         if not isinstance(input_scope_value, (list, tuple)):
             raise ConfigurationError("input.scope must be a YAML sequence.")
@@ -439,11 +459,15 @@ def load_setup_configuration(
         if "discord" in required else ()
     )
 
+    fluxer_guild_value = fluxer.get("server_id")
+    if fluxer_guild_value is None:
+        fluxer_guild_value = fluxer.get("guild_id")
     fluxer_guild_id = (
-        _required_identifier(fluxer, "server_id", "fluxer.server_id")
-        if "fluxer" in required else (
-            str(fluxer.get("server_id")) if fluxer.get("server_id") is not None else None
+        _required_identifier(
+            {"value": fluxer_guild_value}, "value", "fluxer.server_id"
         )
+        if "fluxer" in required and fluxer_guild_value is not None
+        else (str(fluxer_guild_value) if fluxer_guild_value is not None else None)
     )
 
     identity_mappings, fluxer_user_mappings = _parse_user_mappings(
@@ -617,10 +641,33 @@ def _parse_user_mappings(
                 f"user_mappings.fluxer.{user_id} must be a YAML mapping."
             )
 
-        if validate_fluxer_fields:
+        fluxer_bot = _optional_bool(
+            raw_mapping,
+            "fluxer_bot",
+            f"user_mappings.fluxer.{user_id}.fluxer_bot",
+        )
+        if fluxer_bot:
+            fluxer_username = _optional_string(
+                raw_mapping,
+                "fluxer_username",
+                f"user_mappings.fluxer.{user_id}.fluxer_username",
+            )
+            if raw_mapping.get("fluxer_auth_key") is not None or raw_mapping.get("fluxer_auth_key_file") is not None:
+                raise ConfigurationError(
+                    f"user_mappings.fluxer.{user_id} must not configure Fluxer "
+                    "authentication when fluxer_bot is true."
+                )
+            fluxer_auth = None
+        elif validate_fluxer_fields:
             fluxer_username = _required_fluxer_username(
                 raw_mapping,
                 f"user_mappings.fluxer.{user_id}.fluxer_username",
+            )
+            fluxer_auth = _secret_source(
+                raw_mapping,
+                "fluxer_auth_key",
+                "fluxer_auth_key_file",
+                f"user_mappings.fluxer.{user_id}",
             )
         else:
             fluxer_username = _optional_string(
@@ -628,21 +675,12 @@ def _parse_user_mappings(
                 "fluxer_username",
                 f"user_mappings.fluxer.{user_id}.fluxer_username",
             )
-        fluxer_auth = (
-            _secret_source(
+            fluxer_auth = _optional_secret_source(
                 raw_mapping,
                 "fluxer_auth_key",
                 "fluxer_auth_key_file",
                 f"user_mappings.fluxer.{user_id}",
             )
-            if validate_fluxer_fields
-            else _optional_secret_source(
-                raw_mapping,
-                "fluxer_auth_key",
-                "fluxer_auth_key_file",
-                f"user_mappings.fluxer.{user_id}",
-            )
-        )
         fluxer_mappings.append(
             SetupUserMapping(
                 platform="fluxer",

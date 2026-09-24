@@ -30,7 +30,7 @@ def test_default_source_runtime_registry_uses_adapter_neutral_factory() -> None:
         fromlist=["default_source_runtime_registry"],
     ).default_source_runtime_registry(lambda request: request)
 
-    assert registry.names() == ("discord",)
+    assert registry.names() == ("discord", "fluxer")
 
 
 def test_source_runtime_registry_builds_adapter_specific_config() -> None:
