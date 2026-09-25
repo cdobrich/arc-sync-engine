@@ -720,6 +720,86 @@ def test_incremental_pin_refresh_is_authoritative_after_message_upserts(
         assert archive.message(source._recent.id).pinned is True
 
 
+def test_incremental_pin_refresh_reconciles_pinned_messages_in_threads(
+    tmp_path: Path,
+) -> None:
+    """Thread messages use the same authoritative pin reconciliation as channels."""
+
+    class ThreadPinRefreshSource(FakeSourceAdapter):
+        def __init__(self) -> None:
+            super().__init__(b"attachment")
+            self._parent = CanonicalConversation(
+                id=ConversationId("conversation-parent"),
+                conversation_type=ConversationType.CHANNEL,
+                title="Parent",
+                created_at=datetime(2026, 7, 30, 17, 0, tzinfo=timezone.utc),
+            )
+            self._thread = CanonicalConversation(
+                id=ConversationId("conversation-thread"),
+                conversation_type=ConversationType.THREAD,
+                title="Thread",
+                parent_id=self._parent.id,
+                created_at=datetime(2026, 7, 30, 17, 30, tzinfo=timezone.utc),
+            )
+            self._old_pinned = CanonicalMessage(
+                id=MessageId("message-thread-old-pinned"),
+                conversation_id=self._thread.id,
+                identity_key=self._identity.identity_key,
+                content="Thread message now unpinned",
+                created_at=datetime(2026, 7, 30, 18, 0, tzinfo=timezone.utc),
+                pinned=True,
+            )
+            self._new_pinned = CanonicalMessage(
+                id=MessageId("message-thread-new-pinned"),
+                conversation_id=self._thread.id,
+                identity_key=self._identity.identity_key,
+                content="Thread message now pinned",
+                created_at=datetime(2026, 7, 30, 18, 1, tzinfo=timezone.utc),
+                pinned=False,
+            )
+
+        def iter_conversations(self):
+            yield self._parent
+            yield self._thread
+
+        def iter_messages(self, conversation):
+            if conversation == self._thread:
+                yield self._old_pinned
+                yield self._new_pinned
+
+        def iter_pinned_message_ids(self, conversation):
+            if conversation == self._parent:
+                return ()
+            assert conversation == self._thread
+            return (str(self._new_pinned.id),)
+
+    source = ThreadPinRefreshSource()
+    paths = ArchivePaths(root=tmp_path)
+    asset_store = AssetStore(paths.root)
+
+    with ArchiveWriter(paths) as writer:
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=asset_store,
+        )
+
+    with Archive(paths) as archive:
+        old_pinned = archive.message(source._old_pinned.id)
+        new_pinned = archive.message(source._new_pinned.id)
+        thread = archive.conversation(source._thread.id)
+
+    assert old_pinned is not None
+    assert new_pinned is not None
+    assert thread is not None
+    assert old_pinned.conversation_id == source._thread.id
+    assert new_pinned.conversation_id == source._thread.id
+    assert old_pinned.pinned is False
+    assert new_pinned.pinned is True
+    assert thread.conversation_type is ConversationType.THREAD
+    assert thread.parent_id == source._parent.id
+
+
 def test_incremental_pin_refresh_reconciles_persisted_messages_without_snapshot(
     tmp_path: Path,
 ) -> None:

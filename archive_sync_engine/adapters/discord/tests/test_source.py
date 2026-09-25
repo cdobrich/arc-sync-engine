@@ -388,6 +388,42 @@ def test_iter_pinned_message_ids_reads_current_channel_pin_set() -> None:
     ]
 
 
+def test_thread_message_pin_is_canonicalized_with_thread_conversation() -> None:
+    """A pin inside a Discord thread stays attached to that thread message."""
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    parent = FakeChannel(20, "general", 1, created)
+    thread = MessageChannel(30, "discussion", 2, created)
+    thread.type = SimpleNamespace(name="public_thread")
+    thread.parent_id = parent.id
+    message = FakeMessage(300, thread, user, created, "thread pin")
+    thread._messages = (message,)
+    thread._pinned = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [parent, thread]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+
+    conversations = list(adapter.iter_conversations())
+    thread_conversation = next(
+        conversation
+        for conversation in conversations
+        if conversation.conversation_type is ConversationType.THREAD
+    )
+
+    assert str(thread_conversation.id) == "discord:guild:123:channel:30"
+    assert thread_conversation.parent_id == "discord:guild:123:channel:20"
+    assert list(adapter.iter_pinned_message_ids(thread_conversation)) == [
+        "discord:message:300",
+    ]
+
+    messages = list(adapter.iter_messages(thread_conversation))
+    assert len(messages) == 1
+    assert str(messages[0].conversation_id) == str(thread_conversation.id)
+    assert messages[0].pinned is True
+
+
 def test_iter_messages_does_not_reuse_incremental_refresh_cache() -> None:
     """A complete traversal must never be truncated to the incremental window."""
     created = datetime(2026, 1, 1, tzinfo=timezone.utc)

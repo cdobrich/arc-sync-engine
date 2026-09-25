@@ -116,7 +116,7 @@ Origin server:
 1. Navigate to the server by Left-clicking the original server.
 1. Right-click on whatever is the original channel.
 1. From the menu, select 'Copy Server Info', then select 'Copy Server ID'.
-  - TROUBLESHOOTING: If you do not see the 'Copy Server ID' menu option, you may need to enable Developer Mode for your Discord account. 
+  - TROUBLESHOOTING: If you do not see the 'Copy Server ID' menu option, you may need to enable `Developer Mode` for your Discord account. 
     To enable Developer Mode, for Desktop and Web:
       1. Click the gear icon (User Settings) next to your username at the bottom-left. 
       1. Scroll down the left sidebar and select Advanced. 
@@ -259,9 +259,10 @@ To see a top level summary of options, run:
 
     archive-sync-engine -h
 
-To see more specific info about a command, use the format `archive-sync-engine SELECTED_OPTION -h`. Example:
+To see more specific info about a command, use the format `archive-sync-engine SELECTED_OPTION -h`. Examples:
 
     archive-sync-engine init -h
+    archive-sync-engine import -h
 
 # Importing to an Archive
 
@@ -314,6 +315,23 @@ To refresh the archive (gathering latest updates from input-source), run `import
 
 This should update the stored archive contents, mirroring of the input-source.
 
+This limited time window only applies to currently known (stored in the Archive), content. A newly discovered conversation, or one for which no cursor exists, can cause a full message traversal for that conversation.
+
+Likewise, an interrupted import being resumed is a different case: that uses the durable checkpoint rather than the completed-run incremental-refresh mechanism. The handoff explicitly distinguishes interrupted recovery from completed-run refresh.
+
+
+# Syncing Between Origin -> Archive -> Target
+
+WARNING: This has not been tested.
+NOTE: The `--resume` option limits scanning from the origin-server over the time range of 7-day window. (This is not currently configurable.)
+
+    archive-sync-engine sync --config ./config.yaml
+    archive-sync-engine sync --config ./config.yaml --resume
+
+This limited time window only applies to currently known (stored in the Archive), content. A newly discovered conversation, or one for which no cursor exists, can cause a full message traversal for that conversation.
+
+Likewise, an interrupted import being resumed is a different case: that uses the durable checkpoint rather than the completed-run incremental-refresh mechanism. The handoff explicitly distinguishes interrupted recovery from completed-run refresh.
+
 ## How to Interrupt
 
 Pressing `CTRL+C` on the keyboard will halt the program, and it can be resumed later. Simply run:
@@ -332,6 +350,12 @@ Pressing `CTRL+C` on the keyboard will halt the program, and it can be resumed l
 
 NOTE: new feature for update only since last download is pending.
 
+#### Emojis
+
+The program will migrate custom emoji from an origin-server to target-servers. 
+
+If the emoji of the same name already exists on the target server, it will skip uploading. (In order to avoid duplication.) It does not check the image contents, only the emoji name. So for example, if migrating 'kek' from Discord, but 'kek' already exists on Fluxer, this emoji will be skipped.
+
 ---
 
 # FEATURE STATUS for Migration
@@ -342,31 +366,8 @@ NOTE: new feature for update only since last download is pending.
   - Create new channel when ran after update: 
   - Delete new channel when ran after update: 
 
-## Emojis
-
-- Initial migration: 
-- Updated changes migrated after initial migration: 
-
-The program will migrate custom emoji from Discord servers to target Fluxer servers. 
-
-If the emoji of the same name already exists on the target server, it will skip uploading. (In order to avoid duplication.) It does not check the image contents, only the emoji name. So for example, if migrating 'kek' from Discord, but 'kek' already exists on Fluxer, this emoji will be skipped.
 
 ## Messages to Channels & Message Attachment
-
-- Initial migration: 
-- Updated changes migrated after initial migration:
-  - CREATE new message: 
-  - UPDATE existing messages: 
-  - DELETE messages from Fluxer, after their origin source deleted them: 
-
-Recently received Fluxer.py library to support with messages with attachments.
-
-- (from origin server to target Fluxer server) copy all prior messages in all channels, in chronological order of their creation, including attachment groups.
-  - Attachments are included and correctly grouped 
-  - Any Reply-to links are preserved, if possible, during copying all messages.
-
-- Update contents, meaning if message text was changed or deleted, this change should be reflected in Fluxer chat
-- Update deleted messages, meaning if one has been erased in Discord, it should be erased in Fluxer.
 
 ### Maximum Message Length Handling
 
@@ -376,32 +377,7 @@ Example:
     (sent by username Spritz) `That's a good thought` would become `Spritz: that's a good thought`
 
 This edge-case needs to be handled.
-
-## Messages to Channels & Message Attachment (Masquerading)
-
-Feature to masquerade as origin server user when exporting message to target server.
-
-- Initial migration: 
-- Updated changes migrated after initial migration:
-  - CREATE new message: 
-  - UPDATE existing messages: 
-  - DELETE messages from Fluxer, after their origin source deleted them: 
-
-## Pinned Messages / Pins
-
-- Initial migration: 
-- Updated changes migrated after initial migration: 
-  - Pinned message updates (removal or promotion, plus new messages that have been pinned): 
-- Preserve pins in threads: Not possible to implement until threading is implemented: 
-
-
-## "Reply-to" Linkage Preserving
-
-- Initial migration: 
-- Updated changes migrated after initial migration: 
-
-Reply-to links are preserved, if possible, during the migration process.
-  
+ 
 # Not Supported Features
 
 Threads or Threading of conversations: This is due to a limitation of the Fluxer architecture.
@@ -410,20 +386,12 @@ Threads or Threading of conversations: This is due to a limitation of the Fluxer
 
 During the migration process, dedicated suffixed `-thread` channels could be created.
 
-# Version Support
-
-Tested with Python 3.11, but in theory should work for versions 3.10.
-
-
 # Future Roadmap / Pending Tasks
-
-## Contents Update Syncing
-
-- Update the migrator to check for edited-dates on posts, indicating a post has been updated and therefore should be updated on the Fluxer server
 
 ## Threads
 
 - Pinned threads within channels
+- Pinned messages within a thread
 - Implement and verify Thread preservation
 
 # Testing / Unit Tests
@@ -434,3 +402,6 @@ Run the following:
 
 There are many warnings from the Discord sub-libraries, which is why we suppress them.
 
+# Version Support
+
+Tested with Python 3.11, but in theory should work for versions 3.10.

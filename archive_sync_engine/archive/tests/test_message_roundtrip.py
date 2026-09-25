@@ -95,6 +95,54 @@ def test_archive_roundtrip_preserves_message_pin_state(tmp_path: Path) -> None:
     assert restored.pinned is True
 
 
+def test_archive_roundtrip_preserves_pinned_thread_message_state(tmp_path: Path) -> None:
+    """Pinned messages retain both thread ownership and pin state in SQLite."""
+    paths = ArchivePaths(tmp_path)
+    identity = CanonicalIdentity(
+        identity_key=IdentityKey("discord:user:thread-pin"),
+        display_name="Alice",
+    )
+    parent = CanonicalConversation(
+        id=ConversationId("discord:guild:1:channel:parent"),
+        conversation_type=ConversationType.CHANNEL,
+        title="general",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    thread = CanonicalConversation(
+        id=ConversationId("discord:guild:1:channel:thread"),
+        conversation_type=ConversationType.THREAD,
+        title="discussion",
+        parent_id=parent.id,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    message = CanonicalMessage(
+        id=MessageId("discord:message:thread-pin"),
+        conversation_id=thread.id,
+        identity_key=identity.identity_key,
+        content="Pinned inside thread",
+        created_at=datetime(2026, 1, 1, 12, tzinfo=timezone.utc),
+        pinned=True,
+    )
+
+    with ArchiveWriter(paths) as writer:
+        writer.add_identity(identity)
+        writer.add_conversation(parent)
+        writer.add_conversation(thread)
+        writer.add_message(message)
+        writer.commit()
+
+    with Archive(paths) as archive:
+        restored = archive.message(message.id)
+        restored_conversation = archive.conversation(thread.id)
+
+    assert restored is not None
+    assert restored_conversation is not None
+    assert restored.conversation_id == thread.id
+    assert restored.pinned is True
+    assert restored_conversation.conversation_type is ConversationType.THREAD
+    assert restored_conversation.parent_id == parent.id
+
+
 def test_archive_upsert_updates_message_pin_state(tmp_path: Path) -> None:
     """Incremental archive reconciliation persists changed pin intent."""
     paths = ArchivePaths(tmp_path)
