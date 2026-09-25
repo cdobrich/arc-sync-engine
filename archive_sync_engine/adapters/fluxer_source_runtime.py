@@ -88,19 +88,40 @@ class FluxerHttpSourceClient:
 
     @staticmethod
     def _pin_ids_from_payload(payload: Any) -> set[str]:
+        """Extract message IDs from every supported Fluxer pin envelope.
+
+        Fluxer-compatible deployments have returned the pin collection under
+        several top-level keys.  The canonical source import must treat the
+        complete pin collection as authoritative, so an unrecognized envelope
+        must not silently become an empty pin set.
+        """
         if isinstance(payload, Mapping):
-            items = payload.get("items", payload.get("pins", ()))
-        elif isinstance(payload, (list, tuple)):
-            items = payload
+            for key in ("items", "pins", "data", "results", "messages"):
+                if key in payload:
+                    payload = payload[key]
+                    break
         else:
-            items = ()
+            for key in ("items", "pins", "data", "results", "messages"):
+                value = getattr(payload, key, None)
+                if value is not None:
+                    payload = value
+                    break
+
+        if not isinstance(payload, (list, tuple)):
+            return set()
+
         ids: set[str] = set()
-        for item in items or ():
-            if not isinstance(item, Mapping):
-                continue
-            message = item.get("message")
-            candidate = message if isinstance(message, Mapping) else item
-            message_id = candidate.get("id") or item.get("message_id")
+        for item in payload:
+            if isinstance(item, Mapping):
+                message = item.get("message")
+                candidate = message if isinstance(message, Mapping) else item
+                message_id = candidate.get("id") or item.get("message_id")
+            else:
+                message = getattr(item, "message", None)
+                candidate = message if message is not None else item
+                message_id = getattr(candidate, "id", None)
+                if message_id is None:
+                    message_id = getattr(item, "message_id", None)
             if message_id is not None:
                 ids.add(str(message_id))
         return ids

@@ -261,7 +261,7 @@ To see a top level summary of options, run:
 
 To see more specific info about a command, use the format `archive-sync-engine SELECTED_OPTION -h`. Example:
 
-    archive-sync-engine preflight -h
+    archive-sync-engine init -h
 
 # Importing to an Archive
 

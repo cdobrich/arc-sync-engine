@@ -296,29 +296,56 @@ class FluxerHttpDestinationClient:
         if getter is None:
             return None
         payload = await getter(channel_id, message_id)
-        if not isinstance(payload, Mapping):
-            return None
-        pinned = payload.get("pinned")
+        pinned = self._object_value(payload, "pinned")
         return pinned if isinstance(pinned, bool) else None
 
     @staticmethod
-    def _pinned_message_ids(payload: Any) -> set[str]:
-        if isinstance(payload, Mapping):
-            payload = payload.get("items", payload.get("pins", payload))
+    def _object_value(value: Any, name: str) -> Any:
+        """Read a field from either a mapping or a typed Fluxer object."""
+        if isinstance(value, Mapping):
+            return value.get(name)
+        return getattr(value, name, None)
+
+    @classmethod
+    def _pinned_message_ids(cls, payload: Any) -> set[str]:
+        """Extract pinned message IDs from known Fluxer response envelopes.
+
+        Fluxer-compatible deployments can wrap the actual pin list in more
+        than one envelope (for example ``data -> items``).  Pin reconciliation
+        must distinguish an unavailable/unsupported response from a valid empty
+        pin collection, so this helper deliberately recognizes nested envelopes
+        instead of silently converting a valid response into ``set()``.
+        """
+        if isinstance(payload, Mapping) or payload is not None:
+            for key in ("items", "pins", "data", "results", "messages"):
+                value = cls._object_value(payload, key)
+                if value is not None:
+                    if isinstance(value, (list, tuple)):
+                        payload = value
+                        break
+                    nested = cls._pinned_message_ids(value)
+                    if nested:
+                        return nested
+                    # A recognized envelope containing an empty collection is
+                    # still a valid empty pin set.
+                    if isinstance(value, (Mapping,)) and any(
+                        cls._object_value(value, nested_key) is not None
+                        for nested_key in ("items", "pins", "data", "results", "messages")
+                    ):
+                        return set()
         if not isinstance(payload, (list, tuple)):
             return set()
+
         ids: set[str] = set()
         for item in payload:
-            if not isinstance(item, Mapping):
+            message = cls._object_value(item, "message")
+            message_id = cls._object_value(message, "id")
+            if message_id is not None:
+                ids.add(str(message_id))
                 continue
-            message = item.get("message")
-            if isinstance(message, Mapping):
-                message_id = message.get("id")
-                if message_id is not None:
-                    ids.add(str(message_id))
-                    continue
+
             for key in ("message_id", "id"):
-                message_id = item.get(key)
+                message_id = cls._object_value(item, key)
                 if message_id is not None:
                     ids.add(str(message_id))
                     break
@@ -346,6 +373,14 @@ class FluxerHttpDestinationClient:
         """Return the destination message IDs currently pinned in a channel."""
         payload = await self._list_channel_pins(channel_id)
         return self._pinned_message_ids(payload)
+
+    async def get_message_pin_state(
+        self,
+        channel_id: str,
+        message_id: str,
+    ) -> bool | None:
+        """Return the destination message's explicit ``pinned`` state."""
+        return await self._get_message_pin_state(channel_id, message_id)
 
     async def unpin_message(
         self,

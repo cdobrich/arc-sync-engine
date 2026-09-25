@@ -566,16 +566,16 @@ def test_sqlite_repository_does_not_reuse_legacy_default_state_for_scoped_destin
         assert repository.load_synchronization_state() == SynchronizationState()
 
 
-def test_sqlite_repository_save_synchronization_state_persists_without_execution_log(
-    tmp_path: Path,
-) -> None:
+def test_save_synchronization_state_persists_without_execution_log(tmp_path: Path) -> None:
     path = tmp_path / "state.sqlite3"
     state = SynchronizationState(
-        conversations={
-            "conversation-1": DestinationConversationRef("destination-channel-1"),
+        messages={
+            "message-1": DestinationMessageRef(
+                "destination-message-1",
+                conversation_id="destination-channel-1",
+            ),
         },
-        conversation_fingerprints={"conversation-1": "fingerprint"},
-        conversation_parent_ids={"conversation-1": None},
+        message_pinned={"message-1": True},
     )
 
     with SQLiteStateRepository(path) as repository:

@@ -67,13 +67,7 @@ class StateRepository(ABC):
         self,
         synchronization_state: SynchronizationState,
     ) -> None:
-        """Persist a synchronization-state snapshot without an execution record.
-
-        This is used for destination reconciliation repairs that occur before
-        synchronization operations execute. Such repairs change the durable
-        synchronization baseline but are not successful SyncOperation
-        executions and therefore must not create synthetic execution-log rows.
-        """
+        """Persist a synchronization snapshot without an execution record."""
         raise NotImplementedError
 
     @abstractmethod

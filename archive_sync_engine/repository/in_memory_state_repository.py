@@ -75,7 +75,7 @@ class InMemoryStateRepository(StateRepository):
         self,
         synchronization_state: SynchronizationState,
     ) -> None:
-        """Replace the durable synchronization snapshot without logging execution."""
+        """Replace the current synchronization snapshot without logging an operation."""
         self._synchronization_state = synchronization_state
 
     def record_execution(

@@ -370,6 +370,24 @@ class MessageChannel(FakeChannel):
         return list(self._pinned)
 
 
+def test_iter_pinned_message_ids_reads_current_channel_pin_set() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "general", 1, created)
+    message = FakeMessage(100, channel, user, created, "hello")
+    channel._pinned = (message,)
+
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    assert list(adapter.iter_pinned_message_ids(conversation)) == [
+        "discord:message:100",
+    ]
+
+
 def test_iter_messages_does_not_reuse_incremental_refresh_cache() -> None:
     """A complete traversal must never be truncated to the incremental window."""
     created = datetime(2026, 1, 1, tzinfo=timezone.utc)

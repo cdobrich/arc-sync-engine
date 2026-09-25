@@ -47,6 +47,26 @@ def test_build_fluxer_source_runtime_config_uses_override_token() -> None:
     assert config.max_retries == 7
 
 
+def test_fluxer_source_client_get_pinned_message_ids_uses_data_envelope() -> None:
+    from archive_sync_engine.adapters.fluxer_source_runtime import FluxerHttpSourceClient
+
+    http = _PinHTTP({"data": [{"message": {"id": "message-1"}}]})
+    client = FluxerHttpSourceClient(http)
+
+    result = asyncio.run(client.get_pinned_message_ids("channel-1"))
+
+    assert result == {"message-1"}
+    assert http.calls[0][1] == "/channels/{channel_id}/messages/pins"
+
+
+def test_fluxer_source_client_pin_parser_accepts_data_envelope() -> None:
+    from archive_sync_engine.adapters.fluxer_source_runtime import FluxerHttpSourceClient
+
+    assert FluxerHttpSourceClient._pin_ids_from_payload(
+        {"data": [{"message_id": "message-1"}]},
+    ) == {"message-1"}
+
+
 def test_fluxer_source_runtime_factory_rejects_wrong_adapter(tmp_path: Path) -> None:
     request = SourceRuntimeRequest(
         "discord",

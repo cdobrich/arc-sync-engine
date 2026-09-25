@@ -118,6 +118,21 @@ class SourceAdapter(ABC):
         """
         raise NotImplementedError
 
+    def iter_pinned_message_ids(
+        self,
+        conversation: CanonicalConversation,
+    ) -> Iterable[str] | None:
+        """Return canonical message IDs currently pinned in a conversation.
+
+        Pin state is channel-scoped mutable state. It can change for an
+        arbitrarily old message without changing the message's creation
+        position, so incremental message traversal alone cannot reliably
+        refresh it. Adapters with an authoritative pin collection can
+        override this method.
+        """
+        del conversation
+        return None
+
     def iter_messages_since(
         self,
         conversation: CanonicalConversation,

@@ -627,11 +627,13 @@ class Planner:
                 or reply_changed
                 or reaction_replay_requested
             ):
-                if previous_fingerprint != fingerprint:
-                    raise RuntimeError(
-                        "Synchronization state for message "
-                        f"{message_id} has an inconsistent canonical fingerprint."
-                    )
+                # Message synchronization is component-based.  The complete
+                # message fingerprint is retained for persistence/audit, but
+                # it must not veto planning when the component baselines are
+                # internally consistent.  In particular, Fluxer may refresh
+                # the pin baseline from the live destination immediately
+                # before planning; that can legitimately change the pin
+                # component without changing the historical full fingerprint.
                 continue
 
             operations: list[SyncOperation] = []

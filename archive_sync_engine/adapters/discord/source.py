@@ -335,6 +335,22 @@ class DiscordSourceAdapter(SourceAdapter):
 
         yield from (identities[key] for key in sorted(identities))
 
+    def iter_pinned_message_ids(
+        self,
+        conversation: CanonicalConversation,
+    ) -> Iterable[str] | None:
+        """Return the complete current Discord pin set for one channel."""
+        channel = self._conversation_channels.get(str(conversation.id))
+        if channel is None:
+            raise NotFoundError(
+                f"Discord conversation {conversation.id} is not available."
+            )
+        pinned_ids = self._run(self._collect_pinned_ids(channel))
+        return tuple(
+            self._message_key(message_id)
+            for message_id in sorted(pinned_ids)
+        )
+
     def iter_messages_since(
         self,
         conversation: CanonicalConversation,

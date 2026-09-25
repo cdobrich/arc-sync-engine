@@ -214,6 +214,21 @@ class FluxerSourceAdapter(SourceAdapter):
         except KeyError as exc:
             raise NotFoundError(f"Fluxer custom emoji {emoji.id} is not available.") from exc
 
+    def iter_pinned_message_ids(
+        self,
+        conversation: CanonicalConversation,
+    ) -> Iterable[str] | None:
+        """Return the complete current Fluxer pin set for one channel."""
+        getter = getattr(self._client, "get_pinned_message_ids", None)
+        if getter is None:
+            return None
+        channel_id = self._source_channel_id(conversation)
+        pinned_ids = self._run(getter(channel_id))
+        return tuple(
+            f"fluxer:message:{message_id}"
+            for message_id in sorted(str(value) for value in pinned_ids)
+        )
+
     def iter_messages(self, conversation: CanonicalConversation) -> Iterable[CanonicalMessage]:
         raw_messages = self._raw_messages_for_conversation(conversation)
         pinned_ids = {

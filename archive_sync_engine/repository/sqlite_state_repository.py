@@ -149,31 +149,29 @@ class SQLiteStateRepository(StateRepository):
         self,
         synchronization_state: SynchronizationState,
     ) -> None:
-        """Persist a repaired synchronization snapshot without execution metadata."""
+        """Persist a synchronization snapshot without creating an execution log entry."""
         _validate_synchronization_state(synchronization_state)
         state_payload = _encode_json(_state_to_dict(synchronization_state))
-        with self._connection:
-            self._save_synchronization_state_payload(state_payload)
 
-    def _save_synchronization_state_payload(self, state_payload: str) -> None:
-        if self._state_namespace == "default":
-            self._connection.execute(
-                """
-                INSERT INTO synchronization_state (id, payload)
-                VALUES (1, ?)
-                ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
-                """,
-                (state_payload,),
-            )
-        else:
-            self._connection.execute(
-                """
-                INSERT INTO synchronization_states (namespace, payload)
-                VALUES (?, ?)
-                ON CONFLICT(namespace) DO UPDATE SET payload = excluded.payload
-                """,
-                (self._state_namespace, state_payload),
-            )
+        with self._connection:
+            if self._state_namespace == "default":
+                self._connection.execute(
+                    """
+                    INSERT INTO synchronization_state (id, payload)
+                    VALUES (1, ?)
+                    ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
+                    """,
+                    (state_payload,),
+                )
+            else:
+                self._connection.execute(
+                    """
+                    INSERT INTO synchronization_states (namespace, payload)
+                    VALUES (?, ?)
+                    ON CONFLICT(namespace) DO UPDATE SET payload = excluded.payload
+                    """,
+                    (self._state_namespace, state_payload),
+                )
 
     def record_execution(
         self,
@@ -191,7 +189,24 @@ class SQLiteStateRepository(StateRepository):
         operation_type = type(operation).__name__
 
         with self._connection:
-            self._save_synchronization_state_payload(state_payload)
+            if self._state_namespace == "default":
+                self._connection.execute(
+                    """
+                    INSERT INTO synchronization_state (id, payload)
+                    VALUES (1, ?)
+                    ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
+                    """,
+                    (state_payload,),
+                )
+            else:
+                self._connection.execute(
+                    """
+                    INSERT INTO synchronization_states (namespace, payload)
+                    VALUES (?, ?)
+                    ON CONFLICT(namespace) DO UPDATE SET payload = excluded.payload
+                    """,
+                    (self._state_namespace, state_payload),
+                )
             self._connection.execute(
                 """
                 INSERT INTO execution_log (

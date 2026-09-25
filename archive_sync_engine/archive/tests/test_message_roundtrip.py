@@ -141,6 +141,29 @@ def test_archive_upsert_updates_message_pin_state(tmp_path: Path) -> None:
     assert restored.pinned is True
 
 
+def test_archive_writer_updates_only_message_pin_state(tmp_path: Path) -> None:
+    paths = ArchivePaths(root=tmp_path)
+    message = CanonicalMessage(
+        id=MessageId("discord:message:pin-update"),
+        conversation_id=ConversationId("discord:channel:pin-update"),
+        identity_key=IdentityKey("discord:user:pin-update"),
+        content="hello",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        pinned=True,
+    )
+
+    with ArchiveWriter(paths) as writer:
+        writer.upsert_message(message)
+        writer.update_message_pinned(message.id, False)
+        writer.commit()
+
+    with Archive(paths) as archive:
+        restored = archive.message(message.id)
+
+    assert restored is not None
+    assert restored.pinned is False
+
+
 def test_archive_schema_v2_migration_adds_pinned_column(tmp_path: Path) -> None:
     """Opening a current v2 archive upgrades message pin persistence."""
     database = tmp_path / "archive.sqlite"

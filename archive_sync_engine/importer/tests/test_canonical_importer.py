@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from archive_sync_engine.adapters import SourceAdapter
+from archive_sync_engine.adapters.source import SourceRefreshCursor
 from archive_sync_engine.archive import Archive
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.archive.writer import ArchiveWriter
@@ -540,3 +541,296 @@ def test_canonical_importer_full_import_reconciles_existing_identity(
 
     with Archive(paths) as archive:
         assert archive.identity(IdentityKey("user-001")) == source._identity
+
+
+def test_incremental_import_refreshes_old_message_pin_state_before_cursor_advances(
+    tmp_path: Path,
+) -> None:
+    """Pin changes to old messages must update the canonical Archive.
+
+    Incremental message traversal is intentionally bounded, but pin state is
+    channel-scoped and can change independently of message creation time.
+    """
+    class PinRefreshSource(FakeSourceAdapter):
+        def __init__(self) -> None:
+            super().__init__(b"attachment")
+            self._message = CanonicalMessage(
+                id=MessageId("message-001"),
+                conversation_id=self._conversation.id,
+                identity_key=self._identity.identity_key,
+                content="Old message",
+                created_at=datetime(
+                    2026, 7, 30, 18, 0, tzinfo=timezone.utc
+                ),
+                pinned=False,
+            )
+            self._new_message = CanonicalMessage(
+                id=MessageId("message-002"),
+                conversation_id=self._conversation.id,
+                identity_key=self._identity.identity_key,
+                content="New message",
+                created_at=datetime(
+                    2026, 8, 20, 18, 0, tzinfo=timezone.utc
+                ),
+            )
+
+        def iter_messages_since(self, conversation, cursor):
+            assert conversation == self._conversation
+            assert cursor.message_id == "message-001"
+            yield self._new_message
+
+        def iter_pinned_message_ids(self, conversation):
+            assert conversation == self._conversation
+            return ()
+
+    source = PinRefreshSource()
+    paths = ArchivePaths(root=tmp_path)
+    asset_store = AssetStore(paths.root)
+
+    existing = CanonicalMessage(
+        id=MessageId("message-001"),
+        conversation_id=source._conversation.id,
+        identity_key=source._identity.identity_key,
+        content="Old message",
+        created_at=datetime(2026, 7, 30, 18, 0, tzinfo=timezone.utc),
+        pinned=True,
+    )
+
+    with ArchiveWriter(paths) as writer:
+        writer.upsert_identity(source._identity)
+        writer.upsert_conversation(source._conversation)
+        writer.upsert_message(existing)
+
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=asset_store,
+            incremental_refresh=True,
+            resume_state=ImportState(
+                payload={
+                    "refresh_cursors": {
+                        str(source._conversation.id): SourceRefreshCursor(
+                            created_at=datetime(
+                                2026, 8, 19, tzinfo=timezone.utc
+                            ),
+                            message_id="message-001",
+                        ).to_json_dict(),
+                    },
+                },
+            ),
+            existing_messages_by_conversation={
+                str(source._conversation.id): (existing,),
+            },
+        )
+
+    with Archive(paths) as archive:
+        restored = archive.message(MessageId("message-001"))
+
+    assert restored is not None
+    assert restored.pinned is False
+
+
+
+def test_incremental_pin_refresh_is_authoritative_after_message_upserts(
+    tmp_path: Path,
+) -> None:
+    """Authoritative pin metadata wins over message-window pin flags."""
+
+    class PinRefreshSource(FakeSourceAdapter):
+        def __init__(self) -> None:
+            super().__init__(b"attachment")
+            self._old_pinned = CanonicalMessage(
+                id=MessageId("message-old-pinned"),
+                conversation_id=self._conversation.id,
+                identity_key=self._identity.identity_key,
+                content="Old pinned message",
+                created_at=datetime(2026, 7, 30, 18, 0, tzinfo=timezone.utc),
+                pinned=True,
+            )
+            self._old_unpinned = CanonicalMessage(
+                id=MessageId("message-old-unpinned"),
+                conversation_id=self._conversation.id,
+                identity_key=self._identity.identity_key,
+                content="Old unpinned message",
+                created_at=datetime(2026, 7, 30, 19, 0, tzinfo=timezone.utc),
+                pinned=False,
+            )
+            self._recent = CanonicalMessage(
+                id=MessageId("message-recent"),
+                conversation_id=self._conversation.id,
+                identity_key=self._identity.identity_key,
+                content="Recent message with stale pin flag",
+                created_at=datetime(2026, 8, 20, 18, 0, tzinfo=timezone.utc),
+                pinned=False,
+            )
+
+        def iter_messages(self, conversation):
+            assert conversation == self._conversation
+            yield self._old_pinned
+            yield self._old_unpinned
+            yield self._recent
+
+        def iter_messages_since(self, conversation, cursor):
+            assert conversation == self._conversation
+            yield self._recent
+
+        def iter_pinned_message_ids(self, conversation):
+            assert conversation == self._conversation
+            return (str(self._old_unpinned.id), str(self._recent.id))
+
+    source = PinRefreshSource()
+    paths = ArchivePaths(root=tmp_path)
+    asset_store = AssetStore(paths.root)
+
+    existing_pinned = source._old_pinned
+    existing_unpinned = source._old_unpinned
+
+    with ArchiveWriter(paths) as writer:
+        writer.upsert_identity(source._identity)
+        writer.upsert_conversation(source._conversation)
+        writer.upsert_message(existing_pinned)
+        writer.upsert_message(existing_unpinned)
+
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=asset_store,
+            incremental_refresh=True,
+            resume_state=ImportState(
+                payload={
+                    "refresh_cursors": {
+                        str(source._conversation.id): SourceRefreshCursor(
+                            created_at=datetime(2026, 8, 19, tzinfo=timezone.utc),
+                            message_id=str(existing_unpinned.id),
+                        ).to_json_dict(),
+                    },
+                },
+            ),
+            existing_messages_by_conversation={
+                str(source._conversation.id): (
+                    existing_pinned,
+                    existing_unpinned,
+                ),
+            },
+        )
+
+    with Archive(paths) as archive:
+        assert archive.message(existing_pinned.id).pinned is False
+        assert archive.message(existing_unpinned.id).pinned is True
+        assert archive.message(source._recent.id).pinned is True
+
+
+def test_incremental_pin_refresh_reconciles_persisted_messages_without_snapshot(
+    tmp_path: Path,
+) -> None:
+    """Pin refresh must cover archived messages even without a coordinator snapshot."""
+
+    class PinRefreshSource(FakeSourceAdapter):
+        def __init__(self) -> None:
+            super().__init__(b"attachment")
+            self._message_a = CanonicalMessage(
+                id=MessageId("message-a"),
+                conversation_id=self._conversation.id,
+                identity_key=self._identity.identity_key,
+                content="Previously pinned; now unpinned",
+                created_at=datetime(2026, 7, 30, 18, 0, tzinfo=timezone.utc),
+                pinned=True,
+            )
+            self._message_b = CanonicalMessage(
+                id=MessageId("message-b"),
+                conversation_id=self._conversation.id,
+                identity_key=self._identity.identity_key,
+                content="Previously unpinned; now pinned",
+                created_at=datetime(2026, 7, 30, 19, 0, tzinfo=timezone.utc),
+                pinned=False,
+            )
+
+        def iter_messages_since(self, conversation, cursor):
+            assert conversation == self._conversation
+            return ()
+
+        def iter_pinned_message_ids(self, conversation):
+            assert conversation == self._conversation
+            return (str(self._message_b.id),)
+
+    source = PinRefreshSource()
+    paths = ArchivePaths(root=tmp_path)
+    asset_store = AssetStore(paths.root)
+
+    with ArchiveWriter(paths) as writer:
+        writer.upsert_identity(source._identity)
+        writer.upsert_conversation(source._conversation)
+        writer.upsert_message(source._message_a)
+        writer.upsert_message(source._message_b)
+
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=asset_store,
+            incremental_refresh=True,
+            resume_state=ImportState(
+                payload={
+                    "refresh_cursors": {
+                        str(source._conversation.id): SourceRefreshCursor(
+                            created_at=datetime(2026, 8, 19, tzinfo=timezone.utc),
+                            message_id=str(source._message_b.id),
+                        ).to_json_dict(),
+                    },
+                },
+            ),
+        )
+
+    with Archive(paths) as archive:
+        message_a = archive.message(source._message_a.id)
+        message_b = archive.message(source._message_b.id)
+
+    assert message_a is not None
+    assert message_b is not None
+    assert message_a.pinned is False
+    assert message_b.pinned is True
+
+
+def test_pin_refresh_uses_one_authoritative_snapshot_across_message_traversal(
+    tmp_path: Path,
+) -> None:
+    """Pin reconciliation must not observe a different source state mid-import."""
+
+    class SnapshotSource(FakeSourceAdapter):
+        def __init__(self) -> None:
+            super().__init__(b"attachment")
+            self._message = CanonicalMessage(
+                id=MessageId("message-snapshot"),
+                conversation_id=self._conversation.id,
+                identity_key=self._identity.identity_key,
+                content="Snapshot message",
+                created_at=datetime(2026, 8, 20, 18, 0, tzinfo=timezone.utc),
+                pinned=False,
+            )
+            self.pin_reads = 0
+
+        def iter_messages(self, conversation):
+            yield self._message
+
+        def iter_pinned_message_ids(self, conversation):
+            self.pin_reads += 1
+            if self.pin_reads == 1:
+                return (str(self._message.id),)
+            return ()
+
+    source = SnapshotSource()
+    paths = ArchivePaths(root=tmp_path)
+    asset_store = AssetStore(paths.root)
+
+    with ArchiveWriter(paths) as writer:
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=asset_store,
+        )
+
+    with Archive(paths) as archive:
+        message = archive.message(source._message.id)
+
+    assert message is not None
+    assert message.pinned is True
+    assert source.pin_reads == 1

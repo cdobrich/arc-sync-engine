@@ -120,6 +120,39 @@ def test_with_message_records_reply_baseline() -> None:
     }
 
 
+def test_with_message_pinned_updates_only_requested_pin_baseline() -> None:
+    state = SynchronizationState(
+        messages={
+            "message-001": DestinationMessageRef("destination-message-001"),
+            "message-002": DestinationMessageRef("destination-message-002"),
+        },
+        message_content_fingerprints={
+            "message-001": "content-001",
+            "message-002": "content-002",
+        },
+        message_reactions={"message-001": (), "message-002": ()},
+        message_attachments={"message-001": (), "message-002": ()},
+        message_pinned={"message-001": True, "message-002": False},
+        message_reply_to={"message-001": None, "message-002": None},
+    )
+
+    updated = state.with_message_pinned("message-001", False)
+
+    assert updated.message_pinned == {
+        "message-001": False,
+        "message-002": False,
+    }
+    assert state.message_pinned == {
+        "message-001": True,
+        "message-002": False,
+    }
+    assert updated.messages == state.messages
+    assert updated.message_content_fingerprints == state.message_content_fingerprints
+    assert updated.message_reactions == state.message_reactions
+    assert updated.message_attachments == state.message_attachments
+    assert updated.message_reply_to == state.message_reply_to
+
+
 def test_without_message_removes_reply_baseline() -> None:
     state = SynchronizationState(
         messages={

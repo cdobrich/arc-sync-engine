@@ -271,10 +271,88 @@ def test_fluxer_adapter_reports_current_capabilities() -> None:
     assert capabilities.supports_identity_deletion is False
 
 
-def test_fluxer_adapter_repairs_stale_pinned_baseline_before_planning() -> None:
+def test_fluxer_adapter_refreshes_pin_baseline_from_live_destination() -> None:
     from archive_sync_engine.sync.synchronization_state import SynchronizationState
 
-    client = FakeFluxerClient()
+    class LivePinsClient(FakeFluxerClient):
+        async def get_pinned_message_ids(self, channel_id):
+            self.calls.append(("get_pinned_message_ids", (channel_id,), {}))
+            return {"fluxer-message-1"}
+
+    client = LivePinsClient()
+    adapter = FluxerDestinationAdapter(client)
+    state = SynchronizationState(
+        conversations={
+            "conversation-1": DestinationConversationRef("fluxer-channel-1"),
+        },
+        messages={
+            "message-1": DestinationMessageRef(
+                "fluxer-message-1",
+                conversation_id="fluxer-channel-1",
+            ),
+            "message-2": DestinationMessageRef(
+                "fluxer-message-2",
+                conversation_id="fluxer-channel-1",
+            ),
+        },
+        message_pinned={"message-1": False, "message-2": True},
+    )
+
+    repaired = adapter.reconcile_synchronization_state(state)
+
+    assert repaired.message_pinned == {
+        "message-1": True,
+        "message-2": False,
+    }
+    assert client.calls.count(("get_pinned_message_ids", ("fluxer-channel-1",), {})) == 1
+
+
+def test_fluxer_adapter_uses_bulk_pin_collection_when_available() -> None:
+    from archive_sync_engine.sync.synchronization_state import SynchronizationState
+
+    class BulkPinCollectionClient(FakeFluxerClient):
+        async def get_pinned_message_ids(self, channel_id):
+            self.calls.append(("get_pinned_message_ids", (channel_id,), {}))
+            return {"fluxer-message-2"}
+
+        async def get_message_pin_state(self, channel_id, message_id):
+            self.calls.append(("get_message_pin_state", (channel_id, message_id), {}))
+            return False
+
+    client = BulkPinCollectionClient()
+    adapter = FluxerDestinationAdapter(client)
+    state = SynchronizationState(
+        conversations={
+            "conversation-1": DestinationConversationRef("fluxer-channel-1"),
+        },
+        messages={
+            "message-1": DestinationMessageRef(
+                "fluxer-message-1", conversation_id="fluxer-channel-1"
+            ),
+            "message-2": DestinationMessageRef(
+                "fluxer-message-2", conversation_id="fluxer-channel-1"
+            ),
+        },
+        message_pinned={"message-1": True, "message-2": False},
+    )
+
+    repaired = adapter.reconcile_synchronization_state(state)
+
+    assert repaired.message_pinned == {
+        "message-1": False,
+        "message-2": True,
+    }
+
+    assert not any(call[0] == "get_message_pin_state" for call in client.calls)
+
+
+def test_fluxer_adapter_does_not_guess_pin_state_when_pin_query_is_unavailable() -> None:
+    from archive_sync_engine.sync.synchronization_state import SynchronizationState
+
+    class NoPinQueryClient(FakeFluxerClient):
+        get_pinned_message_ids = None
+
+    client = NoPinQueryClient()
     adapter = FluxerDestinationAdapter(client)
     state = SynchronizationState(
         conversations={
@@ -289,42 +367,7 @@ def test_fluxer_adapter_repairs_stale_pinned_baseline_before_planning() -> None:
         message_pinned={"message-1": True},
     )
 
-    repaired = adapter.reconcile_synchronization_state(state)
-
-    assert repaired.message_pinned["message-1"] is False
-    assert (
-        "get_pinned_message_ids",
-        ("fluxer-channel-1",),
-        {},
-    ) in client.calls
-
-
-def test_fluxer_adapter_does_not_promote_external_pin_into_canonical_baseline() -> None:
-    from archive_sync_engine.sync.synchronization_state import SynchronizationState
-
-    class ExternallyPinnedClient(FakeFluxerClient):
-        async def get_pinned_message_ids(self, channel_id):
-            self.calls.append(("get_pinned_message_ids", (channel_id,), {}))
-            return {"fluxer-message-1"}
-
-    client = ExternallyPinnedClient()
-    adapter = FluxerDestinationAdapter(client)
-    state = SynchronizationState(
-        conversations={
-            "conversation-1": DestinationConversationRef("fluxer-channel-1"),
-        },
-        messages={
-            "message-1": DestinationMessageRef(
-                "fluxer-message-1",
-                conversation_id="fluxer-channel-1",
-            ),
-        },
-        message_pinned={"message-1": False},
-    )
-
-    repaired = adapter.reconcile_synchronization_state(state)
-
-    assert repaired.message_pinned["message-1"] is False
+    assert adapter.reconcile_synchronization_state(state) is state
 
 
 def test_fluxer_adapter_reconciles_deleted_destination_channel() -> None:
@@ -1439,3 +1482,106 @@ def test_edit_message_uses_masqueraded_identity_client() -> None:
 
     assert user_client.calls[-1][0] == "edit_message"
     assert bot_client.calls == []
+
+
+def test_fluxer_adapter_uses_authoritative_bulk_pin_collection() -> None:
+    from archive_sync_engine.sync.synchronization_state import SynchronizationState
+
+    class BulkPinClient(FakeFluxerClient):
+        async def get_pinned_message_ids(self, channel_id):
+            self.calls.append(("get_pinned_message_ids", (channel_id,), {}))
+            return {"fluxer-message-1"}
+
+        async def get_message_pin_state(self, channel_id, message_id):
+            # Deliberately disagree with the dedicated pin collection.
+            self.calls.append(
+                ("get_message_pin_state", (channel_id, message_id), {})
+            )
+            return False
+
+    client = BulkPinClient()
+    adapter = FluxerDestinationAdapter(client)
+    state = SynchronizationState(
+        conversations={
+            "conversation-1": DestinationConversationRef("fluxer-channel-1"),
+        },
+        messages={
+            "message-1": DestinationMessageRef(
+                "fluxer-message-1",
+                conversation_id="fluxer-channel-1",
+            ),
+            "message-2": DestinationMessageRef(
+                "fluxer-message-2",
+                conversation_id="fluxer-channel-1",
+            ),
+        },
+        message_pinned={"message-1": False, "message-2": True},
+    )
+
+    repaired = adapter.reconcile_synchronization_state(state)
+
+    assert repaired.message_pinned == {
+        "message-1": True,
+        "message-2": False,
+    }
+    assert not any(
+        call[0] == "get_message_pin_state"
+        for call in client.calls
+    )
+
+
+def test_fluxer_adapter_falls_back_to_explicit_pin_state_when_bulk_is_unavailable() -> None:
+    from archive_sync_engine.sync.synchronization_state import SynchronizationState
+
+    class ExplicitPinFallbackClient(FakeFluxerClient):
+        async def get_pinned_message_ids(self, channel_id):
+            self.calls.append(("get_pinned_message_ids", (channel_id,), {}))
+            return None
+
+        async def get_message_pin_state(self, channel_id, message_id):
+            self.calls.append(
+                ("get_message_pin_state", (channel_id, message_id), {})
+            )
+            return message_id == "fluxer-message-1"
+
+    client = ExplicitPinFallbackClient()
+    adapter = FluxerDestinationAdapter(client)
+    state = SynchronizationState(
+        conversations={
+            "conversation-1": DestinationConversationRef("fluxer-channel-1"),
+        },
+        messages={
+            "message-1": DestinationMessageRef(
+                "fluxer-message-1",
+                conversation_id="fluxer-channel-1",
+            ),
+            "message-2": DestinationMessageRef(
+                "fluxer-message-2",
+                conversation_id="fluxer-channel-1",
+            ),
+        },
+        message_pinned={"message-1": False, "message-2": True},
+    )
+
+    repaired = adapter.reconcile_synchronization_state(state)
+
+    assert repaired.message_pinned == {
+        "message-1": True,
+        "message-2": False,
+    }
+
+
+def test_fluxer_pin_response_parser_accepts_data_envelope() -> None:
+    from archive_sync_engine.adapters.fluxer_runtime import FluxerHttpDestinationClient
+
+    assert FluxerHttpDestinationClient._pinned_message_ids(
+        {"data": [{"message_id": "message-1"}]},
+    ) == {"message-1"}
+
+
+def test_fluxer_pin_response_parser_accepts_nested_data_items_envelope() -> None:
+    from archive_sync_engine.adapters.fluxer_runtime import FluxerHttpDestinationClient
+
+    assert FluxerHttpDestinationClient._pinned_message_ids(
+        {"data": {"items": [{"message_id": "message-1"}]}},
+    ) == {"message-1"}

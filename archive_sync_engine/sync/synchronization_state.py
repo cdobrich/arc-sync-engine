@@ -263,7 +263,7 @@ class SynchronizationState:
         canonical_id: str,
         pinned: bool,
     ) -> SynchronizationState:
-        """Return a state snapshot with only one message pin baseline changed."""
+        """Return a new state with only one message pin baseline updated."""
         if canonical_id not in self.messages:
             raise KeyError(
                 f"Cannot update pin baseline for unknown message {canonical_id!r}."
@@ -271,6 +271,7 @@ class SynchronizationState:
 
         message_pinned = dict(self.message_pinned)
         message_pinned[canonical_id] = pinned
+
         return SynchronizationState(
             conversations=dict(self.conversations),
             identities=dict(self.identities),

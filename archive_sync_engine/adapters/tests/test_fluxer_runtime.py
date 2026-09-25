@@ -169,6 +169,14 @@ def _factory() -> FluxerHttpClientFactory:
     )
 
 
+class FluxerClientFactoryForTest:
+    def __init__(self, client_type):
+        self.client_type = client_type
+
+    def create(self, config):
+        return self.client_type(config.token, is_bot=config.is_bot, max_retries=config.max_retries, retry_forever=config.retry_forever)
+
+
 def test_fluxer_runtime_constructs_bot_http_client() -> None:
     calls: list[tuple[str, dict]] = []
 
@@ -763,3 +771,59 @@ def test_pinned_message_ids_accepts_nested_message_items() -> None:
     assert FluxerHttpDestinationClient._pinned_message_ids(
         {"pins": [{"message": {"id": "message-201"}}]}
     ) == {"message-201"}
+
+
+def test_fluxer_runtime_exposes_explicit_message_pin_state():
+    FakeHTTPClient.instances.clear()
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="token"),
+        client_factory=_factory(),
+    )
+    try:
+        client = FakeHTTPClient.instances[-1]
+        client.pinned_message_id = "message-1"
+        assert asyncio.run(runtime.adapter._client.get_message_pin_state(
+            "channel-1", "message-1"
+        )) is True
+        assert asyncio.run(runtime.adapter._client.get_message_pin_state(
+            "channel-1", "message-2"
+        )) is False
+    finally:
+        runtime.close()
+
+
+def test_pinned_message_ids_accepts_typed_fluxer_pin_objects() -> None:
+    class TypedMessage:
+        id = 303
+
+    class TypedPin:
+        message = TypedMessage()
+
+    class TypedPage:
+        items = [TypedPin()]
+
+    assert FluxerHttpDestinationClient._pinned_message_ids(TypedPage()) == {"303"}
+
+
+def test_fluxer_runtime_message_pin_state_accepts_typed_message_object() -> None:
+    class TypedMessage:
+        pinned = True
+
+    class TypedHTTPClient(FakeHTTPClient):
+        async def get_message(self, channel_id, message_id):
+            return TypedMessage()
+
+    runtime = FluxerDestinationRuntime(
+        guild_id="guild-1",
+        bot_client=FluxerClientConfig(token="token"),
+        client_factory=FluxerClientFactoryForTest(TypedHTTPClient),
+    )
+    try:
+        assert asyncio.run(
+            runtime.adapter._client.get_message_pin_state(
+                "channel-1", "message-1"
+            )
+        ) is True
+    finally:
+        runtime.close()

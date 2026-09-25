@@ -29,7 +29,7 @@ from .package import ArchivePackage
 
 from .paths import ArchivePaths
 from .store import ArchiveStore
-from archive_sync_engine.models.ids import AttachmentId, IdentityKey, EmojiId, MessageId
+from archive_sync_engine.models.ids import AttachmentId, ConversationId, IdentityKey, EmojiId, MessageId
 from archive_sync_engine.models.provenance import CanonicalProvenance, CanonicalTransfer
 
 
@@ -248,6 +248,28 @@ class ArchiveWriter:
             )
         self._validate_message_reactions(message)
         self._persist_message_reactions(message)
+
+    def iter_messages_for_conversation(
+        self,
+        conversation_id: ConversationId,
+    ):
+        """Read the currently persisted canonical messages for a conversation.
+
+        Pin reconciliation is performed after message writes. Reading through
+        the writer's live ArchiveStore connection makes that reconciliation
+        operate on the state that is actually present in the current import
+        transaction, rather than on a pre-import snapshot supplied by the
+        coordinator.
+        """
+        yield from self._store.iter_messages_for_conversation(conversation_id)
+
+    def update_message_pinned(
+        self,
+        message_id: MessageId,
+        pinned: bool,
+    ) -> None:
+        """Update only a message's canonical pin component."""
+        self._store.update_message_pinned(message_id, pinned)
 
     def delete_message(self, message_id) -> None:
         """Remove a canonical message from the archive."""

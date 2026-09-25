@@ -191,6 +191,13 @@ class FluxerClientProtocol(Protocol):
     ) -> set[str]:
         ...
 
+    async def get_message_pin_state(
+        self,
+        channel_id: str,
+        message_id: str,
+    ) -> bool | None:
+        ...
+
     async def unpin_message(
         self,
         channel_id: str,
@@ -286,61 +293,130 @@ class FluxerDestinationAdapter(DestinationAdapter):
         return self._NAME
 
     def reconcile_synchronization_state(self, synchronization_state):
-        """Repair stale Fluxer destination baselines before planning.
+        """Refresh destination pin baselines from live Fluxer state.
 
-        SynchronizationState records what a previous export successfully
-        established; it is not a live cache of Fluxer.  In particular, an
-        older pin implementation could leave ``message_pinned=True`` even
-        though the remote message was never actually pinned.  If that stale
-        baseline is trusted, a subsequent export quite correctly plans no pin
-        operation and can never repair the destination.
+        The Archive is authoritative for the desired pin state.  The
+        synchronization repository is only a record of what this destination
+        currently contains.  Before planning, refresh that destination-side
+        baseline from the live server so a pin/unpin change cannot be hidden
+        by a stale persisted baseline.
 
-        Channel pin state is therefore verified for channels that contain
-        messages whose persisted pin baseline is true.  A missing remote pin
-        invalidates only that component baseline, allowing the normal planner
-        to emit a fresh PinMessageOperation.  We deliberately do not turn a
-        remote pin into a true baseline when the persisted baseline is false:
-        the Archive remains authoritative and the normal planner must be able
-        to unpin externally-created destination pins.
+        Fluxer deployments expose slightly different pin response shapes and
+        some clients expose an explicit per-message ``pinned`` field.  Prefer
+        the channel pin collection for bulk discovery, but use the explicit
+        message field when available because it is the strongest signal for a
+        particular message.
         """
         state = synchronization_state
 
-        getter = getattr(self._client, "get_channel", None)
-        if getter is None:
+        channel_getter = getattr(self._client, "get_channel", None)
+        if channel_getter is None:
             http = getattr(self._client, "_http", None)
-            getter = getattr(http, "get_channel", None) if http is not None else None
+            channel_getter = (
+                getattr(http, "get_channel", None)
+                if http is not None
+                else None
+            )
 
         pin_getter = getattr(self._client, "get_pinned_message_ids", None)
-
-        for canonical_id, destination in tuple(state.conversations.items()):
-            if getter is None:
-                return state
-            try:
-                self._run(getter(destination.id))
-            except Exception as exc:
-                if not _is_fluxer_not_found(exc):
-                    raise
-                state = state.without_messages_for_conversation(destination.id)
-                state = state.without_conversation(canonical_id)
-
-        if pin_getter is None:
+        message_pin_getter = getattr(self._client, "get_message_pin_state", None)
+        if pin_getter is None and message_pin_getter is None:
             return state
 
+        # Build the message groups before probing the destination.  This also
+        # lets the pin endpoint serve as the channel-existence check when the
+        # client does not expose get_channel().
         channel_message_ids: dict[str, list[str]] = {}
-        for message_id, destination in tuple(state.messages.items()):
-            if state.message_pinned.get(message_id) is not True:
-                continue
-            channel_message_ids.setdefault(destination.conversation_id, []).append(message_id)
+        for canonical_id, destination in tuple(state.messages.items()):
+            channel_message_ids.setdefault(
+                str(destination.conversation_id),
+                [],
+            ).append(canonical_id)
+
+        # If a channel lookup is available, use it to remove destination
+        # state for channels that were deleted outside the engine.
+        if channel_getter is not None:
+            for canonical_id, destination in tuple(state.conversations.items()):
+                try:
+                    self._run(channel_getter(destination.id))
+                except Exception as exc:
+                    if not _is_fluxer_not_found(exc):
+                        raise
+                    state = state.without_messages_for_conversation(destination.id)
+                    state = state.without_conversation(canonical_id)
+
+        # Rebuild after channel deletion reconciliation.
+        channel_message_ids.clear()
+        for canonical_id, destination in tuple(state.messages.items()):
+            channel_message_ids.setdefault(
+                str(destination.conversation_id),
+                [],
+            ).append(canonical_id)
 
         for channel_id, canonical_message_ids in channel_message_ids.items():
-            pinned_destination_ids = self._run(pin_getter(channel_id))
+            pinned_destination_ids: set[str] | None = None
+            if pin_getter is not None:
+                try:
+                    raw_pinned_ids = self._run(pin_getter(channel_id))
+                    if raw_pinned_ids is not None:
+                        pinned_destination_ids = {
+                            str(message_id)
+                            for message_id in raw_pinned_ids
+                        }
+                except Exception as exc:
+                    # A missing channel is authoritative evidence that the
+                    # destination state for this channel is stale.  The next
+                    # export will recreate it from the Archive.
+                    if _is_fluxer_not_found(exc):
+                        for canonical_message_id in tuple(canonical_message_ids):
+                            state = state.without_message(canonical_message_id)
+                        state = self._remove_conversation_by_destination_id(
+                            state,
+                            channel_id,
+                        )
+                        continue
+                    raise
+
             for canonical_message_id in canonical_message_ids:
                 destination = state.messages.get(canonical_message_id)
                 if destination is None:
                     continue
-                if str(destination.id) not in pinned_destination_ids:
-                    state = state.with_message_pinned(canonical_message_id, False)
 
+                # The channel pin collection is the authoritative
+                # destination pin state for reconciliation.  A successful
+                # bulk pin query describes membership in the channel's pin
+                # collection directly.  Do not let a message GET endpoint
+                # override that result: some Fluxer deployments expose a
+                # ``pinned`` field on message payloads that is absent, stale,
+                # or not maintained consistently with the dedicated pin
+                # collection.  The explicit per-message endpoint remains a
+                # fallback only when the bulk collection is unavailable.
+                if pinned_destination_ids is not None:
+                    live_pinned = str(destination.id) in pinned_destination_ids
+                elif message_pin_getter is not None:
+                    live_pinned = self._run(
+                        message_pin_getter(channel_id, destination.id),
+                    )
+                    if not isinstance(live_pinned, bool):
+                        live_pinned = None
+                else:
+                    live_pinned = None
+
+                if live_pinned is not None:
+                    state = state.with_message_pinned(
+                        canonical_message_id,
+                        live_pinned,
+                    )
+
+        return state
+
+    @staticmethod
+    def _remove_conversation_by_destination_id(state, destination_id):
+        """Remove one conversation and its messages by destination ID."""
+        for canonical_id, destination in tuple(state.conversations.items()):
+            if str(destination.id) == str(destination_id):
+                state = state.without_messages_for_conversation(destination_id)
+                return state.without_conversation(canonical_id)
         return state
 
     def validate_operations(self, operations) -> None:

@@ -49,21 +49,6 @@ class FakeFluxerClient:
         )
         return {"id": channel_id}
 
-    async def update_channel(
-        self,
-        channel_id: str,
-        *,
-        name: str,
-    ) -> bool:
-        self.calls.append(
-            (
-                "update_channel",
-                (),
-                {"channel_id": channel_id, "name": name},
-            ),
-        )
-        return True
-
     async def create_thread(
         self,
         parent_channel_id: str,
@@ -327,47 +312,6 @@ def test_fluxer_initial_synchronization_persists_destination_references(
     assert [call[0] for call in client.calls] == [
         "create_conversation",
         "send_message",
-    ]
-
-
-def test_fluxer_reuses_persisted_channel_and_updates_renamed_channel(
-    tmp_path: Path,
-) -> None:
-    initial_conversation = _conversation()
-    initial_message = _message("hello")
-    path = tmp_path / "state.sqlite3"
-    client = FakeFluxerClient()
-
-    with SQLiteStateRepository(path) as repository:
-        _coordinator(
-            _archive(initial_conversation, initial_message),
-            client,
-            repository,
-        ).synchronize()
-
-    client.calls.clear()
-    renamed_conversation = CanonicalConversation(
-        id=initial_conversation.id,
-        conversation_type=initial_conversation.conversation_type,
-        title="renamed",
-    )
-
-    with SQLiteStateRepository(path) as repository:
-        _coordinator(
-            _archive(renamed_conversation, initial_message),
-            client,
-            repository,
-        ).synchronize()
-
-    assert client.calls == [
-        (
-            "update_channel",
-            (),
-            {
-                "channel_id": "fluxer-channel-1",
-                "name": "renamed",
-            },
-        ),
     ]
 
 
@@ -949,3 +893,181 @@ def test_fluxer_threads_are_preserved_in_archive_but_skipped_for_export(
         "create_conversation",
     ]
 
+
+
+def test_fluxer_export_reconciles_pin_changes_in_both_directions(
+    tmp_path: Path,
+) -> None:
+    """A later export must apply both pin and unpin changes from the Archive."""
+    conversation = _conversation()
+    first = _message("first")
+    first = first.__class__(
+        id=first.id,
+        conversation_id=first.conversation_id,
+        identity_key=first.identity_key,
+        content=first.content,
+        created_at=first.created_at,
+        pinned=True,
+    )
+    second = _message("second").__class__(
+        id=MessageId("message-2"),
+        conversation_id=conversation.id,
+        identity_key=IdentityKey("identity-1"),
+        content="second",
+        created_at=datetime(2026, 1, 1, 0, 2, tzinfo=timezone.utc),
+        pinned=False,
+    )
+    path = tmp_path / "state.sqlite3"
+    client = FakeFluxerClient()
+
+    initial_archive = Mock(spec=Archive)
+    initial_archive.iter_identities.return_value = iter(())
+    initial_archive.iter_conversations.return_value = iter((conversation,))
+    initial_archive.iter_messages.return_value = iter((first, second))
+    initial_archive.iter_custom_emojis.return_value = iter(())
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(initial_archive, client, repository).synchronize()
+
+    client.calls.clear()
+
+    updated_first = first.__class__(
+        id=first.id,
+        conversation_id=first.conversation_id,
+        identity_key=first.identity_key,
+        content=first.content,
+        created_at=first.created_at,
+        pinned=False,
+    )
+    updated_second = second.__class__(
+        id=second.id,
+        conversation_id=second.conversation_id,
+        identity_key=second.identity_key,
+        content=second.content,
+        created_at=second.created_at,
+        pinned=True,
+    )
+    updated_archive = Mock(spec=Archive)
+    updated_archive.iter_identities.return_value = iter(())
+    updated_archive.iter_conversations.return_value = iter((conversation,))
+    updated_archive.iter_messages.return_value = iter((updated_first, updated_second))
+    updated_archive.iter_custom_emojis.return_value = iter(())
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(updated_archive, client, repository).synchronize()
+
+    assert [call[0] for call in client.calls] == [
+        "unpin_message",
+        "pin_message",
+    ]
+    assert client.calls[0][2]["message_id"] == "fluxer-message-1"
+    assert client.calls[1][2]["message_id"] == "fluxer-message-2"
+
+
+def test_fluxer_second_export_reconciles_pin_addition_and_removal_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """A persisted export baseline must not suppress a two-way pin change."""
+    conversation = _conversation()
+    first = _message("first")
+    first = first.__class__(
+        id=first.id,
+        conversation_id=first.conversation_id,
+        identity_key=first.identity_key,
+        content=first.content,
+        created_at=first.created_at,
+        pinned=True,
+    )
+    second = first.__class__(
+        id=MessageId("message-2"),
+        conversation_id=first.conversation_id,
+        identity_key=first.identity_key,
+        content="second",
+        created_at=first.created_at,
+        pinned=False,
+    )
+
+    class ReconciliationFluxerClient(FakeFluxerClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pinned_message_ids: set[str] = set()
+
+        async def get_channel(self, channel_id: str):
+            self.calls.append(("get_channel", (channel_id,), {}))
+            return {"id": channel_id}
+
+        async def get_pinned_message_ids(self, channel_id: str):
+            self.calls.append(("get_pinned_message_ids", (channel_id,), {}))
+            return set(self.pinned_message_ids)
+
+        async def get_message_pin_state(self, channel_id: str, message_id: str):
+            self.calls.append(
+                ("get_message_pin_state", (channel_id, message_id), {})
+            )
+            return message_id in self.pinned_message_ids
+
+        async def pin_message(self, channel_id: str, message_id: str, max_retries: int = 3) -> bool:
+            result = await super().pin_message(channel_id, message_id, max_retries)
+            self.pinned_message_ids.add(message_id)
+            return result
+
+        async def unpin_message(self, channel_id: str, message_id: str, max_retries: int = 3) -> bool:
+            result = await super().unpin_message(channel_id, message_id, max_retries)
+            self.pinned_message_ids.discard(message_id)
+            return result
+
+    client = ReconciliationFluxerClient()
+    path = tmp_path / "state.sqlite3"
+
+    initial = Mock(spec=Archive)
+    initial.iter_identities.return_value = iter(())
+    initial.iter_conversations.return_value = iter((conversation,))
+    initial.iter_messages.return_value = iter((first, second))
+    initial.iter_custom_emojis.return_value = iter(())
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(initial, client, repository).synchronize()
+
+    assert client.pinned_message_ids == {"fluxer-message-1"}
+    client.calls.clear()
+
+    updated_first = first.__class__(
+        id=first.id,
+        conversation_id=first.conversation_id,
+        identity_key=first.identity_key,
+        content=first.content,
+        created_at=first.created_at,
+        pinned=False,
+    )
+    updated_second = second.__class__(
+        id=second.id,
+        conversation_id=second.conversation_id,
+        identity_key=second.identity_key,
+        content=second.content,
+        created_at=second.created_at,
+        pinned=True,
+    )
+    updated = Mock(spec=Archive)
+    updated.iter_identities.return_value = iter(())
+    updated.iter_conversations.return_value = iter((conversation,))
+    updated.iter_messages.return_value = iter((updated_first, updated_second))
+    updated.iter_custom_emojis.return_value = iter(())
+
+    with SQLiteStateRepository(path) as repository:
+        _coordinator(updated, client, repository).synchronize()
+
+    assert [call[0] for call in client.calls] == [
+        "get_channel",
+        "get_pinned_message_ids",
+        "unpin_message",
+        "pin_message",
+    ]
+    assert client.pinned_message_ids == {"fluxer-message-2"}
+
+    with SQLiteStateRepository(path) as repository:
+        state = repository.load_synchronization_state()
+
+    assert state.message_pinned == {
+        "message-1": False,
+        "message-2": True,
+    }

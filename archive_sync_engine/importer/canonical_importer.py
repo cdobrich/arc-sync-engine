@@ -33,6 +33,7 @@ from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.importer.progress import ImportProgress
 from archive_sync_engine.importer.state import ImportState
 from archive_sync_engine.models import CanonicalMessage
+from archive_sync_engine.models.ids import MessageId
 from archive_sync_engine.rate_limit import OperationRateLimiter
 
 
@@ -86,6 +87,8 @@ class CanonicalImporter:
         attachments_downloaded = 0
         attachments_reused = 0
         existing_messages_by_conversation = existing_messages_by_conversation or {}
+        imported_message_ids_by_conversation: dict[str, set[str]] = {}
+        authoritative_pins_by_conversation: dict[str, set[str]] = {}
 
         if on_status is not None and incremental_refresh:
             on_status(
@@ -196,8 +199,11 @@ class CanonicalImporter:
 
         resume_reached = resume_state is None or incremental_refresh
 
-        conversations = source.iter_conversations()
-        conversation_total = len(conversations) if isinstance(conversations, Sized) else None
+        raw_conversations = source.iter_conversations()
+        conversation_total = (
+            len(raw_conversations) if isinstance(raw_conversations, Sized) else None
+        )
+        conversations = tuple(raw_conversations)
         if on_status is not None:
             on_status(
                 ImportProgress(
@@ -207,6 +213,12 @@ class CanonicalImporter:
                 )
             )
         conversation_count = 0
+        pin_getter = getattr(source, "iter_pinned_message_ids", None)
+        pin_getter_impl = getattr(type(source), "iter_pinned_message_ids", None)
+        has_authoritative_pin_getter = callable(pin_getter) and (
+            not isinstance(source, SourceAdapter)
+            or pin_getter_impl is not SourceAdapter.iter_pinned_message_ids
+        )
 
         for conversation in conversations:
 
@@ -239,6 +251,18 @@ class CanonicalImporter:
                     writer.upsert_conversation(conversation)
                 else:
                     writer.add_conversation(conversation)
+
+            # Pin state is channel-scoped mutable state. Snapshot the
+            # authoritative source pin collection before traversing the
+            # message window so message traversal/caching cannot change the
+            # state that this import run is reconciling against. The snapshot
+            # is deliberately independent of the incremental cursor.
+            if has_authoritative_pin_getter:
+                pinned_ids = pin_getter(conversation)
+                if pinned_ids is not None and isinstance(pinned_ids, Iterable):
+                    authoritative_pins_by_conversation[conversation_id] = {
+                        str(message_id) for message_id in pinned_ids
+                    }
 
             skipping_messages = (
                 resume_state is not None
@@ -311,6 +335,10 @@ class CanonicalImporter:
                     writer.upsert_message(message)
                 else:
                     writer.add_message(message)
+                imported_message_ids_by_conversation.setdefault(
+                    conversation_id,
+                    set(),
+                ).add(str(message.id))
                 message_count += 1
 
                 #
@@ -392,21 +420,71 @@ class CanonicalImporter:
                         ),
                     )
 
-                if on_refresh_cursor is not None:
+
+                if on_refresh_cursor is not None and not has_authoritative_pin_getter:
                     on_refresh_cursor(
                         conversation_id,
                         refresh_cursors[conversation_id],
                     )
+
+        # Reconcile pin state only after message writes have completed.  The
+        # source pin collection is authoritative channel metadata; applying it
+        # last prevents a stale ``message.pinned`` value from an incremental
+        # message window from overwriting the authoritative pin set.  The
+        # candidate IDs include both previously archived messages and messages
+        # touched during this run, so old pin changes and newly imported
+        # messages are handled by the same path.
+        current_conversations = {
+            str(conversation.id): conversation
+            for conversation in conversations
+        }
+        if has_authoritative_pin_getter:
+            for conversation_id, conversation in current_conversations.items():
+                pinned_set = authoritative_pins_by_conversation.get(conversation_id)
+                if pinned_set is None:
+                    # A source may expose the capability dynamically. If its
+                    # snapshot was unavailable, take one final authoritative
+                    # read rather than silently skipping pin reconciliation.
+                    pinned_ids = pin_getter(conversation)
+                    if pinned_ids is None or not isinstance(pinned_ids, Iterable):
+                        continue
+                    pinned_set = {str(message_id) for message_id in pinned_ids}
+                # Reconcile against the messages that are actually persisted
+                # in this writer transaction.  The coordinator's
+                # ``existing_messages_by_conversation`` snapshot is useful for
+                # deletion detection, but it is deliberately not the source of
+                # truth for pin reconciliation: a refresh can legitimately have
+                # an empty/stale snapshot (for example after a prior interrupted
+                # session), while the Archive database already contains older
+                # messages whose pin state changed.
+                persisted_messages = writer.iter_messages_for_conversation(
+                    conversation.id,
+                )
+                candidate_ids = {
+                    str(message.id)
+                    for message in persisted_messages
+                }
+                for message_id in sorted(candidate_ids):
+                    writer.update_message_pinned(
+                        MessageId(message_id),
+                        message_id in pinned_set,
+                    )
+            writer.commit()
+
+        # For adapters with authoritative pin metadata, the refresh cursor is
+        # only durable after canonical message data and pin metadata have both
+        # been committed.  This prevents a crash between message traversal
+        # and pin reconciliation from making the next refresh skip the
+        # affected message window.
+        if on_refresh_cursor is not None and has_authoritative_pin_getter:
+            for conversation_id, cursor in refresh_cursors.items():
+                on_refresh_cursor(conversation_id, cursor)
 
         if incremental_refresh and existing_messages_by_conversation:
             # Cursor-based traversal cannot reveal records deleted before the
             # refresh window.  Perform a complete source traversal solely to
             # detect deletions, while retaining the incremental traversal for
             # actual writes and attachment downloads.
-            current_conversations = {
-                str(conversation.id): conversation
-                for conversation in source.iter_conversations()
-            }
             for conversation_id, existing in existing_messages_by_conversation.items():
                 conversation = current_conversations.get(conversation_id)
                 if conversation is None:

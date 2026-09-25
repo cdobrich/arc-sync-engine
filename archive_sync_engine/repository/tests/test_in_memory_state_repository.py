@@ -149,10 +149,10 @@ def test_query_execution_log_rejects_negative_limit() -> None:
 def test_save_synchronization_state_replaces_snapshot_without_execution_log() -> None:
     repository = InMemoryStateRepository()
     state = SynchronizationState(
-        conversations={"conversation-1": Mock()},
+        message_pinned={"message-1": True},
     )
 
     repository.save_synchronization_state(state)
 
-    assert repository.load_synchronization_state() is state
+    assert repository.load_synchronization_state() == state
     assert repository.query_execution_log() == ()

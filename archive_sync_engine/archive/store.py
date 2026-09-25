@@ -792,6 +792,19 @@ class ArchiveStore:
             (str(message.id),),
         )
 
+    def update_message_pinned(
+        self,
+        message_id: MessageId,
+        pinned: bool,
+    ) -> None:
+        """Update only the canonical pinned component of one message."""
+        cursor = self._connection.execute(
+            "UPDATE messages SET pinned = ? WHERE message_id = ?",
+            (int(pinned), str(message_id)),
+        )
+        if cursor.rowcount != 1:
+            raise KeyError(f"Message {message_id} does not exist.")
+
     def delete_message(
         self,
         message_id: MessageId,
