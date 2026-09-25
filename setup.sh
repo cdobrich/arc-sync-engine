@@ -57,7 +57,7 @@ if [ "$1" = "dev" ]; then
   pip install -e "$PROJECT_DIR[dev]"
 else
   echo "Installing project dependencies from pyproject.toml..."
-  pip install -e "$PROJECT_DIR"
+  pip install -e "$PROJECT_DIR[sync]"
 fi
 
 echo ""
