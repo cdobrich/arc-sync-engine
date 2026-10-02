@@ -156,6 +156,54 @@ class CanonicalImporter:
                         )
                     )
 
+        # Materialize the source conversation boundary before persisting
+        # custom emojis or message data. A full import must not attempt to
+        # recreate a canonical conversation that is already present in the
+        # Archive. Keep identity traversal first so existing failure ordering
+        # and source-adapter lifecycle semantics remain unchanged.
+        conversations = tuple(source.iter_conversations())
+        conversation_total = len(conversations)
+
+        if not incremental_refresh and resume_state is None:
+            conversation_ids = tuple(str(conversation.id) for conversation in conversations)
+            conversation_id_counts: dict[str, int] = {}
+            for conversation_id in conversation_ids:
+                conversation_id_counts[conversation_id] = conversation_id_counts.get(
+                    conversation_id,
+                    0,
+                ) + 1
+            duplicate_ids = tuple(
+                conversation_id
+                for conversation_id in dict.fromkeys(conversation_ids)
+                if conversation_id_counts[conversation_id] > 1
+            )
+            if duplicate_ids:
+                preview = ", ".join(duplicate_ids[:5])
+                if len(duplicate_ids) > 5:
+                    preview += f", ... (+{len(duplicate_ids) - 5} more)"
+                raise ValueError(
+                    "Import preflight detected duplicate canonical conversation IDs "
+                    f"from the source: {preview}. The source traversal must yield "
+                    "each canonical conversation only once."
+                )
+
+            existing_ids = writer.existing_conversation_ids(conversation_ids)
+            existing_conversation_ids = tuple(
+                conversation_id
+                for conversation_id in conversation_ids
+                if conversation_id in existing_ids
+            )
+            if existing_conversation_ids:
+                preview = ", ".join(existing_conversation_ids[:5])
+                if len(existing_conversation_ids) > 5:
+                    preview += f", ... (+{len(existing_conversation_ids) - 5} more)"
+                raise ValueError(
+                    "Import preflight detected existing Archive conversations: "
+                    f"{preview}. A full import cannot recreate conversations already "
+                    "present in the Archive. If this is an existing Archive that you "
+                    "want to refresh, rerun with --resume."
+                )
+
         #
         # Custom emojis
         #
@@ -199,12 +247,6 @@ class CanonicalImporter:
 
         resume_reached = resume_state is None or incremental_refresh
 
-        # The importer already materializes the conversation collection before
-        # traversal. Count that materialized collection rather than requiring
-        # adapters to expose a sized iterator or performing a second discovery
-        # pass against the source.
-        conversations = tuple(source.iter_conversations())
-        conversation_total = len(conversations)
         if on_status is not None:
             on_status(
                 ImportProgress(

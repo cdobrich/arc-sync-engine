@@ -284,6 +284,45 @@ discord:
     assert not (archive_path / "manifest.json").exists()
 
 
+def test_import_cli_reports_existing_archive_conversation_conflict_with_resume_guidance(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: discord-secret
+  guild_id: 123
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.import_to_archive.side_effect = ValueError(
+        "Import preflight detected existing Archive conversations: conversation-001. "
+        "A full import cannot recreate conversations already present in the Archive. "
+        "If this is an existing Archive that you want to refresh, rerun with --resume."
+    )
+    registry = MagicMock()
+    registry.create.return_value = runtime
+
+    with patch("archive_sync_engine.cli.default_source_runtime_registry", return_value=registry):
+        with pytest.raises(SystemExit) as exc_info:
+            main(["import", "--config", str(config)])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "Import preflight detected existing Archive conversations: conversation-001." in captured.err
+    assert "rerun with --resume" in captured.err
+
+
 def test_import_cli_reports_connection_and_phase_status(tmp_path: Path, capsys) -> None:
     archive_path = tmp_path / "archive"
     ArchivePackage.initialize(ArchivePaths(archive_path))

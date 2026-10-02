@@ -118,3 +118,31 @@ def test_writer_records_incremental_transfer(
 
     finally:
         store.close()
+
+def test_writer_existing_conversation_ids_returns_only_existing_ids(
+    tmp_path: Path,
+) -> None:
+    """Bulk conversation lookup returns only IDs already persisted in the Archive."""
+    from archive_sync_engine.models import CanonicalConversation, ConversationType
+    from archive_sync_engine.models.ids import ConversationId
+
+    paths = ArchivePaths(root=tmp_path)
+    existing = CanonicalConversation(
+        id=ConversationId("conversation-existing"),
+        conversation_type=ConversationType.CHANNEL,
+        title="existing",
+    )
+
+    with ArchiveWriter(paths) as writer:
+        writer.add_conversation(existing)
+        writer.commit()
+
+        assert writer.existing_conversation_ids(
+            (
+                existing.id,
+                ConversationId("conversation-missing"),
+                existing.id,
+            )
+        ) == {"conversation-existing"}
+        assert writer.existing_conversation_ids(()) == set()
+

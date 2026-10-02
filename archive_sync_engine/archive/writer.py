@@ -20,6 +20,8 @@ delegated to ArchiveStore.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from archive_sync_engine.models import (
     CanonicalConversation,
     CanonicalCustomEmoji,
@@ -118,6 +120,20 @@ class ArchiveWriter:
     ) -> None:
         """Insert or refresh a canonical conversation."""
         self._store.upsert_conversation(conversation)
+
+    def conversation_exists(
+        self,
+        conversation_id: ConversationId,
+    ) -> bool:
+        """Return whether a canonical conversation already exists in the Archive."""
+        return self._store.get_conversation(conversation_id) is not None
+
+    def existing_conversation_ids(
+        self,
+        conversation_ids: Iterable[ConversationId],
+    ) -> set[str]:
+        """Return the subset of supplied conversation IDs already persisted."""
+        return self._store.existing_conversation_ids(conversation_ids)
 
     #
     # Identities

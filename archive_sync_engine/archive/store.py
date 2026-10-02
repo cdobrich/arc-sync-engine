@@ -513,6 +513,27 @@ class ArchiveStore:
             self._conversation_parameters(conversation),
         )
 
+    def existing_conversation_ids(
+        self,
+        conversation_ids: Iterable[ConversationId],
+    ) -> set[str]:
+        """Return canonical conversation IDs already present in the Archive."""
+        ids = tuple(dict.fromkeys(str(conversation_id) for conversation_id in conversation_ids))
+        if not ids:
+            return set()
+
+        existing: set[str] = set()
+        # Keep each IN clause comfortably below SQLite's host-parameter limit.
+        for offset in range(0, len(ids), 500):
+            chunk = ids[offset : offset + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            cursor = self._connection.execute(
+                f"SELECT conversation_id FROM conversations WHERE conversation_id IN ({placeholders})",
+                chunk,
+            )
+            existing.update(str(row[0]) for row in cursor.fetchall())
+        return existing
+
     def get_conversation(
         self,
         conversation_id: ConversationId,

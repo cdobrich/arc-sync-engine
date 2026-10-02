@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from archive_sync_engine.adapters import SourceAdapter
 from archive_sync_engine.adapters.source import SourceRefreshCursor
-from archive_sync_engine.archive import Archive
+from archive_sync_engine.archive import Archive, ArchivePackage
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.archive.writer import ArchiveWriter
 from archive_sync_engine.asset_store import AssetStore
@@ -392,6 +394,85 @@ def test_canonical_importer_reports_resume_conversation_progress_from_checkpoint
         (2, 2, 2),
     ]
     assert conversation_events[1].detail == "Archive"
+
+
+def test_full_import_preflights_existing_conversation_before_persistence(
+    tmp_path: Path,
+) -> None:
+    """A full import reports an actionable conflict before writing source data."""
+    source = FakeSourceAdapter(b"attachment-content")
+    paths = ArchivePaths(root=tmp_path)
+    coordinator = CanonicalImportCoordinator(paths)
+
+    coordinator.run(source)
+
+    with pytest.raises(
+        ValueError,
+        match="Import preflight detected existing Archive conversations.*--resume",
+    ):
+        coordinator.run(source)
+
+    with Archive(paths) as archive:
+        assert tuple(str(identity.identity_key) for identity in archive.iter_identities()) == (
+            "user-001",
+        )
+        assert tuple(str(conversation.id) for conversation in archive.iter_conversations()) == (
+            "conversation-001",
+        )
+        assert tuple(str(message.id) for message in archive.iter_messages()) == (
+            "message-001",
+        )
+
+
+def test_full_import_rejects_duplicate_source_conversation_ids_before_writes(
+    tmp_path: Path,
+) -> None:
+    """Duplicate source IDs are diagnosed before any conversation is persisted."""
+    source = FakeSourceAdapter(b"attachment-content")
+    original_iter_conversations = source.iter_conversations
+
+    def duplicate_conversations():
+        conversation = next(iter(original_iter_conversations()))
+        yield conversation
+        yield conversation
+
+    source.iter_conversations = duplicate_conversations
+    paths = ArchivePaths(root=tmp_path)
+    ArchivePackage.initialize(paths)
+
+    with pytest.raises(ValueError, match="duplicate canonical conversation IDs"):
+        CanonicalImportCoordinator(paths).run(source)
+
+    with Archive(paths) as archive:
+        assert tuple(archive.iter_conversations()) == ()
+        assert tuple(archive.iter_messages()) == ()
+
+
+def test_full_import_allows_archive_with_only_unrelated_conversations(
+    tmp_path: Path,
+) -> None:
+    """An unrelated existing conversation does not trigger the duplicate preflight."""
+    source = FakeSourceAdapter(b"attachment-content")
+    paths = ArchivePaths(root=tmp_path)
+
+    unrelated = CanonicalConversation(
+        id=ConversationId("unrelated-conversation"),
+        conversation_type=ConversationType.CHANNEL,
+        title="Unrelated",
+    )
+    with ArchiveWriter(paths) as writer:
+        writer.add_conversation(unrelated)
+        writer.commit()
+
+    CanonicalImportCoordinator(paths).run(source)
+
+    with Archive(paths) as archive:
+        assert {
+            str(conversation.id) for conversation in archive.iter_conversations()
+        } == {
+            "conversation-001",
+            "unrelated-conversation",
+        }
 
 
 def test_incremental_refresh_reuses_content_addressed_attachment_without_download(
