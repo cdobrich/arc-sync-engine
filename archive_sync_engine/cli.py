@@ -1649,4 +1649,4 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.exit(1, f"{parser.prog}: error: Unexpected application error; consult the log for details.\n")
 
     parser.exit(2, f"{parser.prog}: error: No command was selected.\n")
-    return 2
+
