@@ -1122,9 +1122,26 @@ class DiscordSourceAdapter(SourceAdapter):
         for guild_id in self._guild_ids:
             guild = self._client.get_guild(guild_id)
             if guild is None:
-                guild = self._run(
-                    self._client.fetch_guild(guild_id)
-                )
+                try:
+                    guild = self._run(
+                        self._client.fetch_guild(guild_id)
+                    )
+                except Exception as exc:
+                    # discord.py raises NotFound (HTTP 404, Discord code
+                    # 10004) when this bot cannot resolve the configured guild.
+                    # Translate only this known resource error; authentication,
+                    # network, and unexpected failures must retain their meaning.
+                    if (
+                        getattr(exc, "status", None) == 404
+                        and getattr(exc, "code", None) == 10004
+                    ):
+                        raise NotFoundError(
+                            f"Discord guild {guild_id} was not found or is not "
+                            "accessible to this bot. Verify discord.guild_id in "
+                            "the config is the server's numeric ID and that the "
+                            "configured bot account is a member of that server."
+                        ) from exc
+                    raise
 
             if guild is None:
                 raise NotFoundError(

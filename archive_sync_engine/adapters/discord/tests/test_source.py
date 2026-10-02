@@ -1309,3 +1309,39 @@ def test_iter_custom_emojis_archives_reaction_emoji_from_another_guild() -> None
     assert [str(item.id) for item in emojis] == ["1513447466333110352"]
     assert emojis[0].name == "mewheart"
     assert adapter.custom_emoji_bytes(emojis[0]) == content
+
+
+
+def test_unknown_discord_guild_becomes_actionable_adapter_error() -> None:
+    class UnknownGuildError(Exception):
+        status = 404
+        code = 10004
+
+    class MissingGuildClient(FakeClient):
+        async def fetch_guild(self, guild_id: int):
+            raise UnknownGuildError("Unknown Guild")
+
+    adapter = DiscordSourceAdapter(MissingGuildClient(FakeGuild()), [590473181571579900])
+
+    with pytest.raises(NotFoundError) as error:
+        list(adapter._iter_guilds())
+
+    message = str(error.value)
+    assert "590473181571579900" in message
+    assert "discord.guild_id" in message
+    assert "member of that server" in message
+
+
+def test_unrelated_discord_fetch_error_is_not_rewritten() -> None:
+    class ForbiddenError(Exception):
+        status = 403
+        code = 50001
+
+    class ForbiddenGuildClient(FakeClient):
+        async def fetch_guild(self, guild_id: int):
+            raise ForbiddenError("Missing Access")
+
+    adapter = DiscordSourceAdapter(ForbiddenGuildClient(FakeGuild()), [999])
+
+    with pytest.raises(ForbiddenError, match="Missing Access"):
+        list(adapter._iter_guilds())
