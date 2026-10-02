@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Mapping, Sequence
+
+from tqdm import tqdm
 
 from archive_sync_engine.logging_support import (
     configure_logging,
@@ -873,9 +876,41 @@ def _run_init(args: argparse.Namespace) -> int:
     return 0
 
 
+_IMPORT_PROGRESS_BAR: tqdm | None = None
+
+
+def _import_progress_is_tty() -> bool:
+    return bool(getattr(sys.stdout, "isatty", lambda: False)())
+
+
+def _close_import_progress_bar() -> None:
+    global _IMPORT_PROGRESS_BAR
+    if _IMPORT_PROGRESS_BAR is not None:
+        _IMPORT_PROGRESS_BAR.close()
+        _IMPORT_PROGRESS_BAR = None
+
+
+def _ensure_import_progress_bar(total: int) -> tqdm | None:
+    global _IMPORT_PROGRESS_BAR
+    if not _import_progress_is_tty() or total <= 0:
+        return None
+    if _IMPORT_PROGRESS_BAR is None or _IMPORT_PROGRESS_BAR.total != total:
+        _close_import_progress_bar()
+        _IMPORT_PROGRESS_BAR = tqdm(
+            total=total,
+            desc="Importing conversations",
+            unit="conversation",
+            dynamic_ncols=True,
+            file=sys.stdout,
+        )
+    return _IMPORT_PROGRESS_BAR
+
+
 def _print_import_progress(progress: ImportProgress) -> None:
     """Render adapter-neutral import progress without exposing secrets."""
+    global _IMPORT_PROGRESS_BAR
     if progress.phase == "refresh":
+        _close_import_progress_bar()
         mode = progress.mode or "unknown"
         if progress.traversal == "completed":
             details = [f"examined={progress.examined or 0}"]
@@ -903,6 +938,7 @@ def _print_import_progress(progress: ImportProgress) -> None:
         return
 
     if progress.phase == "identities":
+        _close_import_progress_bar()
         if progress.current == 0:
             print("Importing identities...", flush=True)
         elif progress.detail:
@@ -916,6 +952,47 @@ def _print_import_progress(progress: ImportProgress) -> None:
         return
 
     if progress.phase == "conversations":
+        if (
+            progress.total is not None
+            and progress.current is not None
+            and progress.completed is not None
+        ):
+            completed = max(0, min(progress.completed, progress.total))
+            remaining = max(0, progress.total - completed)
+            detail = progress.detail or ""
+            bar = _ensure_import_progress_bar(progress.total)
+            if bar is not None:
+                delta = completed - bar.n
+                if delta > 0:
+                    bar.update(delta)
+                bar.set_postfix_str(
+                    (f"current={detail}" if detail else f"remaining={remaining}"),
+                    refresh=True,
+                )
+                if completed >= progress.total:
+                    bar.close()
+                    _IMPORT_PROGRESS_BAR = None
+                return
+
+            if completed < progress.current:
+                print(
+                    f"Importing conversation {progress.current} of {progress.total} "
+                    f"({completed} completed, {remaining} remaining)"
+                    + (f": {detail}" if detail else "")
+                    + "...",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"Imported conversation {progress.current} of {progress.total} "
+                    f"({completed} completed, {remaining} remaining)"
+                    + (f": {detail}" if detail else "")
+                    + ".",
+                    flush=True,
+                )
+            return
+
+        _close_import_progress_bar()
         label = "Importing conversations"
         if progress.total is not None:
             label += f" {progress.current} of {progress.total}"
@@ -927,6 +1004,16 @@ def _print_import_progress(progress: ImportProgress) -> None:
         return
 
     if progress.phase == "messages":
+        bar = _IMPORT_PROGRESS_BAR
+        if bar is not None:
+            detail = progress.detail or ""
+            message_status = f"messages={progress.current}"
+            if progress.total is not None:
+                message_status += f"/{progress.total}"
+            if detail:
+                message_status += f" current={detail}"
+            bar.set_postfix_str(message_status, refresh=True)
+            return
         label = "Importing messages"
         if progress.total is not None:
             label += f" {progress.current} of {progress.total}"
@@ -938,6 +1025,16 @@ def _print_import_progress(progress: ImportProgress) -> None:
         return
 
     if progress.phase == "attachments":
+        bar = _IMPORT_PROGRESS_BAR
+        if bar is not None:
+            detail = progress.detail or ""
+            attachment_status = f"attachment={progress.current}"
+            if progress.total is not None:
+                attachment_status += f"/{progress.total}"
+            if detail:
+                attachment_status += f" {detail}"
+            bar.set_postfix_str(attachment_status, refresh=True)
+            return
         label = "Importing attachment"
         if progress.total is not None:
             label += f" {progress.current} of {progress.total}"
@@ -948,6 +1045,7 @@ def _print_import_progress(progress: ImportProgress) -> None:
         print(f"{label}...", flush=True)
         return
 
+    _close_import_progress_bar()
     print(f"Import phase: {progress.phase}", flush=True)
 
 
@@ -1057,14 +1155,17 @@ def _run_import(args: argparse.Namespace) -> int:
         f"Initiating phase: import {adapter_name} → Archive.",
         flush=True,
     )
-    with runtime:
-        import_report = runtime.import_to_archive(
-            paths,
-            resume=args.resume,
-            on_status=_print_import_progress,
-            between_messages_seconds=setup.between_messages_seconds,
-            between_channels_seconds=setup.between_channels_seconds,
-        )
+    try:
+        with runtime:
+            import_report = runtime.import_to_archive(
+                paths,
+                resume=args.resume,
+                on_status=_print_import_progress,
+                between_messages_seconds=setup.between_messages_seconds,
+                between_channels_seconds=setup.between_channels_seconds,
+            )
+    finally:
+        _close_import_progress_bar()
 
     print(
         "Import completed: "

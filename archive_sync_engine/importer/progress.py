@@ -11,12 +11,15 @@ class ImportProgress:
 
     ``phase`` is intentionally adapter-neutral. ``current`` and ``total``
     are optional because a source may expose a stream whose size cannot be
-    known without an additional acquisition pass.
+    known without an additional acquisition pass. For conversation progress,
+    ``current`` identifies the conversation being processed and ``completed``
+    identifies how many conversations have finished successfully.
     """
 
     phase: str
     current: int | None = None
     total: int | None = None
+    completed: int | None = None
     detail: str | None = None
     mode: str | None = None
     cursor: str | None = None

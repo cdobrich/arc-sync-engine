@@ -321,19 +321,77 @@ def test_canonical_importer_reports_user_facing_status_without_source_specific_f
         ("refresh", None, None),
         ("identities", 0, None),
         ("identities", 1, None),
-        ("conversations", 0, None),
-        ("conversations", 1, None),
+        ("conversations", 0, 1),
+        ("conversations", 1, 1),
         ("messages", 0, None),
         ("attachments", 1, 1),
         ("messages", 1, None),
+        ("conversations", 1, 1),
         ("refresh", None, None),
     ]
     assert statuses[0].mode == "full"
     assert statuses[-1].traversal == "completed"
     assert statuses[2].detail == "user-001"
     assert statuses[4].detail == "Test Conversation"
+    assert statuses[4].completed == 0
+    assert statuses[8].completed == 1
     assert statuses[6].detail == "hello.txt"
     assert statuses[7].detail == "message-001"
+
+
+def test_canonical_importer_reports_resume_conversation_progress_from_checkpoint(
+    tmp_path: Path,
+) -> None:
+    class TwoConversationSource(FakeSourceAdapter):
+        def __init__(self) -> None:
+            super().__init__(b"attachment-content")
+            self._conversation_two = CanonicalConversation(
+                id=ConversationId("conversation-002"),
+                conversation_type=ConversationType.CHANNEL,
+                title="Archive",
+            )
+            self._message_two = CanonicalMessage(
+                id=MessageId("message-002"),
+                conversation_id=self._conversation_two.id,
+                identity_key=self._identity.identity_key,
+                content="Second conversation",
+                created_at=datetime(2026, 7, 30, 19, 0, tzinfo=timezone.utc),
+            )
+
+        def iter_conversations(self):
+            return (self._conversation, self._conversation_two)
+
+        def iter_messages(self, conversation):
+            if conversation.id == self._conversation.id:
+                return (self._message,)
+            return (self._message_two,)
+
+    source = TwoConversationSource()
+    statuses = []
+
+    with ArchiveWriter(ArchivePaths(root=tmp_path)) as writer:
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=AssetStore(tmp_path),
+            on_status=statuses.append,
+            resume_state=ImportState(
+                payload={
+                    "conversation_id": "conversation-002",
+                    "message_id": "message-002",
+                }
+            ),
+        )
+
+    conversation_events = [
+        event for event in statuses if event.phase == "conversations"
+    ]
+    assert [(event.current, event.total, event.completed) for event in conversation_events] == [
+        (0, 2, 0),
+        (2, 2, 1),
+        (2, 2, 2),
+    ]
+    assert conversation_events[1].detail == "Archive"
 
 
 def test_incremental_refresh_reuses_content_addressed_attachment_without_download(

@@ -199,17 +199,19 @@ class CanonicalImporter:
 
         resume_reached = resume_state is None or incremental_refresh
 
-        raw_conversations = source.iter_conversations()
-        conversation_total = (
-            len(raw_conversations) if isinstance(raw_conversations, Sized) else None
-        )
-        conversations = tuple(raw_conversations)
+        # The importer already materializes the conversation collection before
+        # traversal. Count that materialized collection rather than requiring
+        # adapters to expose a sized iterator or performing a second discovery
+        # pass against the source.
+        conversations = tuple(source.iter_conversations())
+        conversation_total = len(conversations)
         if on_status is not None:
             on_status(
                 ImportProgress(
                     phase="conversations",
                     current=0,
                     total=conversation_total,
+                    completed=0,
                 )
             )
         conversation_count = 0
@@ -228,15 +230,9 @@ class CanonicalImporter:
 
             conversation_id = str(conversation.id)
             conversation_count += 1
-            if on_status is not None:
-                on_status(
-                    ImportProgress(
-                        phase="conversations",
-                        current=conversation_count,
-                        total=conversation_total,
-                        detail=str(getattr(conversation, "title", None) or conversation.id),
-                    )
-                )
+            conversation_detail = str(
+                getattr(conversation, "title", None) or conversation.id
+            )
 
             resume_conversation = False
             if resume_state is not None and not resume_reached:
@@ -244,7 +240,21 @@ class CanonicalImporter:
                     resume_reached = True
                     resume_conversation = True
                 else:
+                    # Conversations before the checkpoint were already
+                    # completed by the interrupted run. They are not being
+                    # processed again during this resume operation.
                     continue
+
+            if on_status is not None:
+                on_status(
+                    ImportProgress(
+                        phase="conversations",
+                        current=conversation_count,
+                        total=conversation_total,
+                        completed=conversation_count - 1,
+                        detail=conversation_detail,
+                    )
+                )
 
             if not resume_conversation:
                 if incremental_refresh:
@@ -426,6 +436,17 @@ class CanonicalImporter:
                         conversation_id,
                         refresh_cursors[conversation_id],
                     )
+
+            if on_status is not None:
+                on_status(
+                    ImportProgress(
+                        phase="conversations",
+                        current=conversation_count,
+                        total=conversation_total,
+                        completed=conversation_count,
+                        detail=conversation_detail,
+                    )
+                )
 
         # Reconcile pin state only after message writes have completed.  The
         # source pin collection is authoritative channel metadata; applying it

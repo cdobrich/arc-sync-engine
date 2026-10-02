@@ -35,7 +35,24 @@ def test_print_import_progress_renders_adapter_neutral_phases(capsys) -> None:
     from archive_sync_engine.importer.progress import ImportProgress
 
     _print_import_progress(ImportProgress(phase="identities", current=1, detail="user-1"))
-    _print_import_progress(ImportProgress(phase="conversations", current=2, total=4, detail="General"))
+    _print_import_progress(
+        ImportProgress(
+            phase="conversations",
+            current=2,
+            total=4,
+            completed=1,
+            detail="General",
+        )
+    )
+    _print_import_progress(
+        ImportProgress(
+            phase="conversations",
+            current=2,
+            total=4,
+            completed=2,
+            detail="General",
+        )
+    )
     _print_import_progress(ImportProgress(phase="messages", current=3, total=10, detail="message-3"))
     _print_import_progress(ImportProgress(phase="attachments", current=1, total=2, detail="photo.png"))
     _print_import_progress(
@@ -62,11 +79,144 @@ def test_print_import_progress_renders_adapter_neutral_phases(capsys) -> None:
 
     output = capsys.readouterr().out
     assert "Importing identity 1 (user-1)..." in output
-    assert "Importing conversations 2 of 4: General..." in output
+    assert "Importing conversation 2 of 4 (1 completed, 3 remaining): General..." in output
+    assert "Imported conversation 2 of 4 (2 completed, 2 remaining): General." in output
     assert "Importing messages 3 of 10 [message-3]..." in output
     assert "Importing attachment 1 of 2: photo.png..." in output
     assert "Import refresh: mode=incremental; traversal=adapter_incremental; cursor=message-42; lookback=604800s; conversation-1." in output
     assert "Import refresh completed: mode=incremental; examined=3; attachments_downloaded=1; attachments_reused=2." in output
+
+
+def test_print_import_progress_uses_tqdm_for_conversation_progress(monkeypatch) -> None:
+    from archive_sync_engine import cli
+    from archive_sync_engine.cli import _print_import_progress
+    from archive_sync_engine.importer.progress import ImportProgress
+
+    class FakeTqdm:
+        instances = []
+
+        def __init__(self, *, total, desc, unit, dynamic_ncols, file):
+            self.total = total
+            self.desc = desc
+            self.unit = unit
+            self.dynamic_ncols = dynamic_ncols
+            self.file = file
+            self.n = 0
+            self.updates = []
+            self.postfixes = []
+            self.closed = False
+            self.__class__.instances.append(self)
+
+        def update(self, amount):
+            self.n += amount
+            self.updates.append(amount)
+
+        def set_postfix_str(self, value, *, refresh):
+            self.postfixes.append((value, refresh))
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(cli, "tqdm", FakeTqdm)
+    monkeypatch.setattr(cli, "_import_progress_is_tty", lambda: True)
+    cli._IMPORT_PROGRESS_BAR = None
+
+    _print_import_progress(
+        ImportProgress(
+            phase="conversations",
+            current=1,
+            total=3,
+            completed=0,
+            detail="General",
+        )
+    )
+    _print_import_progress(
+        ImportProgress(
+            phase="messages",
+            current=7,
+            total=10,
+            detail="message-7",
+        )
+    )
+    _print_import_progress(
+        ImportProgress(
+            phase="conversations",
+            current=1,
+            total=3,
+            completed=1,
+            detail="General",
+        )
+    )
+
+    bar = FakeTqdm.instances[0]
+    assert bar.total == 3
+    assert bar.desc == "Importing conversations"
+    assert bar.unit == "conversation"
+    assert bar.dynamic_ncols is True
+    assert bar.updates == [1]
+    assert bar.postfixes == [
+        ("current=General", True),
+        ("messages=7/10 current=message-7", True),
+        ("current=General", True),
+    ]
+    assert bar.closed is False
+    assert cli._IMPORT_PROGRESS_BAR is bar
+
+    _print_import_progress(
+        ImportProgress(
+            phase="conversations",
+            current=3,
+            total=3,
+            completed=3,
+            detail="Last",
+        )
+    )
+    assert bar.updates == [1, 2]
+    assert bar.closed is True
+    assert cli._IMPORT_PROGRESS_BAR is None
+
+
+def test_print_import_progress_closes_tqdm_before_non_conversation_output(monkeypatch, capsys) -> None:
+    from archive_sync_engine import cli
+    from archive_sync_engine.cli import _print_import_progress
+    from archive_sync_engine.importer.progress import ImportProgress
+
+    class FakeTqdm:
+        def __init__(self, **kwargs):
+            self.total = kwargs["total"]
+            self.n = 0
+            self.closed = False
+
+        def update(self, amount):
+            self.n += amount
+
+        def set_postfix_str(self, value, *, refresh):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(cli, "tqdm", FakeTqdm)
+    monkeypatch.setattr(cli, "_import_progress_is_tty", lambda: True)
+    cli._IMPORT_PROGRESS_BAR = None
+
+    _print_import_progress(
+        ImportProgress(
+            phase="conversations",
+            current=1,
+            total=2,
+            completed=0,
+            detail="General",
+        )
+    )
+    bar = cli._IMPORT_PROGRESS_BAR
+    assert bar is not None
+
+    _print_import_progress(ImportProgress(phase="refresh", mode="full"))
+
+    assert bar.closed is True
+    assert cli._IMPORT_PROGRESS_BAR is None
+    assert "Import refresh: mode=full." in capsys.readouterr().out
 
 
 def test_import_cli_auto_initializes_new_archive(tmp_path: Path, capsys) -> None:
