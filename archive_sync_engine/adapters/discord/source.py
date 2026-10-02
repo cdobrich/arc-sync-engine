@@ -81,6 +81,8 @@ class DiscordSourceAdapter(SourceAdapter):
         self._attachment_bytes: dict[str, bytes] = {}
         self._custom_emoji_bytes: dict[str, bytes] = {}
         self._runner: Callable[[Awaitable[Any]], Any] | None = None
+        self._identity_scan_progress_callback: Callable[[int, str], None] | None = None
+        self._identity_scan_messages_scanned = 0
 
     @property
     def name(self) -> str:
@@ -96,6 +98,24 @@ class DiscordSourceAdapter(SourceAdapter):
         Older mutations remain an inherent source-platform limitation.
         """
         return timedelta(days=7)
+
+    def set_identity_scan_progress_callback(
+        self,
+        callback: Callable[[int, str], None] | None,
+    ) -> None:
+        """Set an optional callback for long-running full identity discovery.
+
+        ``current`` is the number of historical messages scanned. A zero value
+        marks a phase or channel boundary; ``detail`` explains the current
+        operation. This deliberately avoids importing CLI/progress types into
+        the adapter layer.
+        """
+        self._identity_scan_progress_callback = callback
+
+    def _report_identity_scan_progress(self, current: int, detail: str) -> None:
+        callback = self._identity_scan_progress_callback
+        if callback is not None:
+            callback(current, detail)
 
     def iter_identities(self) -> Iterable[CanonicalIdentity]:
         """Yield every identity referenced by the configured Discord scope.
@@ -113,21 +133,41 @@ class DiscordSourceAdapter(SourceAdapter):
         masquerade as a complete source traversal.
         """
         identities: dict[str, CanonicalIdentity] = {}
+        self._identity_scan_messages_scanned = 0
+        self._report_identity_scan_progress(0, "Loading Discord guild members...")
 
         for guild in self._iter_guilds():
+            self._report_identity_scan_progress(
+                0,
+                f"Loading members for guild {(getattr(guild, 'name', None) or getattr(guild, 'id', 'unknown'))}...",
+            )
             members = self._run(
                 self._collect_guild_members(guild),
             )
             for member in members:
                 identity = self._canonical_identity(member)
                 identities.setdefault(str(identity.identity_key), identity)
+            self._report_identity_scan_progress(
+                0,
+                f"Loaded {len(members)} cached/fetched members for guild "
+                f"{(getattr(guild, 'name', None) or getattr(guild, 'id', 'unknown'))}.",
+            )
 
+        self._report_identity_scan_progress(
+            0,
+            "Discovering Discord channels and threads before scanning history...",
+        )
         for conversation in self._discover_conversations():
             channel = self._conversation_channels[str(conversation.id)]
             if getattr(channel, "history", None) is None:
                 continue
+            channel_name = str(getattr(channel, "name", conversation.id))
+            self._report_identity_scan_progress(
+                self._identity_scan_messages_scanned,
+                f"Scanning #{channel_name} ({conversation.id}) history...",
+            )
             messages = self._run(
-                self._collect_raw_messages(channel),
+                self._collect_raw_messages(channel, identity_scan=True),
             )
             self._message_cache[str(conversation.id)] = tuple(messages)
 
@@ -140,20 +180,18 @@ class DiscordSourceAdapter(SourceAdapter):
                         identity,
                     )
 
-                for reaction_group in getattr(message, "reactions", ()):
-                    users = getattr(reaction_group, "users", None)
-                    if users is None:
-                        raise AdapterError(
-                            "Discord reaction does not expose reacting users."
-                        )
-                    async_identities = self._run(
-                        self._collect_reaction_identities(users),
-                    )
-                    for identity in async_identities:
-                        identities.setdefault(
-                            str(identity.identity_key),
-                            identity,
-                        )
+            # Reaction-user pagination can take substantially longer than the
+            # message-history traversal above. Keep it in one coroutine per
+            # channel and report its own progress instead of appearing idle
+            # after the final historical-message counter.
+            reaction_identities = self._run(
+                self._collect_channel_reaction_identities(
+                    messages,
+                    channel_name=channel_name,
+                ),
+            )
+            for identity in reaction_identities:
+                identities.setdefault(str(identity.identity_key), identity)
 
         yield from (identities[key] for key in sorted(identities))
 
@@ -403,15 +441,27 @@ class DiscordSourceAdapter(SourceAdapter):
                 f"Discord attachment {attachment.id} is not available."
             ) from exc
 
-    @staticmethod
     async def _collect_raw_messages(
+        self,
         channel: Any,
+        *,
+        identity_scan: bool = False,
     ) -> list[Any]:
+        """Collect a complete channel history, optionally reporting progress."""
         history = channel.history(
             limit=None,
             oldest_first=True,
         )
-        return [message async for message in history]
+        messages: list[Any] = []
+        async for message in history:
+            messages.append(message)
+            if identity_scan:
+                self._identity_scan_messages_scanned += 1
+                self._report_identity_scan_progress(
+                    self._identity_scan_messages_scanned,
+                    f"Scanning Discord history in #{(getattr(channel, 'name', None) or getattr(channel, 'id', 'unknown'))}",
+                )
+        return messages
 
     async def _canonicalize_cached_messages(
         self,
@@ -436,6 +486,68 @@ class DiscordSourceAdapter(SourceAdapter):
             tuple(messages),
             channel,
         )
+
+    async def _collect_channel_reaction_identities(
+        self,
+        messages: Iterable[Any],
+        *,
+        channel_name: str,
+    ) -> list[CanonicalIdentity]:
+        """Collect historical reaction actors while reporting API pagination.
+
+        Message history and reaction-user history are separate Discord API
+        traversals. In particular, ``Reaction.users(limit=None)`` may paginate
+        many users after message scanning has already reached the end of a
+        channel. Progress here makes that work observable without truncating
+        the canonical identity set.
+        """
+        message_list = tuple(messages)
+        reaction_count = sum(
+            len(getattr(message, "reactions", ()) or ())
+            for message in message_list
+        )
+        identities: dict[str, CanonicalIdentity] = {}
+        reactions_scanned = 0
+        users_scanned = 0
+        self._report_identity_scan_progress(
+            0,
+            f"Resolving reaction users in #{channel_name} "
+            f"({reaction_count} reaction groups across {len(message_list)} messages)...",
+        )
+
+        for message in message_list:
+            for reaction_group in getattr(message, "reactions", ()) or ():
+                users = getattr(reaction_group, "users", None)
+                if users is None:
+                    raise AdapterError(
+                        "Discord reaction does not expose reacting users."
+                    )
+                async for user in users(limit=None):
+                    identity = self._canonical_identity(user)
+                    identities.setdefault(str(identity.identity_key), identity)
+                    users_scanned += 1
+                    if users_scanned % 100 == 0:
+                        self._report_identity_scan_progress(
+                            0,
+                            f"Resolved {users_scanned} reaction users in "
+                            f"#{channel_name}; processed {reactions_scanned} "
+                            f"of {reaction_count} reaction groups...",
+                        )
+                reactions_scanned += 1
+                if reactions_scanned % 25 == 0:
+                    self._report_identity_scan_progress(
+                        0,
+                        f"Processed {reactions_scanned} of {reaction_count} "
+                        f"reaction groups in #{channel_name}; discovered "
+                        f"{users_scanned} reaction users...",
+                    )
+
+        self._report_identity_scan_progress(
+            0,
+            f"Finished reaction identity discovery in #{channel_name}: "
+            f"{reactions_scanned} reaction groups and {users_scanned} users.",
+        )
+        return list(identities.values())
 
     @staticmethod
     async def _collect_reaction_identities(

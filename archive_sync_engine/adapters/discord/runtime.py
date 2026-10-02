@@ -227,12 +227,31 @@ class DiscordSourceRuntime:
                 between_messages_seconds=between_messages_seconds,
                 between_channels_seconds=between_channels_seconds,
             )
-        return CanonicalImportCoordinator(
-            archive_paths,
-        ).run(
+        progress_setter = getattr(
             self.adapter,
-            **run_kwargs,
+            "set_identity_scan_progress_callback",
+            None,
         )
+        if callable(progress_setter) and on_status is not None:
+            progress_setter(
+                lambda current, detail: on_status(
+                    ImportProgress(
+                        phase="identity_scan",
+                        current=current,
+                        detail=detail,
+                    )
+                )
+            )
+        try:
+            return CanonicalImportCoordinator(
+                archive_paths,
+            ).run(
+                self.adapter,
+                **run_kwargs,
+            )
+        finally:
+            if callable(progress_setter):
+                progress_setter(None)
 
     def close(self) -> None:
         """Close the Discord client and its runtime-owned event loop."""

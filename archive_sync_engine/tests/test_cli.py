@@ -87,6 +87,30 @@ def test_print_import_progress_renders_adapter_neutral_phases(capsys) -> None:
     assert "Import refresh completed: mode=incremental; examined=3; attachments_downloaded=1; attachments_reused=2." in output
 
 
+def test_print_import_progress_reports_identity_discovery(capsys) -> None:
+    from archive_sync_engine.cli import _print_import_progress
+    from archive_sync_engine.importer import ImportProgress
+
+    _print_import_progress(
+        ImportProgress(
+            phase="identity_scan",
+            current=0,
+            detail="Scanning #general (discord:guild:1:channel:2) history...",
+        )
+    )
+    _print_import_progress(
+        ImportProgress(
+            phase="identity_scan",
+            current=100,
+            detail="Scanning Discord history in #general",
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert "Identity discovery: Scanning #general" in output
+    assert "scanned 100 historical messages" in output
+
+
 def test_print_import_progress_uses_tqdm_for_conversation_progress(monkeypatch) -> None:
     from archive_sync_engine import cli
     from archive_sync_engine.cli import _print_import_progress

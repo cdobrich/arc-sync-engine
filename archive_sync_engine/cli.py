@@ -937,6 +937,19 @@ def _print_import_progress(progress: ImportProgress) -> None:
         print("Import refresh: " + "; ".join(details) + ".", flush=True)
         return
 
+    if progress.phase == "identity_scan":
+        _close_import_progress_bar()
+        if progress.current is None or progress.current == 0:
+            if progress.detail:
+                print(f"Identity discovery: {progress.detail}", flush=True)
+        elif progress.current % 100 == 0:
+            print(
+                f"Identity discovery: scanned {progress.current} historical messages; "
+                f"{progress.detail or 'continuing channel history scan'}...",
+                flush=True,
+            )
+        return
+
     if progress.phase == "identities":
         _close_import_progress_bar()
         if progress.current == 0:

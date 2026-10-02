@@ -251,9 +251,11 @@ def test_discord_source_runtime_can_import_empty_scope_into_archive(
 
     paths = ArchivePaths(tmp_path / "archive")
     runtime = DiscordSourceRuntime(FakeClient(), guild_ids=(1,))
+    statuses = []
 
-    runtime.import_to_archive(paths)
+    runtime.import_to_archive(paths, on_status=statuses.append)
 
+    assert any(status.phase == "identity_scan" for status in statuses)
     assert paths.database.exists()
     assert paths.session.exists()
 

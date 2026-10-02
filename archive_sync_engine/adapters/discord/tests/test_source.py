@@ -899,6 +899,65 @@ def test_iter_identities_reuses_historical_message_scan_for_message_import() -> 
     assert channel.history_calls == 1
 
 
+def test_iter_identities_reports_progress_while_scanning_history() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(99, "HistoricalAuthor")
+    channel = MessageChannel(10, "history", 1, created)
+    channel._messages = tuple(
+        FakeMessage(index, channel, user, created + timedelta(seconds=index), f"m-{index}")
+        for index in range(1, 4)
+    )
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    events: list[tuple[int, str]] = []
+    adapter.set_identity_scan_progress_callback(
+        lambda current, detail: events.append((current, detail))
+    )
+
+    identities = list(adapter.iter_identities())
+
+    assert "discord:user:99" in {str(identity.identity_key) for identity in identities}
+    assert any(current == 0 and "Loading members" in detail for current, detail in events)
+    assert any(current == 0 and "Scanning #history" in detail for current, detail in events)
+    assert [current for current, _ in events if current > 0] == [1, 2, 3]
+
+
+def test_iter_identities_reports_progress_during_reaction_user_pagination() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    guild = FakeGuild()
+    channel = MessageChannel(10, "reaction-heavy", 1, created)
+    author = FakeUser(999, "Author")
+    reactors = [FakeUser(1000 + index, f"Reactor{index}") for index in range(105)]
+    message = FakeMessage(
+        1,
+        channel,
+        author,
+        created,
+        "many reactions",
+        reactions=(FakeReaction("👍", reactors),),
+    )
+    channel._messages = (message,)
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    events: list[tuple[int, str]] = []
+    adapter.set_identity_scan_progress_callback(
+        lambda current, detail: events.append((current, detail))
+    )
+
+    identities = list(adapter.iter_identities())
+    identity_keys = {str(identity.identity_key) for identity in identities}
+    details = [detail for _, detail in events]
+
+    assert "discord:user:999" in identity_keys
+    assert all(f"discord:user:{1000 + index}" in identity_keys for index in range(105))
+    assert any("Resolving reaction users in #reaction-heavy" in detail for detail in details)
+    assert any("Resolved 100 reaction users" in detail for detail in details)
+    assert any("Finished reaction identity discovery" in detail for detail in details)
+
+
 def test_iter_conversations_fetches_channels_when_guild_cache_is_empty() -> None:
     guild = FakeGuild()
     guild.channels = []
