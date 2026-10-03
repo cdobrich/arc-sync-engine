@@ -269,6 +269,14 @@ class ArchiveWriter:
         self._validate_message_reactions(message)
         self._persist_message_reactions(message)
 
+    def iter_messages(self) -> Iterable[CanonicalMessage]:
+        """Iterate messages currently persisted in this Archive transaction."""
+        yield from self._store.iter_messages()
+
+    def iter_conversations(self) -> Iterable[CanonicalConversation]:
+        """Iterate conversations currently persisted in this Archive transaction."""
+        yield from self._store.iter_conversations()
+
     def iter_messages_for_conversation(
         self,
         conversation_id: ConversationId,

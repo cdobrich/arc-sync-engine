@@ -1141,7 +1141,41 @@ def _run_import(args: argparse.Namespace) -> int:
                 f"Archive Package is not initialized: {paths.root}. "
                 "Run 'archive-sync-engine init --archive <path>' first."
             )
-    report = validate_archive_package(paths)
+    package = ArchivePackage(paths)
+    resumable_import = False
+    if args.resume:
+        # An interrupted import may leave canonical reply references whose
+        # targets have not been traversed yet. That state is expected to be
+        # repaired by the resume traversal, so validation must distinguish a
+        # recoverable import checkpoint from a completed/refresh archive.
+        try:
+            package.load_import_state()
+            checkpoint_exists = True
+        except FileNotFoundError:
+            checkpoint_exists = False
+
+        if not checkpoint_exists:
+            try:
+                discovery_state = package.load_discovery_state()
+            except FileNotFoundError:
+                discovery_state = None
+            checkpoint_exists = discovery_state is not None and discovery_state.phase.value in {
+                "identities",
+                "canonical",
+            }
+
+        if checkpoint_exists:
+            try:
+                session = package.load_session()
+            except FileNotFoundError:
+                resumable_import = True
+            else:
+                resumable_import = not session.completed
+
+    report = validate_archive_package(
+        paths,
+        allow_incomplete_import=resumable_import,
+    )
     if not report.valid:
         raise ConfigurationError(
             f"Archive Package is invalid: {'; '.join(report.errors)}"
@@ -1197,7 +1231,6 @@ def _run_import(args: argparse.Namespace) -> int:
             raise ConfigurationError(
                 "Import resume arguments do not match the persisted adapter or scope."
             )
-        package = ArchivePackage(paths)
         try:
             package.load_import_state()
         except FileNotFoundError:

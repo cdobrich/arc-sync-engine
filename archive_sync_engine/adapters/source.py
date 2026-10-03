@@ -178,6 +178,14 @@ class SourceAdapter(ABC):
         """
         yield from self.iter_messages(conversation)
 
+    def iter_message_identities(
+        self,
+        message: CanonicalMessage,
+    ) -> Iterable[CanonicalIdentity]:
+        """Return identities discovered while canonicalizing one message."""
+        del message
+        return ()
+
     def iter_identities_since(
         self,
         cursors: Mapping[str, SourceRefreshCursor],

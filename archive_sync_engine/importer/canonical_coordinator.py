@@ -274,6 +274,21 @@ class CanonicalImportCoordinator:
                     } if existing_messages_by_conversation else {}),
                 )
 
+                unresolved_reply_targets = importer.reconcile_missing_reply_targets(
+                    source=source,
+                    writer=writer,
+                    asset_store=self._package.asset_store,
+                    on_status=on_status,
+                    rate_limiter=rate_limiter,
+                )
+                if unresolved_reply_targets:
+                    missing = ", ".join(unresolved_reply_targets)
+                    raise RuntimeError(
+                        "Canonical import cannot be marked complete because "
+                        "the following reply targets could not be recovered from "
+                        f"the source: {missing}."
+                    )
+
             # The writer context has committed the final canonical import
             # boundary. Only now can discovery be marked complete.
             completed_discovery_state = self._package.load_discovery_state()

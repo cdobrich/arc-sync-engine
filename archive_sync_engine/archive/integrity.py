@@ -27,13 +27,19 @@ class ArchiveIntegrityReport:
 
 def validate_archive_package(
     paths: ArchivePaths,
+    *,
+    allow_incomplete_import: bool = False,
 ) -> ArchiveIntegrityReport:
     """
     Validate an Archive Package without changing canonical state.
 
     Validation checks the package manifest, canonical SQLite recomposition,
-    and content-addressed attachment bytes.  No synchronization state or
+    and content-addressed attachment bytes. No synchronization state or
     destination API is consulted.
+
+    When ``allow_incomplete_import`` is true, missing reply targets are
+    tolerated because an interrupted import can persist a reply before the
+    referenced message has been traversed. Normal validation remains strict.
     """
 
     errors: list[str] = []
@@ -122,7 +128,8 @@ def validate_archive_package(
                         f"{message.identity_key}."
                     )
                 if (
-                    message.reply_to is not None
+                    not allow_incomplete_import
+                    and message.reply_to is not None
                     and message.reply_to not in message_ids
                 ):
                     errors.append(

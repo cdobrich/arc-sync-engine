@@ -78,6 +78,7 @@ class DiscordSourceAdapter(SourceAdapter):
         self._conversation_channels: dict[str, Any] = {}
         self._message_cache: dict[str, tuple[Any, ...]] = {}
         self._incremental_message_cache: dict[str, tuple[Any, ...]] = {}
+        self._message_identity_cache: dict[str, tuple[CanonicalIdentity, ...]] = {}
         self._attachment_bytes: dict[str, bytes] = {}
         self._custom_emoji_bytes: dict[str, bytes] = {}
         self._runner: Callable[[Awaitable[Any]], Any] | None = None
@@ -201,175 +202,47 @@ class DiscordSourceAdapter(SourceAdapter):
         resume_cursor: dict[str, Any] | None = None,
         batch_size: int = 100,
     ) -> Iterable[IdentityDiscoveryBatch]:
-        """Discover identities in bounded, resumable source traversal units."""
+        """Discover identities available directly from Discord membership.
+
+        Historical authors and reaction users are discovered during canonical
+        message traversal, so identity bootstrap never scans message history.
+        """
         if batch_size <= 0:
             raise ValueError("Identity discovery batch size must be greater than zero.")
-
         cursor = dict(resume_cursor or {})
         stage = str(cursor.get("stage", "members"))
-        guild_index = int(cursor.get("guild_index", 0))
-        member_index = int(cursor.get("member_index", 0))
-        conversation_index = int(cursor.get("conversation_index", 0))
-        message_index = int(cursor.get("message_index", 0))
-        reaction_index = int(cursor.get("reaction_index", 0))
-        reaction_user_index = int(cursor.get("reaction_user_index", 0))
-        author_processed = bool(cursor.get("author_processed", False))
-
         guilds = tuple(self._iter_guilds())
-        self._identity_scan_messages_scanned = 0
-        self._report_identity_scan_progress(0, "Loading Discord guild members...")
-        batch: list[CanonicalIdentity] = []
-
-        def emit_if_full(next_cursor: dict[str, Any]):
-            nonlocal batch
-            if len(batch) < batch_size:
-                return None
-            result = IdentityDiscoveryBatch(tuple(batch), cursor=dict(next_cursor))
-            batch = []
-            return result
-
-        for current_guild_index in range(guild_index, len(guilds)):
-            guild = guilds[current_guild_index]
-            members = self._run(self._collect_guild_members(guild))
-            start_member = (
-                member_index
-                if current_guild_index == guild_index and stage == "members"
-                else 0
-            )
-            for current_member_index in range(start_member, len(members)):
-                batch.append(self._canonical_identity(members[current_member_index]))
-                emitted = emit_if_full({
-                    "stage": "members",
-                    "guild_index": current_guild_index,
-                    "member_index": current_member_index + 1,
-                })
-                if emitted is not None:
-                    yield emitted
-            member_index = 0
-
-        conversations = self._discover_conversations()
-        start_conversation = conversation_index if stage != "members" else 0
-
-        for current_conversation_index in range(start_conversation, len(conversations)):
-            conversation = conversations[current_conversation_index]
-            channel = self._conversation_channels[str(conversation.id)]
-            if getattr(channel, "history", None) is None:
-                continue
-
-            start_message = (
-                message_index
-                if current_conversation_index == conversation_index and stage == "history"
-                else 0
-            )
-            first_message_index = start_message
-            first_reaction_index = reaction_index
-            first_reaction_user_index = reaction_user_index
-
-            while True:
-                messages, exhausted = self._run(
-                    self._collect_raw_message_slice(
-                        channel,
-                        start_message,
-                        batch_size,
-                    )
-                )
-                if not messages:
-                    exhausted = True
-
-                cached = list(self._message_cache.get(str(conversation.id), ()))
-                cached_ids = {str(getattr(item, "id", "")) for item in cached}
-                for message in messages:
-                    if str(getattr(message, "id", "")) not in cached_ids:
-                        cached.append(message)
-                        cached_ids.add(str(getattr(message, "id", "")))
-                self._message_cache[str(conversation.id)] = tuple(cached)
-
-                for offset, message in enumerate(messages, start=start_message):
-                    self._identity_scan_messages_scanned += 1
-                    self._report_identity_scan_progress(
-                        self._identity_scan_messages_scanned,
-                        f"Scanning Discord history in #{(getattr(channel, 'name', None) or getattr(channel, 'id', 'unknown'))}",
-                    )
-                    author = getattr(message, "author", None)
-                    if author is not None and not (
-                        current_conversation_index == conversation_index
-                        and offset == first_message_index
-                        and author_processed
-                    ):
-                        batch.append(self._canonical_identity(author))
-                        emitted = emit_if_full({
-                            "stage": "history",
-                            "conversation_index": current_conversation_index,
-                            "message_index": offset,
-                            "reaction_index": 0,
-                            "reaction_user_index": 0,
-                            "author_processed": True,
-                        })
-                        if emitted is not None:
-                            yield emitted
-
-                    reactions = tuple(getattr(message, "reactions", ()) or ())
-                    start_reaction = (
-                        first_reaction_index
-                        if current_conversation_index == conversation_index
-                        and offset == first_message_index
-                        and stage == "history"
-                        else 0
-                    )
-                    for current_reaction_index in range(start_reaction, len(reactions)):
-                        reaction_group = reactions[current_reaction_index]
-                        users = getattr(reaction_group, "users", None)
-                        if users is None:
-                            raise AdapterError(
-                                "Discord reaction does not expose reacting users."
-                            )
-                        reaction_users = self._run(self._collect_reaction_users(users))
-                        start_user = (
-                            first_reaction_user_index
-                            if current_conversation_index == conversation_index
-                            and offset == first_message_index
-                            and current_reaction_index == first_reaction_index
-                            and stage == "history"
-                            else 0
-                        )
-                        for current_user_index in range(start_user, len(reaction_users)):
-                            batch.append(
-                                self._canonical_identity(reaction_users[current_user_index])
-                            )
-                            emitted = emit_if_full({
-                                "stage": "history",
-                                "conversation_index": current_conversation_index,
-                                "message_index": offset,
-                                "reaction_index": current_reaction_index,
-                                "reaction_user_index": current_user_index + 1,
-                            })
-                            if emitted is not None:
-                                yield emitted
-                        first_reaction_user_index = 0
-                    first_reaction_index = 0
-
-                if exhausted:
-                    break
-                start_message += len(messages)
-                first_message_index = start_message
-                first_reaction_index = 0
-                first_reaction_user_index = 0
-                author_processed = False
-
-            conversation_index = current_conversation_index + 1
-            message_index = 0
-            reaction_index = 0
-            reaction_user_index = 0
-
-        if batch:
+        if stage != "members":
             yield IdentityDiscoveryBatch(
-                tuple(batch),
-                cursor={
-                    "stage": "complete",
-                    "conversation_index": len(conversations),
-                },
+                (),
+                cursor={"stage": "canonical", "guild_index": len(guilds)},
                 complete=True,
             )
+            return
+        guild_index = int(cursor.get("guild_index", 0))
+        member_index = int(cursor.get("member_index", 0))
+        batch: list[CanonicalIdentity] = []
+        for current_guild_index in range(guild_index, len(guilds)):
+            members = self._run(self._collect_guild_members(guilds[current_guild_index]))
+            start_member = member_index if current_guild_index == guild_index else 0
+            for current_member_index in range(start_member, len(members)):
+                batch.append(self._canonical_identity(members[current_member_index]))
+                if len(batch) >= batch_size:
+                    yield IdentityDiscoveryBatch(
+                        tuple(batch),
+                        cursor={
+                            "stage": "members",
+                            "guild_index": current_guild_index,
+                            "member_index": current_member_index + 1,
+                        },
+                    )
+                    batch = []
+            member_index = 0
+        yield IdentityDiscoveryBatch(
+            tuple(batch),
+            cursor={"stage": "canonical", "guild_index": len(guilds)},
+            complete=True,
+        )
 
     @staticmethod
     async def _collect_raw_message_slice(
@@ -517,18 +390,19 @@ class DiscordSourceAdapter(SourceAdapter):
 
         cached_messages = self._message_cache.get(str(conversation.id))
         if cached_messages is not None:
-            messages = self._run(
-                self._canonicalize_cached_messages(
-                    cached_messages,
-                    channel,
-                ),
-            )
-        else:
-            messages = self._run(
-                self._collect_messages(channel),
-            )
+            pinned_ids = self._run(self._collect_pinned_ids(channel))
+            for raw_message in cached_messages:
+                yield self._canonicalize_one_cached_message(
+                    raw_message,
+                    pinned_ids,
+                )
+            return
 
-        yield from messages
+        yield from self._iter_canonical_history(
+            channel,
+            conversation_id=str(conversation.id),
+            cache=self._message_cache,
+        )
 
     def iter_messages_after_checkpoint(
         self,
@@ -549,27 +423,18 @@ class DiscordSourceAdapter(SourceAdapter):
             )
 
         try:
-            messages = self._run(
-                self._collect_raw_messages_after_checkpoint(channel, cursor),
+            yield from self._iter_canonical_history(
+                channel,
+                conversation_id=str(conversation.id),
+                cache=self._message_cache,
+                after=cursor.created_at - timedelta(microseconds=1),
+                skip_through=cursor,
             )
         except TypeError:
             # Test doubles and older source clients may not expose the native
             # ``after`` argument. Preserve safe recovery semantics by falling
             # back to the existing complete traversal plus importer boundary.
             yield from self.iter_messages(conversation)
-            return
-
-        self._message_cache[str(conversation.id)] = tuple(messages)
-        canonical_messages = self._run(
-            self._canonicalize_cached_messages(tuple(messages), channel),
-        )
-        for message in canonical_messages:
-            if (message.created_at, str(message.id)) <= (
-                cursor.created_at,
-                str(cursor.message_id),
-            ):
-                continue
-            yield message
 
     def iter_identities_since(
         self,
@@ -629,6 +494,13 @@ class DiscordSourceAdapter(SourceAdapter):
             for message_id in sorted(pinned_ids)
         )
 
+    def iter_message_identities(
+        self,
+        message: CanonicalMessage,
+    ) -> Iterable[CanonicalIdentity]:
+        """Yield rich Discord identities observed during message canonicalization."""
+        return self._message_identity_cache.get(str(message.id), ())
+
     def iter_messages_since(
         self,
         conversation: CanonicalConversation,
@@ -642,18 +514,108 @@ class DiscordSourceAdapter(SourceAdapter):
             )
 
         cached_messages = self._incremental_message_cache.get(str(conversation.id))
-        if cached_messages is None:
-            cached_messages = tuple(
-                self._run(
-                    self._collect_incremental_raw_messages(channel, cursor),
-                )
-            )
-            self._incremental_message_cache[str(conversation.id)] = cached_messages
+        if cached_messages is not None:
+            pinned_ids = self._run(self._collect_pinned_ids(channel))
+            for raw_message in cached_messages:
+                yield self._canonicalize_one_cached_message(raw_message, pinned_ids)
+            return
 
-        messages = self._run(
-            self._canonicalize_cached_messages(cached_messages, channel),
+        yield from self._iter_canonical_history(
+            channel,
+            conversation_id=str(conversation.id),
+            cache=self._incremental_message_cache,
+            after=cursor.created_at - self._INCREMENTAL_LOOKBACK,
         )
-        yield from messages
+
+    def _iter_canonical_history(
+        self,
+        channel: Any,
+        *,
+        conversation_id: str,
+        cache: dict[str, tuple[Any, ...]],
+        after: datetime | None = None,
+        skip_through: SourceRefreshCursor | None = None,
+    ) -> Iterable[CanonicalMessage]:
+        """Stream Discord history one message at a time through the sync boundary."""
+        history_kwargs: dict[str, Any] = {
+            "limit": None,
+            "oldest_first": True,
+        }
+        if after is not None:
+            history_kwargs["after"] = after
+        history = channel.history(**history_kwargs)
+        iterator = history.__aiter__()
+        pinned_ids = self._run(self._collect_pinned_ids(channel))
+        cached: list[Any] = list(cache.get(conversation_id, ()))
+        cached_ids = {str(getattr(item, "id", "")) for item in cached}
+        try:
+            while True:
+                try:
+                    raw_message = self._run(iterator.__anext__())
+                except StopAsyncIteration:
+                    break
+
+                raw_message_id = str(getattr(raw_message, "id", ""))
+                if raw_message_id not in cached_ids:
+                    cached.append(raw_message)
+                    cached_ids.add(raw_message_id)
+                    cache[conversation_id] = tuple(cached)
+
+                canonical = self._canonicalize_one_cached_message(
+                    raw_message,
+                    pinned_ids,
+                )
+                if skip_through is not None and (
+                    canonical.created_at,
+                    str(canonical.id),
+                ) <= (
+                    skip_through.created_at,
+                    str(skip_through.message_id),
+                ):
+                    continue
+                yield canonical
+        finally:
+            close = getattr(iterator, "aclose", None)
+            if callable(close):
+                self._close_async_iterator(close)
+
+    def _close_async_iterator(self, close: Callable[[], Awaitable[Any]]) -> None:
+        """Best-effort cleanup for an async iterator during interrupted import.
+
+        The Discord runtime owns the event loop and closes it after an import
+        exits. Python may finalize this generator after that runtime cleanup,
+        so an unconditional ``run_until_complete(aclose())`` can turn a
+        harmless KeyboardInterrupt into a secondary ``Event loop is closed``
+        traceback.
+        """
+        awaitable = close()
+        runner = self._runner
+        loop = getattr(runner, "__self__", None) if runner is not None else None
+        if loop is not None and getattr(loop, "is_closed", lambda: False)():
+            close_awaitable = getattr(awaitable, "close", None)
+            if callable(close_awaitable):
+                close_awaitable()
+            return
+        try:
+            self._run(awaitable)
+        except RuntimeError as exc:
+            if "event loop is closed" not in str(exc).lower():
+                raise
+            close_awaitable = getattr(awaitable, "close", None)
+            if callable(close_awaitable):
+                close_awaitable()
+
+    def _canonicalize_one_cached_message(
+        self,
+        raw_message: Any,
+        pinned_ids: set[str],
+    ) -> CanonicalMessage:
+        return self._run(
+            self._canonical_message(
+                raw_message,
+                pinned_ids=pinned_ids,
+            )
+        )
 
     @classmethod
     async def _collect_raw_messages_after_checkpoint(
@@ -722,13 +684,10 @@ class DiscordSourceAdapter(SourceAdapter):
         channel: Any,
     ) -> list[CanonicalMessage]:
         pinned_ids = await self._collect_pinned_ids(channel)
-        return [
-            await self._canonical_message(
-                message,
-                pinned_ids=pinned_ids,
-            )
-            for message in messages
-        ]
+        result: list[CanonicalMessage] = []
+        for message in messages:
+            result.append(await self._canonical_message(message, pinned_ids=pinned_ids))
+        return result
 
     async def _collect_messages(
         self,
@@ -878,14 +837,21 @@ class DiscordSourceAdapter(SourceAdapter):
                 await self._canonical_attachment(attachment)
             )
         attachments = tuple(attachments_list)
+        message_identities: list[CanonicalIdentity] = [self._canonical_identity(author)]
         reactions_list: list[CanonicalReaction] = []
         for reaction_group in getattr(message, "reactions", ()):
             reactions_list.extend(
                 await self._canonical_reactions(
                     reaction_group,
+                    identity_sink=message_identities,
                 )
             )
         reactions = tuple(reactions_list)
+        unique_identities = {
+            str(identity.identity_key): identity
+            for identity in message_identities
+        }
+        self._message_identity_cache[self._message_key(message_id)] = tuple(unique_identities.values())
 
         reply_to = self._canonical_reply_to(message)
 
@@ -903,7 +869,7 @@ class DiscordSourceAdapter(SourceAdapter):
             return CanonicalMessage(
                 id=canonical_id,
                 conversation_id=canonical_conversation_id,
-                identity_key=self._canonical_identity(author).identity_key,
+                identity_key=message_identities[0].identity_key,
                 content=content,
                 created_at=created_at,
                 edited_at=getattr(message, "edited_at", None),
@@ -1449,6 +1415,8 @@ class DiscordSourceAdapter(SourceAdapter):
     async def _canonical_reactions(
         self,
         reaction: Any,
+        *,
+        identity_sink: list[CanonicalIdentity] | None = None,
     ) -> tuple[CanonicalReaction, ...]:
         emoji = getattr(reaction, "emoji", None)
         if emoji is None:
@@ -1468,6 +1436,8 @@ class DiscordSourceAdapter(SourceAdapter):
         result: list[CanonicalReaction] = []
         async for user in users(limit=None):
             identity = self._canonical_identity(user)
+            if identity_sink is not None:
+                identity_sink.append(identity)
             result.append(
                 CanonicalReaction(
                     identity_key=identity.identity_key,

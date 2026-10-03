@@ -114,3 +114,51 @@ def test_validate_archive_package_identifies_invalid_message_by_id(tmp_path: Pat
         "A message must contain text or at least one attachment" in error
         for error in report.errors
     )
+
+
+def test_validate_archive_package_can_tolerate_unresolved_reply_during_resume(
+    tmp_path: Path,
+) -> None:
+    paths = ArchivePaths(tmp_path)
+
+    from archive_sync_engine.archive import ArchivePackage
+    import sqlite3
+
+    ArchivePackage.initialize(paths)
+    with sqlite3.connect(paths.database) as connection:
+        connection.execute(
+            "INSERT INTO identities (identity_key, display_name) VALUES (?, ?)",
+            ("discord:user:1", "Alice"),
+        )
+        connection.execute(
+            "INSERT INTO conversations (conversation_id, conversation_type, title, parent_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "discord:guild:123:channel:10",
+                "channel",
+                "general",
+                None,
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO messages (message_id, conversation_id, identity_key, created_at, edited_at, reply_to_message_id, content) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "discord:message:200",
+                "discord:guild:123:channel:10",
+                "discord:user:1",
+                "2026-01-01T00:00:00+00:00",
+                None,
+                "discord:message:199",
+                "reply content",
+            ),
+        )
+
+    strict = validate_archive_package(paths)
+    assert strict.valid is False
+    assert any("missing reply target" in error for error in strict.errors)
+
+    resumable = validate_archive_package(paths, allow_incomplete_import=True)
+    assert resumable.valid is True
+    assert resumable.errors == ()

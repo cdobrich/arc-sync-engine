@@ -208,6 +208,45 @@ def test_resumed_identity_discovery_does_not_recount_persisted_identity(
         (2, "user-002"),
     ]
 
+
+def test_message_traversal_discovers_rich_identities_without_identity_history_scan(
+    tmp_path: Path,
+) -> None:
+    """Canonical message traversal must persist identities unavailable at bootstrap."""
+
+    class MessageIdentitySource(FakeSourceAdapter):
+        def iter_identity_batches(self, *, resume_cursor=None, batch_size=100):
+            del resume_cursor, batch_size
+            yield IdentityDiscoveryBatch((), cursor={"stage": "canonical"}, complete=True)
+
+        def iter_message_identities(self, message):
+            del message
+            yield self._identity
+
+    source = MessageIdentitySource(b"message-identity")
+    statuses = []
+    paths = ArchivePaths(root=tmp_path)
+
+    with ArchiveWriter(paths) as writer:
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=AssetStore(paths.root),
+            on_status=statuses.append,
+        )
+
+    identity_events = [
+        event for event in statuses if event.phase == "identities" and event.current
+    ]
+    assert [(event.current, event.detail) for event in identity_events] == [
+        (1, "user-001"),
+    ]
+
+    with Archive(paths) as archive:
+        assert tuple(str(identity.identity_key) for identity in archive.iter_identities()) == (
+            "user-001",
+        )
+
 def test_canonical_importer_imports_source_into_archive(
     tmp_path: Path,
 ) -> None:
@@ -1136,3 +1175,58 @@ def test_pin_refresh_uses_one_authoritative_snapshot_across_message_traversal(
     assert message is not None
     assert message.pinned is True
     assert source.pin_reads == 1
+
+
+def test_reconcile_missing_reply_targets_recovers_targets_before_resume_cursor(
+    tmp_path: Path,
+) -> None:
+    """Recovery finds a reply target that ordinary resume would skip."""
+    paths = ArchivePaths(root=tmp_path)
+    source = FakeSourceAdapter(b"reply-recovery")
+
+    target = CanonicalMessage(
+        id=MessageId("message-target"),
+        conversation_id=source._conversation.id,
+        identity_key=source._identity.identity_key,
+        content="Original message",
+        created_at=datetime(2026, 7, 30, 17, 30, tzinfo=timezone.utc),
+    )
+    reply = CanonicalMessage(
+        id=MessageId("message-reply"),
+        conversation_id=source._conversation.id,
+        identity_key=source._identity.identity_key,
+        content="Reply message",
+        reply_to=target.id,
+        created_at=datetime(2026, 7, 30, 18, 0, tzinfo=timezone.utc),
+    )
+
+    class RecoverySource(FakeSourceAdapter):
+        def __init__(self) -> None:
+            super().__init__(b"reply-recovery")
+            self._messages = (reply, target)
+
+        def iter_messages(self, conversation):
+            assert conversation == self._conversation
+            yield from self._messages
+
+    source = RecoverySource()
+    importer = CanonicalImporter()
+
+    with ArchiveWriter(paths) as writer:
+        writer.upsert_identity(source._identity)
+        writer.upsert_conversation(source._conversation)
+        writer.upsert_message(reply)
+        writer.commit()
+
+        missing = importer.reconcile_missing_reply_targets(
+            source=source,
+            writer=writer,
+            asset_store=AssetStore(paths.root),
+        )
+
+        assert missing == ()
+
+    with Archive(paths) as archive:
+        messages = {str(message.id): message for message in archive.iter_messages()}
+        assert set(messages) == {"message-reply", "message-target"}
+        assert messages["message-reply"].reply_to == MessageId("message-target")

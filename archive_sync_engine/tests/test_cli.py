@@ -1087,6 +1087,108 @@ discord:
     assert "Import completed: 4 identities, 2 conversations, 17 messages, 3 attachments." in output
 
 
+def test_import_cli_resume_allows_incomplete_reply_references(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "archive"
+    paths = ArchivePaths(archive_path)
+    ArchivePackage.initialize(paths)
+    package = ArchivePackage(paths)
+    package.save_run_configuration(
+        SyncRunConfiguration(
+            direction=RunDirection.IMPORT,
+            input_adapter="discord",
+            input_scope=("10",),
+        )
+    )
+
+    from archive_sync_engine.importer import ImportState
+    from archive_sync_engine.sync.session import SyncDirection, SyncSession
+    from datetime import datetime, timezone
+    import sqlite3
+
+    package.save_import_state(
+        ImportState(
+            payload={
+                "conversation_id": "discord:guild:123:channel:10",
+                "message_id": "discord:message:200",
+            }
+        )
+    )
+    now = datetime.now(timezone.utc)
+    package.save_session(
+        SyncSession(
+            id="import-session",
+            direction=SyncDirection.IMPORT,
+            started_at=now,
+            updated_at=now,
+            error="interrupted",
+        )
+    )
+
+    with sqlite3.connect(paths.database) as connection:
+        connection.execute(
+            "INSERT INTO identities (identity_key, display_name) VALUES (?, ?)",
+            ("discord:user:1", "Alice"),
+        )
+        connection.execute(
+            "INSERT INTO conversations (conversation_id, conversation_type, title, parent_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "discord:guild:123:channel:10",
+                "channel",
+                "general",
+                None,
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO messages (message_id, conversation_id, identity_key, created_at, edited_at, reply_to_message_id, content) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "discord:message:200",
+                "discord:guild:123:channel:10",
+                "discord:user:1",
+                "2026-01-01T00:00:00+00:00",
+                None,
+                "discord:message:199",
+                "reply content",
+            ),
+        )
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: current-discord-secret
+  guild_id: 10
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.import_to_archive.return_value = type(
+        "Report",
+        (),
+        dict(identities=1, conversations=1, messages=1, attachments=0),
+    )()
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    registry.build_config.return_value = type(
+        "DiscordConfig", (), {"token": "current-discord-secret"}
+    )()
+
+    with patch("archive_sync_engine.cli.default_source_runtime_registry", return_value=registry):
+        assert main(["import", "--config", str(config), "--resume"]) == 0
+
+    runtime.import_to_archive.assert_called_once()
+    assert runtime.import_to_archive.call_args.kwargs["resume"] is True
+
+
 def test_import_cli_resume_accepts_discovery_checkpoint_without_import_state(
     tmp_path: Path,
 ) -> None:

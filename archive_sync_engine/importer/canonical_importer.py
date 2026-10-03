@@ -97,14 +97,15 @@ class CanonicalImporter:
         attachments_reused = 0
         existing_messages_by_conversation = existing_messages_by_conversation or {}
         # Identity discovery is a logical-record operation, not an
-        # observation-count operation. A source may encounter the same
+        # observation-count operation.  A source may encounter the same
         # participant in guild membership, message authorship, and reactions
-        # many times. Seed the set from the durable archive so a resumed
+        # many times.  Seed the set from the durable archive so a resumed
         # traversal cannot count an already-committed identity again.
         committed_identity_keys = {
             str(identity.identity_key)
             for identity in writer.iter_identities()
         }
+        identity_count = len(committed_identity_keys)
         imported_message_ids_by_conversation: dict[str, set[str]] = {}
         authoritative_pins_by_conversation: dict[str, set[str]] = {}
 
@@ -358,30 +359,6 @@ class CanonicalImporter:
                 )
 
         #
-        # Custom emojis
-        #
-        # Some reactions may reference custom emojis that are not owned by
-        # the source guild (Discord permits reactions using emojis from other
-        # shared guilds). Identity discovery intentionally precedes this
-        # stage because the Discord source adapter uses its cached raw-message
-        # traversal to discover reaction-only custom emojis and their assets.
-        #
-        iter_custom_emojis = getattr(source, "iter_custom_emojis", None)
-        if callable(iter_custom_emojis):
-            custom_emojis = iter_custom_emojis()
-            if isinstance(custom_emojis, Iterable):
-                custom_emoji_bytes = getattr(source, "custom_emoji_bytes", None)
-                for custom_emoji in custom_emojis:
-                    writer.upsert_custom_emoji(custom_emoji)
-                    if not asset_store.exists(custom_emoji.sha256):
-                        if not callable(custom_emoji_bytes):
-                            raise TypeError(
-                                "Source adapter yielded custom emoji data without "
-                                "providing custom_emoji_bytes()."
-                            )
-                        asset_store.put(custom_emoji_bytes(custom_emoji))
-
-        #
         # Conversations and messages
         #
         # The SourceAdapter defines the canonical traversal boundary:
@@ -563,6 +540,37 @@ class CanonicalImporter:
                 first_message = False
                 examined_messages += 1
 
+                # Discover rich identities while the canonical message traversal
+                # is already visiting this message.  This eliminates a separate
+                # historical scan whose only purpose was identity discovery.
+                iter_message_identities = getattr(source, "iter_message_identities", None)
+                iter_message_identities_impl = getattr(
+                    type(source),
+                    "iter_message_identities",
+                    None,
+                )
+                supports_message_identity_hook = callable(iter_message_identities) and (
+                    not isinstance(source, SourceAdapter)
+                    or iter_message_identities_impl is not None
+                    and iter_message_identities_impl is not SourceAdapter.iter_message_identities
+                )
+                if supports_message_identity_hook:
+                    for identity in iter_message_identities(message):
+                        writer.upsert_identity(identity)
+                        key = str(identity.identity_key)
+                        if key in committed_identity_keys:
+                            continue
+                        committed_identity_keys.add(key)
+                        identity_count += 1
+                        if on_status is not None:
+                            on_status(
+                                ImportProgress(
+                                    phase="identities",
+                                    current=identity_count,
+                                    detail=key,
+                                )
+                            )
+
                 #
                 # Persist the complete canonical message aggregate.
                 #
@@ -677,6 +685,27 @@ class CanonicalImporter:
                     )
                 )
 
+        #
+        # Custom emojis
+        #
+        # Run emoji discovery after message traversal. Discord can discover
+        # reaction-only custom emojis from the raw messages cached by that
+        # traversal, without forcing an earlier historical scan.
+        iter_custom_emojis = getattr(source, "iter_custom_emojis", None)
+        if callable(iter_custom_emojis):
+            custom_emojis = iter_custom_emojis()
+            if isinstance(custom_emojis, Iterable):
+                custom_emoji_bytes = getattr(source, "custom_emoji_bytes", None)
+                for custom_emoji in custom_emojis:
+                    writer.upsert_custom_emoji(custom_emoji)
+                    if not asset_store.exists(custom_emoji.sha256):
+                        if not callable(custom_emoji_bytes):
+                            raise TypeError(
+                                "Source adapter yielded custom emoji data without "
+                                "providing custom_emoji_bytes()."
+                            )
+                        asset_store.put(custom_emoji_bytes(custom_emoji))
+
         # Reconcile pin state only after message writes have completed.  The
         # source pin collection is authoritative channel metadata; applying it
         # last prevents a stale ``message.pinned`` value from an incremental
@@ -758,3 +787,119 @@ class CanonicalImporter:
                     detail="source refresh complete",
                 )
             )
+
+
+    def reconcile_missing_reply_targets(
+        self,
+        source: SourceAdapter,
+        writer: ArchiveWriter,
+        asset_store: AssetStore,
+        *,
+        on_status: Callable[[ImportProgress], None] | None = None,
+        rate_limiter: OperationRateLimiter | None = None,
+    ) -> tuple[str, ...]:
+        """Recover source messages needed to satisfy archived reply links.
+
+        An interrupted import can commit a replying message before its target
+        is encountered.  Full-import resume normally reaches the target, but
+        the target can also lie before the persisted resume cursor.  In that
+        case the ordinary resume traversal cannot repair the reference.
+
+        This recovery pass is intentionally demand-driven: it performs no
+        source traversal when all reply targets are already present.  When
+        targets are missing, it scans the source conversations for just those
+        message IDs and persists matching canonical messages.  Newly recovered
+        messages can themselves contain a reply to another missing message,
+        so the pass repeats until the dependency set reaches a fixed point or
+        no additional target can be found.
+        """
+        persisted_messages = tuple(writer.iter_messages())
+        persisted_ids = {str(message.id) for message in persisted_messages}
+        pending = {
+            str(message.reply_to)
+            for message in persisted_messages
+            if message.reply_to is not None
+            and str(message.reply_to) not in persisted_ids
+        }
+        if not pending:
+            return ()
+
+        conversations = tuple(writer.iter_conversations())
+        resolved = 0
+
+        while pending:
+            pending_before = set(pending)
+            for conversation in conversations:
+                if not pending:
+                    break
+
+                for message in source.iter_messages(conversation):
+                    message_id = str(message.id)
+                    if message_id not in pending:
+                        continue
+
+                    if rate_limiter is not None:
+                        rate_limiter.before_message()
+
+                    self._persist_recovery_message(
+                        source=source,
+                        writer=writer,
+                        asset_store=asset_store,
+                        message=message,
+                    )
+                    persisted_ids.add(message_id)
+                    pending.discard(message_id)
+                    resolved += 1
+
+                    if message.reply_to is not None:
+                        reply_target = str(message.reply_to)
+                        if reply_target not in persisted_ids:
+                            pending.add(reply_target)
+
+                    if on_status is not None:
+                        on_status(
+                            ImportProgress(
+                                phase="reply_recovery",
+                                current=resolved,
+                                total=resolved + len(pending),
+                                detail=message_id,
+                            )
+                        )
+
+            if pending == pending_before:
+                break
+
+        writer.commit()
+        return tuple(sorted(pending))
+
+    @staticmethod
+    def _persist_recovery_message(
+        *,
+        source: SourceAdapter,
+        writer: ArchiveWriter,
+        asset_store: AssetStore,
+        message: CanonicalMessage,
+    ) -> None:
+        """Persist one recovered reply-target message and its dependencies."""
+        iter_message_identities = getattr(source, "iter_message_identities", None)
+        iter_message_identities_impl = getattr(
+            type(source),
+            "iter_message_identities",
+            None,
+        )
+        supports_message_identity_hook = callable(iter_message_identities) and (
+            not isinstance(source, SourceAdapter)
+            or iter_message_identities_impl is not None
+            and iter_message_identities_impl is not SourceAdapter.iter_message_identities
+        )
+        if supports_message_identity_hook:
+            for identity in iter_message_identities(message):
+                writer.upsert_identity(identity)
+
+        writer.upsert_message(message)
+        for attachment in message.attachments:
+            if not asset_store.exists(attachment.sha256):
+                asset_store.put_attachment(
+                    attachment,
+                    source.attachment_bytes(attachment),
+                )

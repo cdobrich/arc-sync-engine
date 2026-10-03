@@ -168,40 +168,39 @@ def test_iter_identities_rejects_missing_member_cache_and_fetch_api() -> None:
     assert isinstance(exc_info.value, AdapterError)
 
 
-def test_iter_identity_batches_are_bounded_and_resumable() -> None:
+def test_iter_identity_batches_bootstrap_from_members_without_history_scan() -> None:
     created = datetime(2026, 1, 1, tzinfo=timezone.utc)
     guild = FakeGuild()
-    guild.members = []
-    channel = MessageChannel(
-        10,
-        "history",
-        1,
-        created,
-        messages=tuple(
-            FakeMessage(
-                index,
-                None,
-                FakeUser(100 + index, f"User{index}"),
-                created + timedelta(seconds=index),
-                f"message-{index}",
-            )
-            for index in range(1, 4)
-        ),
+    guild.members = [
+        FakeMember(FakeUser(101, "User1"), "User1"),
+        FakeMember(FakeUser(102, "User2"), "User2"),
+        FakeMember(FakeUser(103, "User3"), "User3"),
+    ]
+    channel = MessageChannel(10, "history", 1, created)
+    channel._messages = tuple(
+        FakeMessage(
+            index,
+            channel,
+            FakeUser(100 + index, f"User{index}"),
+            created + timedelta(seconds=index),
+            f"message-{index}",
+        )
+        for index in range(1, 4)
     )
-    for message in channel._messages:
-        message.channel = channel
     guild.channels = [channel]
     guild.threads = []
 
     adapter = DiscordSourceAdapter(FakeClient(guild), [123])
     batches = list(adapter.iter_identity_batches(batch_size=1))
 
-    assert [len(batch.identities) for batch in batches] == [1, 1, 1]
-    assert batches[-1].complete is False
-    assert batches[0].cursor["message_index"] == 0
-    assert batches[1].cursor["message_index"] == 1
-    assert batches[2].cursor["message_index"] == 2
-    assert len(adapter._message_cache[str(next(adapter.iter_conversations()).id)]) == 3
+    assert [str(identity.identity_key) for batch in batches for identity in batch.identities] == [
+        "discord:user:101",
+        "discord:user:102",
+        "discord:user:103",
+    ]
+    assert batches[-1].complete is True
+    assert channel.history_calls == 0
+    assert adapter._message_cache == {}
 
     resumed = list(
         adapter.iter_identity_batches(
@@ -212,7 +211,7 @@ def test_iter_identity_batches_are_bounded_and_resumable() -> None:
     assert [str(identity.identity_key) for batch in resumed for identity in batch.identities] == [
         "discord:user:103",
     ]
-
+    assert channel.history_calls == 0
 
 
 def test_iter_conversations_maps_channels_and_threads() -> None:
@@ -469,6 +468,42 @@ def test_thread_message_pin_is_canonicalized_with_thread_conversation() -> None:
     assert len(messages) == 1
     assert str(messages[0].conversation_id) == str(thread_conversation.id)
     assert messages[0].pinned is True
+
+
+def test_iter_messages_streams_history_before_fetching_the_next_message() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "general", 1, created)
+    channel._messages = tuple(
+        FakeMessage(
+            index,
+            channel,
+            user,
+            created + timedelta(seconds=index),
+            f"message-{index}",
+        )
+        for index in range(1, 4)
+    )
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    messages = adapter.iter_messages(conversation)
+    first = next(messages)
+
+    assert str(first.id) == "discord:message:1"
+    assert len(adapter._message_cache[str(conversation.id)]) == 1
+
+    second = next(messages)
+    assert str(second.id) == "discord:message:2"
+    assert len(adapter._message_cache[str(conversation.id)]) == 2
+
+    third = next(messages)
+    assert str(third.id) == "discord:message:3"
+    assert len(adapter._message_cache[str(conversation.id)]) == 3
+
 
 
 def test_iter_messages_does_not_reuse_incremental_refresh_cache() -> None:
@@ -1490,3 +1525,22 @@ def test_iter_messages_after_checkpoint_uses_native_discord_history_boundary() -
 
     assert [str(message.id) for message in messages] == ["discord:message:101"]
     assert channel.history_after == created - timedelta(microseconds=1)
+
+
+def test_close_async_iterator_is_safe_after_runtime_event_loop_closes() -> None:
+    import asyncio
+
+    adapter = DiscordSourceAdapter(FakeClient(FakeGuild()), [123])
+    loop = asyncio.new_event_loop()
+    adapter.set_runner(loop.run_until_complete)
+
+    closed = []
+
+    async def close() -> None:
+        closed.append(True)
+
+    loop.close()
+
+    adapter._close_async_iterator(close)
+
+    assert closed == []

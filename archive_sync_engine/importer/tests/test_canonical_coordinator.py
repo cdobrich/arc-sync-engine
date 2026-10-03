@@ -1090,3 +1090,73 @@ def test_canonical_import_coordinator_uses_native_full_resume_cursor(
             "message-001",
             "message-002",
         )
+
+
+def test_interrupted_import_recovers_reply_target_before_marking_complete(
+    tmp_path: Path,
+) -> None:
+    """Resume completion repairs a reply target that lies before the checkpoint boundary."""
+    paths = ArchivePaths(tmp_path)
+
+    class ReplyRecoverySource(SourceAdapter):
+        def __init__(self) -> None:
+            self.failed = True
+            self.identity = CanonicalIdentity(IdentityKey("identity-001"), "Alice")
+            self.conversation = CanonicalConversation(
+                id=ConversationId("conversation-001"),
+                conversation_type=ConversationType.CHANNEL,
+                title="General",
+            )
+            self.target = CanonicalMessage(
+                id=MessageId("message-target"),
+                conversation_id=self.conversation.id,
+                identity_key=self.identity.identity_key,
+                content="Original",
+                created_at=datetime(2026, 7, 30, 11, 0, tzinfo=timezone.utc),
+            )
+            self.reply = CanonicalMessage(
+                id=MessageId("message-reply"),
+                conversation_id=self.conversation.id,
+                identity_key=self.identity.identity_key,
+                content="Reply",
+                reply_to=self.target.id,
+                created_at=datetime(2026, 7, 30, 12, 0, tzinfo=timezone.utc),
+            )
+
+        @property
+        def name(self) -> str:
+            return "Reply recovery"
+
+        def iter_identities(self):
+            yield self.identity
+
+        def iter_conversations(self):
+            yield self.conversation
+
+        def iter_messages(self, conversation):
+            assert conversation == self.conversation
+            yield self.reply
+            if self.failed:
+                raise RuntimeError("simulated interruption")
+            yield self.target
+
+        def attachment_bytes(self, attachment):
+            raise AssertionError("No attachments expected.")
+
+    source = ReplyRecoverySource()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        coordinator.run(source)
+
+    source.failed = False
+    coordinator.run(source, resume=True)
+
+    with Archive(paths) as archive:
+        messages = {str(message.id): message for message in archive.iter_messages()}
+        assert set(messages) == {"message-reply", "message-target"}
+        assert messages["message-reply"].reply_to == MessageId("message-target")
+
+    session = coordinator.load_session()
+    assert session.completed is True
+    assert session.error is None
