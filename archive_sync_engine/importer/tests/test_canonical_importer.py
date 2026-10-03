@@ -349,6 +349,30 @@ def test_canonical_import_coordinator_persists_import_state(
 
     assert restored == state
 
+def test_interrupted_full_checkpoint_rejects_incremental_traversal_mode(
+    tmp_path: Path,
+) -> None:
+    """A full-import checkpoint cannot be resumed as an incremental refresh."""
+    paths = ArchivePaths(root=tmp_path)
+    source = FakeSourceAdapter(attachment_content=b"attachment-content")
+
+    with ArchiveWriter(paths) as writer:
+        with pytest.raises(ValueError, match="cannot be resumed"):
+            CanonicalImporter().import_source(
+                source=source,
+                writer=writer,
+                asset_store=AssetStore(paths.root),
+                resume_state=ImportState(
+                    payload={
+                        "conversation_id": "conversation-001",
+                        "message_id": "message-001",
+                        "traversal_mode": "incremental",
+                    },
+                ),
+                incremental_refresh=False,
+            )
+
+
 def test_canonical_importer_reports_progress(
     tmp_path: Path,
 ) -> None:
@@ -389,6 +413,7 @@ def test_canonical_importer_reports_progress(
             payload={
                 "conversation_id": "conversation-001",
                 "message_id": "message-001",
+                "traversal_mode": "full",
             },
         ),
     ]
@@ -424,6 +449,7 @@ def test_canonical_import_coordinator_persists_import_progress(
     assert state.payload == {
         "conversation_id": "conversation-001",
         "message_id": "message-001",
+        "traversal_mode": "full",
     }
 
 def test_canonical_importer_reports_user_facing_status_without_source_specific_fields(

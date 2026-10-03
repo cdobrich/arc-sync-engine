@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from archive_sync_engine.adapters import IdentityDiscoveryBatch, SourceAdapter
+from archive_sync_engine.adapters.source import SourceRefreshCursor
 from archive_sync_engine.archive import Archive
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.importer.canonical_coordinator import (
@@ -532,6 +533,7 @@ def test_canonical_import_coordinator_commits_completed_messages_before_failure(
     assert state.payload == {
         "conversation_id": "conversation-001",
         "message_id": "message-001",
+        "traversal_mode": "full",
     }
 
 
@@ -565,6 +567,7 @@ def test_canonical_import_coordinator_resumes_from_last_committed_message(
     assert state.payload == {
         "conversation_id": "conversation-001",
         "message_id": "message-002",
+        "traversal_mode": "full",
     }
 
     session = coordinator.load_session()
@@ -1047,6 +1050,54 @@ def test_resume_skips_completed_discovery_phase(
 
     assert identity_calls == 1
     assert ArchivePackage(paths).load_discovery_state().phase is DiscoveryPhase.COMPLETED
+
+
+def test_interrupted_full_import_never_uses_incremental_lookback(
+    tmp_path: Path,
+) -> None:
+    """A five-year/full import resume must not route through the 7-day refresh API."""
+
+    class FullHistoryGuardSource(ResumableSourceAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resume_cursors: list[SourceRefreshCursor] = []
+            self.incremental_called = False
+
+        @property
+        def incremental_refresh_lookback(self):
+            from datetime import timedelta
+
+            return timedelta(days=7)
+
+        def iter_messages_since(self, conversation, cursor):
+            self.incremental_called = True
+            raise AssertionError(
+                "An interrupted full import must never use the incremental 7-day traversal."
+            )
+
+        def iter_messages_after_checkpoint(self, conversation, cursor):
+            self.resume_cursors.append(cursor)
+            for message in self._messages:
+                if (message.created_at, str(message.id)) > (
+                    cursor.created_at,
+                    str(cursor.message_id),
+                ):
+                    yield message
+
+    paths = ArchivePaths(root=tmp_path)
+    source = FullHistoryGuardSource()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    with pytest.raises(RuntimeError, match="second message failed"):
+        coordinator.run(source)
+
+    source.fail_second_message = False
+    coordinator.run(source, resume=True)
+
+    assert source.incremental_called is False
+    assert [str(cursor.message_id) for cursor in source.resume_cursors] == [
+        "message-001"
+    ]
 
 
 def test_canonical_import_coordinator_uses_native_full_resume_cursor(

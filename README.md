@@ -322,6 +322,8 @@ Likewise, an interrupted import being resumed is a different case: that uses the
 
 # Syncing Between Origin -> Archive -> Target
 
+A completed import followed by `--resume` is still treated as an incremental refresh, and the Discord adapter's 7-day lookback remains applicable there.
+
 WARNING: This has not been tested.
 NOTE: The `--resume` option limits scanning from the origin-server over the time range of 7-day window. (This is not currently configurable.)
 

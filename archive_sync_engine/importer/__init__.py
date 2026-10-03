@@ -36,6 +36,7 @@ from .session import ImportSession
 from .state import ImportState
 from .progress import ImportProgress
 from .discovery_state import DiscoveryPhase, DiscoveryState
+from .traversal import ImportTraversalMode
 
 __all__ = [
     "ImportSession",
@@ -43,4 +44,5 @@ __all__ = [
     "ImportProgress",
     "DiscoveryPhase",
     "DiscoveryState",
+    "ImportTraversalMode",
 ]
