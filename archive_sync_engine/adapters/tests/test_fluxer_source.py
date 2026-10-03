@@ -74,6 +74,49 @@ def test_fluxer_source_discovers_conversations_by_stable_channel_id() -> None:
     assert conversations[0].title == "general"
 
 
+def test_fluxer_identity_batches_resume_from_message_cursor() -> None:
+    class Client(FakeFluxerSourceClient):
+        async def get_channel_messages(self, channel_id: str, *, before=None):
+            if before is None:
+                return [
+                    {
+                        "id": "message-1",
+                        "author": {"id": "user-1", "username": "Alice"},
+                        "content": "one",
+                        "timestamp": "2026-01-01T00:00:00+00:00",
+                        "reactions": [],
+                    },
+                    {
+                        "id": "message-2",
+                        "author": {"id": "user-2", "username": "Bob"},
+                        "content": "two",
+                        "timestamp": "2026-01-01T00:01:00+00:00",
+                        "reactions": [],
+                    },
+                ]
+            return []
+
+    adapter = FluxerSourceAdapter(Client(), ("guild-1",))
+    batches = list(adapter.iter_identity_batches(batch_size=1))
+
+    assert [str(identity.identity_key) for batch in batches for identity in batch.identities] == [
+        "fluxer:user:user-1",
+        "fluxer:user:user-2",
+    ]
+    assert batches[-1].cursor["message_index"] == 1
+
+    resumed = list(
+        adapter.iter_identity_batches(
+            batch_size=1,
+            resume_cursor=batches[0].cursor,
+        )
+    )
+    assert [str(identity.identity_key) for batch in resumed for identity in batch.identities] == [
+        "fluxer:user:user-2",
+    ]
+
+
+
 def test_fluxer_source_imports_messages_attachments_reactions_and_pins() -> None:
     client = FakeFluxerSourceClient()
     adapter = FluxerSourceAdapter(client, ("guild-1",))
@@ -259,3 +302,39 @@ def test_fluxer_source_uses_pin_collection_when_message_history_omits_pinned_fie
     message = next(iter(adapter.iter_messages(conversation)))
 
     assert message.pinned is True
+
+
+def test_fluxer_source_uses_native_after_cursor_when_available() -> None:
+    from archive_sync_engine.adapters.source import SourceRefreshCursor
+
+    class Client(FakeFluxerSourceClient):
+        def __init__(self):
+            super().__init__()
+            self.after = None
+
+        async def get_channel_messages(self, channel_id: str, *, before=None, after=None):
+            self.after = after
+            if after is None:
+                return []
+            return [
+                {
+                    "id": "message-2",
+                    "author": {"id": "user-2", "username": "Bob"},
+                    "content": "two",
+                    "timestamp": "2026-01-01T00:01:00+00:00",
+                    "reactions": [],
+                }
+            ]
+
+    client = Client()
+    adapter = FluxerSourceAdapter(client, ("guild-1",))
+    conversation = next(iter(adapter.iter_conversations()))
+    cursor = SourceRefreshCursor(
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        message_id="fluxer:message:message-1",
+    )
+
+    messages = list(adapter.iter_messages_after_checkpoint(conversation, cursor))
+
+    assert [str(message.id) for message in messages] == ["fluxer:message:message-2"]
+    assert client.after == datetime(2026, 1, 1, tzinfo=timezone.utc)

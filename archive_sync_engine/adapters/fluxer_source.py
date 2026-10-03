@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .exceptions import AdapterError, NotFoundError
-from .source import SourceAdapter
+from .source import IdentityDiscoveryBatch, SourceAdapter, SourceRefreshCursor
 from ..models import (
     CanonicalAttachment,
     CanonicalConversation,
@@ -30,7 +30,13 @@ class FluxerSourceClientProtocol:
     """Small async client surface required by :class:`FluxerSourceAdapter`."""
 
     async def get_guild_channels(self, guild_id: str) -> list[Any]: ...
-    async def get_channel_messages(self, channel_id: str, *, before: str | None = None) -> list[Any]: ...
+    async def get_channel_messages(
+        self,
+        channel_id: str,
+        *,
+        before: str | None = None,
+        after: datetime | None = None,
+    ) -> list[Any]: ...
     async def get_pinned_message_ids(self, channel_id: str) -> set[str]: ...
     async def get_reaction_users(self, channel_id: str, message_id: str, emoji: str) -> list[Any]: ...
     async def get_guild_emojis(self, guild_id: str) -> list[Any]: ...
@@ -101,6 +107,157 @@ class FluxerSourceAdapter(SourceAdapter):
                 self._load_reaction_identities(conversation, message)
 
         return [self._identities[key] for key in sorted(self._identities)]
+
+    def iter_identity_batches(
+        self,
+        *,
+        resume_cursor: dict[str, Any] | None = None,
+        batch_size: int = 100,
+    ) -> Iterable[IdentityDiscoveryBatch]:
+        """Discover Fluxer identities one bounded message page at a time."""
+        if batch_size <= 0:
+            raise ValueError("Identity discovery batch size must be greater than zero.")
+
+        cursor = dict(resume_cursor or {})
+        channel_index = int(cursor.get("channel_index", 0))
+        message_index = int(cursor.get("message_index", 0))
+        reaction_index = int(cursor.get("reaction_index", 0))
+        reaction_user_index = int(cursor.get("reaction_user_index", 0))
+        author_processed = bool(cursor.get("author_processed", False))
+        before = cursor.get("before")
+        if before is not None:
+            before = str(before)
+
+        conversations = list(self.iter_conversations())
+        batch: list[CanonicalIdentity] = []
+
+        def emit_if_full(next_cursor: dict[str, Any]):
+            nonlocal batch
+            if len(batch) < batch_size:
+                return None
+            result = IdentityDiscoveryBatch(tuple(batch), cursor=dict(next_cursor))
+            batch = []
+            return result
+
+        for current_channel_index in range(channel_index, len(conversations)):
+            conversation = conversations[current_channel_index]
+            source_channel_id = self._source_channel_id(conversation)
+            page_before = before if current_channel_index == channel_index else None
+            page_message_index = message_index if current_channel_index == channel_index else 0
+            page_reaction_index = reaction_index if current_channel_index == channel_index else 0
+            page_reaction_user_index = reaction_user_index if current_channel_index == channel_index else 0
+
+            while True:
+                page = self._run(
+                    self._client.get_channel_messages(
+                        source_channel_id,
+                        before=page_before,
+                    )
+                ) or []
+                if not page:
+                    break
+
+                for current_message_index, message in enumerate(
+                    page[page_message_index:],
+                    start=page_message_index,
+                ):
+                    message_id = self._field(message, "id")
+                    if message_id is None:
+                        raise ValueError("Fluxer message is missing an ID.")
+                    author = self._field(message, "author", {}) or {}
+                    if not (
+                        current_channel_index == channel_index
+                        and current_message_index == message_index
+                        and author_processed
+                    ):
+                        batch.append(self._canonical_identity(author))
+                    self._messages.setdefault(source_channel_id, tuple())
+                    cached = list(self._messages[source_channel_id])
+                    if not any(str(self._field(item, "id")) == str(message_id) for item in cached):
+                        cached.append(dict(message) if isinstance(message, dict) else message)
+                    self._messages[source_channel_id] = tuple(cached)
+                    emitted = emit_if_full({
+                        "channel_index": current_channel_index,
+                        "before": page_before,
+                        "message_index": current_message_index,
+                        "reaction_index": 0,
+                        "reaction_user_index": 0,
+                        "author_processed": True,
+                    })
+                    if emitted is not None:
+                        yield emitted
+
+                    reactions = tuple(self._field(message, "reactions", ()) or ())
+                    start_reaction = (
+                        page_reaction_index
+                        if current_channel_index == channel_index
+                        and current_message_index == message_index
+                        else 0
+                    )
+                    for current_reaction_index in range(start_reaction, len(reactions)):
+                        reaction = reactions[current_reaction_index]
+                        emoji = self._field(reaction, "emoji", {}) or {}
+                        emoji_id = self._field(emoji, "id")
+                        emoji_name = str(self._field(emoji, "name") or "")
+                        emoji_key = str(emoji_id if emoji_id is not None else emoji_name)
+                        users = self._reaction_users.get(
+                            (source_channel_id, str(message_id), emoji_key)
+                        )
+                        if users is None:
+                            users = tuple(
+                                dict(user) if isinstance(user, dict) else user
+                                for user in (self._run(
+                                    self._client.get_reaction_users(
+                                        source_channel_id, str(message_id), emoji_key
+                                    )
+                                ) or ())
+                            )
+                            self._reaction_users[(source_channel_id, str(message_id), emoji_key)] = users
+                        start_user = (
+                            page_reaction_user_index
+                            if current_channel_index == channel_index
+                            and current_message_index == message_index
+                            and current_reaction_index == reaction_index
+                            else 0
+                        )
+                        for current_user_index in range(start_user, len(users)):
+                            batch.append(self._canonical_identity(users[current_user_index]))
+                            emitted = emit_if_full({
+                                "channel_index": current_channel_index,
+                                "before": page_before,
+                                "message_index": current_message_index,
+                                "reaction_index": current_reaction_index,
+                                "reaction_user_index": current_user_index + 1,
+                                "author_processed": True,
+                            })
+                            if emitted is not None:
+                                yield emitted
+                        page_reaction_user_index = 0
+                    page_reaction_index = 0
+                    page_message_index = current_message_index + 1
+
+                if len(page) < 100:
+                    break
+                oldest = self._message_sort_key(page[-1])
+                if oldest is None or str(oldest) == str(page_before):
+                    break
+                page_before = str(oldest)
+                page_message_index = 0
+                page_reaction_index = 0
+                page_reaction_user_index = 0
+                author_processed = False
+
+            before = None
+            message_index = 0
+            reaction_index = 0
+            reaction_user_index = 0
+
+        if batch:
+            yield IdentityDiscoveryBatch(
+                tuple(batch),
+                cursor={"channel_index": len(conversations), "complete": True},
+                complete=True,
+            )
 
     def iter_custom_emojis(self) -> Iterable[CanonicalCustomEmoji]:
         emojis: dict[str, Any] = {}
@@ -213,6 +370,64 @@ class FluxerSourceAdapter(SourceAdapter):
             return self._custom_emoji_bytes[str(emoji.id)]
         except KeyError as exc:
             raise NotFoundError(f"Fluxer custom emoji {emoji.id} is not available.") from exc
+
+    def iter_messages_after_checkpoint(
+        self,
+        conversation: CanonicalConversation,
+        cursor: SourceRefreshCursor,
+    ) -> Iterable[CanonicalMessage]:
+        """Resume full-history traversal using a native Fluxer ``after`` query.
+
+        Clients predating the optional ``after`` parameter fall back to the
+        existing complete traversal, which remains correct because the
+        importer retains the committed message boundary.
+        """
+        channel_id = self._source_channel_id(conversation)
+        getter = self._client.get_channel_messages
+        try:
+            page = self._run(
+                getter(
+                    channel_id,
+                    after=cursor.created_at,
+                )
+            ) or []
+        except TypeError:
+            yield from self.iter_messages(conversation)
+            return
+
+        raw_messages = [
+            dict(message) if isinstance(message, dict) else message
+            for message in page
+            if self._message_sort_key(message) is not None
+        ]
+        raw_messages.sort(key=lambda message: self._message_sort_key(message) or "")
+        self._messages[channel_id] = tuple(raw_messages)
+
+        pinned_ids = {
+            str(message.get("id"))
+            for message in raw_messages
+            if isinstance(message, dict) and bool(message.get("pinned"))
+            and message.get("id") is not None
+        }
+        pin_getter = getattr(self._client, "get_pinned_message_ids", None)
+        if pin_getter is not None:
+            pinned_ids.update(
+                str(message_id)
+                for message_id in self._run(pin_getter(channel_id))
+            )
+
+        for raw_message in raw_messages:
+            message = self._canonical_message(
+                conversation,
+                raw_message,
+                pinned_ids=pinned_ids,
+            )
+            if (message.created_at, str(message.id)) <= (
+                cursor.created_at,
+                str(cursor.message_id),
+            ):
+                continue
+            yield message
 
     def iter_pinned_message_ids(
         self,

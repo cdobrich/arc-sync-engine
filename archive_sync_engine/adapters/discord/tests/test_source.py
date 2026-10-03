@@ -168,6 +168,53 @@ def test_iter_identities_rejects_missing_member_cache_and_fetch_api() -> None:
     assert isinstance(exc_info.value, AdapterError)
 
 
+def test_iter_identity_batches_are_bounded_and_resumable() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    guild = FakeGuild()
+    guild.members = []
+    channel = MessageChannel(
+        10,
+        "history",
+        1,
+        created,
+        messages=tuple(
+            FakeMessage(
+                index,
+                None,
+                FakeUser(100 + index, f"User{index}"),
+                created + timedelta(seconds=index),
+                f"message-{index}",
+            )
+            for index in range(1, 4)
+        ),
+    )
+    for message in channel._messages:
+        message.channel = channel
+    guild.channels = [channel]
+    guild.threads = []
+
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    batches = list(adapter.iter_identity_batches(batch_size=1))
+
+    assert [len(batch.identities) for batch in batches] == [1, 1, 1]
+    assert batches[-1].complete is False
+    assert batches[0].cursor["message_index"] == 0
+    assert batches[1].cursor["message_index"] == 1
+    assert batches[2].cursor["message_index"] == 2
+    assert len(adapter._message_cache[str(next(adapter.iter_conversations()).id)]) == 3
+
+    resumed = list(
+        adapter.iter_identity_batches(
+            batch_size=1,
+            resume_cursor=batches[1].cursor,
+        )
+    )
+    assert [str(identity.identity_key) for batch in resumed for identity in batch.identities] == [
+        "discord:user:103",
+    ]
+
+
+
 def test_iter_conversations_maps_channels_and_threads() -> None:
     adapter = DiscordSourceAdapter(
         FakeClient(FakeGuild()),
@@ -1404,3 +1451,42 @@ def test_unrelated_discord_fetch_error_is_not_rewritten() -> None:
 
     with pytest.raises(ForbiddenError, match="Missing Access"):
         list(adapter._iter_guilds())
+
+
+def test_iter_messages_after_checkpoint_uses_native_discord_history_boundary() -> None:
+    from archive_sync_engine.adapters.source import SourceRefreshCursor
+
+    created = datetime(2026, 8, 18, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+
+    class ResumeChannel(FakeChannel):
+        def __init__(self):
+            super().__init__(10, "first", 1, created)
+            self.history_after = None
+            self._messages = (
+                FakeMessage(100, self, user, created, "first"),
+                FakeMessage(101, self, user, created + timedelta(minutes=1), "second"),
+            )
+
+        def history(self, *, limit=None, oldest_first=True, after=None):
+            self.history_after = after
+
+            async def iterator():
+                for message in self._messages:
+                    if after is None or message.created_at >= after:
+                        yield message
+
+            return iterator()
+
+    channel = ResumeChannel()
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+    cursor = SourceRefreshCursor(created_at=created, message_id="discord:message:100")
+
+    messages = list(adapter.iter_messages_after_checkpoint(conversation, cursor))
+
+    assert [str(message.id) for message in messages] == ["discord:message:101"]
+    assert channel.history_after == created - timedelta(microseconds=1)

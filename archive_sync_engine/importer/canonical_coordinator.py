@@ -32,7 +32,12 @@ from archive_sync_engine.adapters.source import SourceRefreshCursor
 from archive_sync_engine.archive.package import ArchivePackage
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.archive.writer import ArchiveWriter
-from archive_sync_engine.importer import ImportProgress, ImportState
+from archive_sync_engine.importer import (
+    DiscoveryPhase,
+    DiscoveryState,
+    ImportProgress,
+    ImportState,
+)
 from archive_sync_engine.importer.canonical_importer import (
     CanonicalImporter,
 )
@@ -77,6 +82,7 @@ class CanonicalImportCoordinator:
         on_status: Callable[[ImportProgress], None] | None = None,
         between_messages_seconds: float = 0.0,
         between_channels_seconds: float = 0.0,
+        discovery_batch_size: int = 100,
     ) -> ImportReport:
         """
         Execute a complete canonical import.
@@ -106,11 +112,24 @@ class CanonicalImportCoordinator:
             except FileNotFoundError:
                 previous_session = None
 
-        cursor_state_available = self._paths.import_cursors.is_file()
+        try:
+            previous_discovery_state = self._package.load_discovery_state()
+        except FileNotFoundError:
+            previous_discovery_state = None
+
+        try:
+            previous_recovery_cursors = self._package.load_import_recovery_cursors()
+        except FileNotFoundError:
+            previous_recovery_cursors = {}
+        # A completed run is an explicit refresh request. A failed/interrupted
+        # run is a checkpoint continuation, even when source-aware refresh
+        # cursors were written before the failure. Treating those cursors as a
+        # refresh trigger would discard the full-resume traversal boundary and
+        # could force unnecessary source replay.
         incremental_refresh = bool(
             resume
             and previous_session is not None
-            and (previous_session.completed or cursor_state_available)
+            and previous_session.completed
         )
 
         session = SyncSession(
@@ -125,6 +144,8 @@ class CanonicalImportCoordinator:
         )
 
         try:
+            if not incremental_refresh and not (resume and previous_discovery_state is not None):
+                self._package.save_discovery_state(DiscoveryState.identities_started())
             existing_messages_by_conversation: dict[str, tuple[CanonicalMessage, ...]] = {}
             if incremental_refresh and previous_session is not None and previous_session.completed:
                 from archive_sync_engine.archive import Archive
@@ -139,7 +160,19 @@ class CanonicalImportCoordinator:
 
             resume_state = None
             if resume and not incremental_refresh:
-                resume_state = self.load_import_state()
+                try:
+                    resume_state = self.load_import_state()
+                except FileNotFoundError:
+                    # Discovery checkpoints are independently resumable. No
+                    # message checkpoint exists until canonical traversal has
+                    # actually begun, so an identity-phase failure resumes
+                    # from discovery-state.json without inventing a message
+                    # cursor.
+                    if previous_discovery_state is None or previous_discovery_state.phase not in {
+                        DiscoveryPhase.IDENTITIES,
+                        DiscoveryPhase.CANONICAL,
+                    }:
+                        raise
             elif resume and incremental_refresh:
                 try:
                     cursors = self._package.load_import_cursors()
@@ -156,6 +189,12 @@ class CanonicalImportCoordinator:
                         },
                     },
                 )
+
+            resume_discovery_state = (
+                previous_discovery_state
+                if resume and not incremental_refresh
+                else None
+            )
 
             with ArchiveWriter(
                 self._paths,
@@ -184,6 +223,20 @@ class CanonicalImportCoordinator:
                     refresh_cursors[conversation_id] = cursor
                     self._package.save_import_cursors(refresh_cursors)
 
+                def save_recovery_cursor(
+                    conversation_id: str,
+                    cursor: "SourceRefreshCursor",
+                ) -> None:
+                    previous_recovery_cursors[conversation_id] = cursor
+                    self._package.save_import_recovery_cursors(previous_recovery_cursors)
+
+                def checkpoint_discovery(state: DiscoveryState) -> None:
+                    # Discovery state is advanced only after the canonical
+                    # records in the batch have been committed. If state
+                    # persistence itself fails, the committed records remain
+                    # safely replayable on the next run.
+                    writer.commit()
+                    self._package.save_discovery_state(state)
 
                 importer = CanonicalImporter()
                 rate_limiter = OperationRateLimiter(
@@ -202,13 +255,32 @@ class CanonicalImportCoordinator:
                     on_progress=checkpoint,
                     on_status=on_status,
                     on_refresh_cursor=save_refresh_cursor,
+                    on_recovery_cursor=save_recovery_cursor,
+                    on_discovery_checkpoint=checkpoint_discovery,
                     resume_state=resume_state,
+                    resume_discovery_state=resume_discovery_state,
+                    resume_message_cursor=(
+                        previous_recovery_cursors.get(
+                            str(resume_state.payload.get("conversation_id"))
+                        )
+                        if resume_state is not None and not incremental_refresh
+                        else None
+                    ),
                     incremental_refresh=incremental_refresh,
+                    discovery_batch_size=discovery_batch_size,
                     rate_limiter=rate_limiter,
                     **({
                         "existing_messages_by_conversation": existing_messages_by_conversation,
                     } if existing_messages_by_conversation else {}),
                 )
+
+            # The writer context has committed the final canonical import
+            # boundary. Only now can discovery be marked complete.
+            completed_discovery_state = self._package.load_discovery_state()
+            self._package.save_discovery_state(
+                completed_discovery_state.with_phase(DiscoveryPhase.COMPLETED)
+            )
+            self._package.clear_import_recovery_cursors()
 
             finished_at = datetime.now(
                 timezone.utc,

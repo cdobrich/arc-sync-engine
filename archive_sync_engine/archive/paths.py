@@ -105,6 +105,15 @@ class ArchivePaths:
         return self.root / "import-state.json"
 
     @property
+    def discovery_state(self) -> Path:
+        """Path to durable source-discovery lifecycle state."""
+        return self.root / "discovery-state.json"
+
+    @property
     def import_cursors(self) -> Path:
         """Path to persisted source-aware incremental refresh cursors."""
         return self.root / "import-cursors.json"
+    @property
+    def import_recovery_cursors(self) -> Path:
+        """Path to persisted full-import recovery cursors."""
+        return self.root / "import-recovery-cursors.json"

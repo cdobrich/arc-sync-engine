@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from archive_sync_engine.adapters import SourceAdapter
+from archive_sync_engine.adapters import IdentityDiscoveryBatch, SourceAdapter
 from archive_sync_engine.archive import Archive
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.importer.canonical_coordinator import (
@@ -14,6 +14,7 @@ from archive_sync_engine.importer.canonical_coordinator import (
     ImportReport,
 )
 from archive_sync_engine.importer.canonical_importer import CanonicalImporter
+from archive_sync_engine.importer.discovery_state import DiscoveryPhase
 from archive_sync_engine.models import (
     CanonicalConversation,
     CanonicalIdentity,
@@ -92,6 +93,30 @@ class FakeSourceAdapter(SourceAdapter):
         raise AssertionError(
             "The test source contains no attachments."
         )
+
+
+class ResumableIdentitySource(FakeSourceAdapter):
+    def __init__(self) -> None:
+        self.fail_first_discovery = True
+        self.identity_batch_calls: list[dict[str, object]] = []
+
+    def iter_identity_batches(self, *, resume_cursor=None, batch_size=100):
+        self.identity_batch_calls.append(dict(resume_cursor or {}))
+        if not resume_cursor:
+            yield IdentityDiscoveryBatch(
+                (CanonicalIdentity(IdentityKey("identity-001"), "Alice"),),
+                cursor={"position": 1},
+            )
+            if self.fail_first_discovery:
+                raise RuntimeError("resumable identity discovery failed")
+        else:
+            assert resume_cursor == {"position": 1}
+            yield IdentityDiscoveryBatch(
+                (CanonicalIdentity(IdentityKey("identity-002"), "Bob"),),
+                cursor={"position": 2},
+                complete=True,
+            )
+
 
 
 def test_canonical_import_coordinator_imports_source(
@@ -258,8 +283,13 @@ def test_canonical_import_coordinator_uses_importer_contract(
         on_progress=None,
         on_status=None,
         on_refresh_cursor=None,
+        on_recovery_cursor=None,
+        on_discovery_checkpoint=None,
         resume_state=None,
+        resume_message_cursor=None,
+        resume_discovery_state=None,
         incremental_refresh=False,
+        discovery_batch_size=100,
         rate_limiter=None,
     ) -> None:
         captured.update(
@@ -270,11 +300,17 @@ def test_canonical_import_coordinator_uses_importer_contract(
                 "on_progress": on_progress,
                 "on_status": on_status,
                 "on_refresh_cursor": on_refresh_cursor,
+                "on_recovery_cursor": on_recovery_cursor,
+                "on_discovery_checkpoint": on_discovery_checkpoint,
                 "resume_state": resume_state,
+                "resume_message_cursor": resume_message_cursor,
+                "resume_discovery_state": resume_discovery_state,
                 "incremental_refresh": incremental_refresh,
+                "discovery_batch_size": discovery_batch_size,
                 "rate_limiter": rate_limiter,
             }
         )
+
 
     monkeypatch.setattr(
         CanonicalImporter,
@@ -293,6 +329,7 @@ def test_canonical_import_coordinator_uses_importer_contract(
     assert captured["asset_store"] is not None
     assert captured["on_progress"] is not None
     assert captured["on_refresh_cursor"] is not None
+    assert captured["on_recovery_cursor"] is not None
     assert captured["incremental_refresh"] is False
     assert captured["rate_limiter"] is not None
 
@@ -828,22 +865,24 @@ def test_incremental_refresh_reconciles_mutable_message_state_from_source_window
         )
 
 
-def test_interrupted_import_resume_uses_last_committed_source_cursor(
+def test_interrupted_import_resume_uses_last_committed_message_checkpoint(
     tmp_path: Path,
 ) -> None:
-    """An interrupted import can continue from its durable source cursor."""
+    """An interrupted import resumes from the full-import message checkpoint."""
     from archive_sync_engine.adapters.source import SourceRefreshCursor
 
     class InterruptibleSource(ResumableSourceAdapter):
         def __init__(self) -> None:
             super().__init__()
-            self.incremental_visits: list[str] = []
-            self.use_incremental = False
+            self.resume_visits: list[str] = []
 
-        def iter_messages_since(self, conversation, cursor):
-            self.incremental_visits.append(str(cursor.message_id))
+        def iter_messages_after_checkpoint(self, conversation, cursor):
+            self.resume_visits.append(str(cursor.message_id))
             for message in self._messages:
-                if message.created_at > cursor.created_at:
+                if (message.created_at, str(message.id)) > (
+                    cursor.created_at,
+                    str(cursor.message_id),
+                ):
                     yield message
 
     paths = ArchivePaths(root=tmp_path)
@@ -859,12 +898,193 @@ def test_interrupted_import_resume_uses_last_committed_source_cursor(
             message_id="message-001",
         )
     }
+    assert coordinator._package.load_import_recovery_cursors() == {
+        "conversation-001": SourceRefreshCursor(
+            created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            message_id="message-001",
+        )
+    }
 
     source.fail_second_message = False
     source.message_visits.clear()
     coordinator.run(source, resume=True)
 
-    assert source.incremental_visits == ["message-001"]
+    assert source.resume_visits == ["message-001"]
+    with pytest.raises(FileNotFoundError):
+        coordinator._package.load_import_recovery_cursors()
+    with Archive(paths) as archive:
+        assert tuple(str(message.id) for message in archive.iter_messages()) == (
+            "message-001",
+            "message-002",
+        )
+
+
+def test_resume_continues_from_adapter_identity_cursor(tmp_path: Path) -> None:
+    """A failed identity traversal resumes from the adapter cursor, not the beginning."""
+    paths = ArchivePaths(root=tmp_path)
+    source = ResumableIdentitySource()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    with pytest.raises(RuntimeError, match="resumable identity discovery failed"):
+        coordinator.run(source, discovery_batch_size=1)
+
+    state = coordinator._package.load_discovery_state()
+    assert state.phase is DiscoveryPhase.IDENTITIES
+    assert state.metadata == {
+        "adapter": "Fake",
+        "cursor": {"position": 1},
+    }
+
+    source.fail_first_discovery = False
+    progress: list[tuple[str, int | None, str | None]] = []
+    coordinator.run(
+        source,
+        resume=True,
+        discovery_batch_size=1,
+        on_status=lambda event: progress.append((event.phase, event.current, event.detail)),
+    )
+
+    assert source.identity_batch_calls == [{}, {"position": 1}]
+    assert (
+        "identity_scan",
+        0,
+        "Resuming identity discovery from checkpoint: 1 identities committed; cursor={'position': 1}",
+    ) in progress
+    assert ("identities", 2, "identity-002") in progress
+    with Archive(paths) as archive:
+        assert tuple(str(identity.identity_key) for identity in archive.iter_identities()) == (
+            "identity-001",
+            "identity-002",
+        )
+
+
+
+def test_canonical_import_coordinator_persists_discovery_boundary_before_message_import(
+    tmp_path: Path,
+) -> None:
+    """Identity discovery becomes a durable resume boundary before messages."""
+    paths = ArchivePaths(root=tmp_path)
+    source = FakeSourceAdapter()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    coordinator.run(source, discovery_batch_size=1)
+
+    state = ArchivePackage(paths).load_discovery_state()
+    assert state.phase is DiscoveryPhase.COMPLETED
+    assert state.records_committed == 1
+    assert state.batch_number == 1
+
+
+
+class PartialIdentityFailureSource(FakeSourceAdapter):
+    def iter_identities(self):
+        yield CanonicalIdentity(
+            identity_key=IdentityKey("identity-001"),
+            display_name="Alice",
+        )
+        raise RuntimeError("identity discovery failed after first batch")
+
+
+def test_discovery_checkpoint_is_after_committed_identity_batch(
+    tmp_path: Path,
+) -> None:
+    """An identity batch remains durable when the following discovery work fails."""
+    paths = ArchivePaths(root=tmp_path)
+    source = PartialIdentityFailureSource()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    with pytest.raises(RuntimeError, match="identity discovery failed"):
+        coordinator.run(source, discovery_batch_size=1)
+
+    with Archive(paths) as archive:
+        assert tuple(str(identity.identity_key) for identity in archive.iter_identities()) == (
+            "identity-001",
+        )
+
+    state = ArchivePackage(paths).load_discovery_state()
+    assert state.phase is DiscoveryPhase.IDENTITIES
+    assert state.records_committed == 1
+    assert state.batch_number == 1
+    assert state.last_record_key == "identity-001"
+
+
+class DiscoveryFailureSource(FakeSourceAdapter):
+    def __init__(self) -> None:
+        self.fail_messages = True
+
+    def iter_messages(self, conversation):
+        if self.fail_messages:
+            raise RuntimeError("message phase failed")
+        yield from super().iter_messages(conversation)
+
+
+def test_resume_skips_completed_discovery_phase(
+    tmp_path: Path,
+) -> None:
+    """A failure after discovery does not force identity discovery on resume."""
+    paths = ArchivePaths(root=tmp_path)
+    source = DiscoveryFailureSource()
+    identity_calls = 0
+    original = source.iter_identities
+
+    def counted_identities():
+        nonlocal identity_calls
+        identity_calls += 1
+        yield from original()
+
+    source.iter_identities = counted_identities
+    coordinator = CanonicalImportCoordinator(paths)
+
+    with pytest.raises(RuntimeError, match="message phase failed"):
+        coordinator.run(source, discovery_batch_size=1)
+
+    state = ArchivePackage(paths).load_discovery_state()
+    assert state.phase is DiscoveryPhase.CANONICAL
+    assert identity_calls == 1
+
+    source.fail_messages = False
+    coordinator.run(source, resume=True)
+
+    assert identity_calls == 1
+    assert ArchivePackage(paths).load_discovery_state().phase is DiscoveryPhase.COMPLETED
+
+
+def test_canonical_import_coordinator_uses_native_full_resume_cursor(
+    tmp_path: Path,
+) -> None:
+    """A source-native recovery cursor avoids replaying committed history."""
+
+    class NativeResumableSource(ResumableSourceAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.resume_visits: list[str] = []
+
+        def iter_messages_after_checkpoint(self, conversation, cursor):
+            self.resume_visits.append(str(cursor.message_id))
+            for message in self._messages:
+                if (message.created_at, str(message.id)) > (
+                    cursor.created_at,
+                    str(cursor.message_id),
+                ):
+                    self.message_visits.append(str(message.id))
+                    if message.id == MessageId("message-002") and self.fail_second_message:
+                        raise RuntimeError("second message failed")
+                    yield message
+
+    paths = ArchivePaths(root=tmp_path)
+    source = NativeResumableSource()
+    coordinator = CanonicalImportCoordinator(paths)
+
+    with pytest.raises(RuntimeError, match="second message failed"):
+        coordinator.run(source)
+
+    source.fail_second_message = False
+    source.message_visits.clear()
+    coordinator.run(source, resume=True)
+
+    assert source.resume_visits == ["message-001"]
+    assert source.message_visits == ["message-002"]
+
     with Archive(paths) as archive:
         assert tuple(str(message.id) for message in archive.iter_messages()) == (
             "message-001",

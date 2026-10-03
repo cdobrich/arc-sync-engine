@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
@@ -59,6 +59,22 @@ class SourceRefreshCursor:
         if not message_id:
             raise ValueError("Source refresh cursor message_id must not be empty.")
         return cls(created_at=created_at, message_id=message_id)
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityDiscoveryBatch:
+    """One bounded, resumable unit of source identity discovery."""
+
+    identities: tuple[CanonicalIdentity, ...]
+    cursor: Mapping[str, Any] = field(default_factory=dict)
+    complete: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identities, tuple):
+            raise TypeError("Identity discovery batch identities must be a tuple.")
+        if not isinstance(self.cursor, Mapping):
+            raise TypeError("Identity discovery batch cursor must be a mapping.")
+
 
 
 class SourceAdapter(ABC):
@@ -133,6 +149,22 @@ class SourceAdapter(ABC):
         del conversation
         return None
 
+    def iter_messages_after_checkpoint(
+        self,
+        conversation: CanonicalConversation,
+        cursor: SourceRefreshCursor,
+    ) -> Iterable[CanonicalMessage]:
+        """Enumerate messages strictly after a committed full-import cursor.
+
+        This cursor is a recovery boundary, not an incremental-refresh
+        lookback window. Adapters may use a native ``after`` traversal to
+        avoid replaying the already committed historical prefix. The base
+        implementation preserves compatibility by falling back to complete
+        traversal; callers retain the persisted message ID as a safety net.
+        """
+        del cursor
+        yield from self.iter_messages(conversation)
+
     def iter_messages_since(
         self,
         conversation: CanonicalConversation,
@@ -156,6 +188,35 @@ class SourceAdapter(ABC):
         their complete identity enumeration.
         """
         yield from self.iter_identities()
+
+    def iter_identity_batches(
+        self,
+        *,
+        resume_cursor: Mapping[str, Any] | None = None,
+        batch_size: int = 100,
+    ) -> Iterable[IdentityDiscoveryBatch]:
+        """Enumerate identities in bounded, resumable discovery batches.
+
+        The default implementation preserves the existing adapter contract.
+        Adapters that can checkpoint their traversal should override this
+        method and place only JSON-serializable source traversal data in the
+        returned cursor.
+        """
+        if batch_size <= 0:
+            raise ValueError("Identity discovery batch size must be greater than zero.")
+        del resume_cursor
+        batch: list[CanonicalIdentity] = []
+        yielded = False
+        for identity in self.iter_identities():
+            batch.append(identity)
+            if len(batch) >= batch_size:
+                yielded = True
+                yield IdentityDiscoveryBatch(tuple(batch))
+                batch = []
+        if batch:
+            yield IdentityDiscoveryBatch(tuple(batch), complete=True)
+        elif not yielded:
+            yield IdentityDiscoveryBatch((), complete=True)
 
     @property
     def supports_incremental_deletion_reconciliation(self) -> bool:

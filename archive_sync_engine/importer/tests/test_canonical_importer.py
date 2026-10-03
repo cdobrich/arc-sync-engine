@@ -6,12 +6,13 @@ from pathlib import Path
 import pytest
 
 from archive_sync_engine.adapters import SourceAdapter
-from archive_sync_engine.adapters.source import SourceRefreshCursor
+from archive_sync_engine.adapters.source import IdentityDiscoveryBatch, SourceRefreshCursor
 from archive_sync_engine.archive import Archive, ArchivePackage
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.archive.writer import ArchiveWriter
 from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.importer import ImportState
+from archive_sync_engine.importer.discovery_state import DiscoveryPhase, DiscoveryState
 from archive_sync_engine.importer.canonical_coordinator import CanonicalImportCoordinator
 from archive_sync_engine.importer.canonical_importer import (
     CanonicalImporter,
@@ -124,6 +125,88 @@ class FakeSourceAdapter(SourceAdapter):
 
         return self._attachment_content
 
+
+
+class DuplicateIdentityBatchSource(FakeSourceAdapter):
+    def iter_identity_batches(self, *, resume_cursor=None, batch_size=100):
+        del resume_cursor, batch_size
+        yield IdentityDiscoveryBatch(
+            (
+                self._identity,
+                self._identity,
+                CanonicalIdentity(
+                    identity_key=IdentityKey("user-002"),
+                    display_name="Second User",
+                ),
+                self._identity,
+            ),
+            cursor={"position": 4},
+            complete=True,
+        )
+
+
+def test_identity_progress_counts_unique_canonical_identities_not_observations(
+    tmp_path: Path,
+) -> None:
+    """Repeated source observations must not inflate canonical identity progress."""
+    source = DuplicateIdentityBatchSource(b"attachment-content")
+    statuses = []
+
+    with ArchiveWriter(ArchivePaths(root=tmp_path)) as writer:
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=AssetStore(tmp_path),
+            on_status=statuses.append,
+        )
+
+    identity_events = [
+        event for event in statuses if event.phase == "identities" and event.current
+    ]
+    assert [(event.current, event.detail) for event in identity_events] == [
+        (1, "user-001"),
+        (2, "user-002"),
+    ]
+
+    with Archive(ArchivePaths(root=tmp_path)) as archive:
+        assert tuple(str(identity.identity_key) for identity in archive.iter_identities()) == (
+            "user-001",
+            "user-002",
+        )
+
+
+def test_resumed_identity_discovery_does_not_recount_persisted_identity(
+    tmp_path: Path,
+) -> None:
+    """A resumed batch containing an already committed identity advances only for new keys."""
+    paths = ArchivePaths(root=tmp_path)
+    source = DuplicateIdentityBatchSource(b"attachment-content")
+
+    with ArchiveWriter(paths) as writer:
+        writer.upsert_identity(source._identity)
+        writer.commit()
+
+        statuses = []
+        CanonicalImporter().import_source(
+            source=source,
+            writer=writer,
+            asset_store=AssetStore(tmp_path),
+            on_status=statuses.append,
+            resume_discovery_state=DiscoveryState(
+                phase=DiscoveryPhase.IDENTITIES,
+                records_committed=1,
+                batch_number=1,
+                last_record_key="user-001",
+                metadata={"adapter": source.name, "cursor": {"position": 1}},
+            ),
+        )
+
+    identity_events = [
+        event for event in statuses if event.phase == "identities" and event.current
+    ]
+    assert [(event.current, event.detail) for event in identity_events] == [
+        (2, "user-002"),
+    ]
 
 def test_canonical_importer_imports_source_into_archive(
     tmp_path: Path,
@@ -505,7 +588,7 @@ def test_incremental_refresh_uses_adapter_incremental_message_traversal(
     tmp_path: Path,
 ) -> None:
     """A completed refresh uses the adapter's source-aware cursor API."""
-    from archive_sync_engine.adapters.source import SourceRefreshCursor
+    from archive_sync_engine.adapters.source import IdentityDiscoveryBatch, SourceRefreshCursor
 
     class IncrementalSource(FakeSourceAdapter):
         def __init__(self) -> None:
@@ -593,7 +676,7 @@ def test_import_rate_limiter_applies_message_and_channel_delays(tmp_path: Path) 
 
 
 def test_incremental_refresh_reports_source_cursor_diagnostics(tmp_path: Path) -> None:
-    from archive_sync_engine.adapters.source import SourceRefreshCursor
+    from archive_sync_engine.adapters.source import IdentityDiscoveryBatch, SourceRefreshCursor
 
     class IncrementalSource(FakeSourceAdapter):
         @property

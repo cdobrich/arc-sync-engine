@@ -33,7 +33,7 @@ from archive_sync_engine.adapters.exceptions import (
     AuthorizationError,
     NotFoundError,
 )
-from archive_sync_engine.adapters.source import SourceAdapter, SourceRefreshCursor
+from archive_sync_engine.adapters.source import IdentityDiscoveryBatch, SourceAdapter, SourceRefreshCursor
 from archive_sync_engine.models import (
     CanonicalAttachment,
     CanonicalConversation,
@@ -195,6 +195,205 @@ class DiscordSourceAdapter(SourceAdapter):
 
         yield from (identities[key] for key in sorted(identities))
 
+    def iter_identity_batches(
+        self,
+        *,
+        resume_cursor: dict[str, Any] | None = None,
+        batch_size: int = 100,
+    ) -> Iterable[IdentityDiscoveryBatch]:
+        """Discover identities in bounded, resumable source traversal units."""
+        if batch_size <= 0:
+            raise ValueError("Identity discovery batch size must be greater than zero.")
+
+        cursor = dict(resume_cursor or {})
+        stage = str(cursor.get("stage", "members"))
+        guild_index = int(cursor.get("guild_index", 0))
+        member_index = int(cursor.get("member_index", 0))
+        conversation_index = int(cursor.get("conversation_index", 0))
+        message_index = int(cursor.get("message_index", 0))
+        reaction_index = int(cursor.get("reaction_index", 0))
+        reaction_user_index = int(cursor.get("reaction_user_index", 0))
+        author_processed = bool(cursor.get("author_processed", False))
+
+        guilds = tuple(self._iter_guilds())
+        self._identity_scan_messages_scanned = 0
+        self._report_identity_scan_progress(0, "Loading Discord guild members...")
+        batch: list[CanonicalIdentity] = []
+
+        def emit_if_full(next_cursor: dict[str, Any]):
+            nonlocal batch
+            if len(batch) < batch_size:
+                return None
+            result = IdentityDiscoveryBatch(tuple(batch), cursor=dict(next_cursor))
+            batch = []
+            return result
+
+        for current_guild_index in range(guild_index, len(guilds)):
+            guild = guilds[current_guild_index]
+            members = self._run(self._collect_guild_members(guild))
+            start_member = (
+                member_index
+                if current_guild_index == guild_index and stage == "members"
+                else 0
+            )
+            for current_member_index in range(start_member, len(members)):
+                batch.append(self._canonical_identity(members[current_member_index]))
+                emitted = emit_if_full({
+                    "stage": "members",
+                    "guild_index": current_guild_index,
+                    "member_index": current_member_index + 1,
+                })
+                if emitted is not None:
+                    yield emitted
+            member_index = 0
+
+        conversations = self._discover_conversations()
+        start_conversation = conversation_index if stage != "members" else 0
+
+        for current_conversation_index in range(start_conversation, len(conversations)):
+            conversation = conversations[current_conversation_index]
+            channel = self._conversation_channels[str(conversation.id)]
+            if getattr(channel, "history", None) is None:
+                continue
+
+            start_message = (
+                message_index
+                if current_conversation_index == conversation_index and stage == "history"
+                else 0
+            )
+            first_message_index = start_message
+            first_reaction_index = reaction_index
+            first_reaction_user_index = reaction_user_index
+
+            while True:
+                messages, exhausted = self._run(
+                    self._collect_raw_message_slice(
+                        channel,
+                        start_message,
+                        batch_size,
+                    )
+                )
+                if not messages:
+                    exhausted = True
+
+                cached = list(self._message_cache.get(str(conversation.id), ()))
+                cached_ids = {str(getattr(item, "id", "")) for item in cached}
+                for message in messages:
+                    if str(getattr(message, "id", "")) not in cached_ids:
+                        cached.append(message)
+                        cached_ids.add(str(getattr(message, "id", "")))
+                self._message_cache[str(conversation.id)] = tuple(cached)
+
+                for offset, message in enumerate(messages, start=start_message):
+                    self._identity_scan_messages_scanned += 1
+                    self._report_identity_scan_progress(
+                        self._identity_scan_messages_scanned,
+                        f"Scanning Discord history in #{(getattr(channel, 'name', None) or getattr(channel, 'id', 'unknown'))}",
+                    )
+                    author = getattr(message, "author", None)
+                    if author is not None and not (
+                        current_conversation_index == conversation_index
+                        and offset == first_message_index
+                        and author_processed
+                    ):
+                        batch.append(self._canonical_identity(author))
+                        emitted = emit_if_full({
+                            "stage": "history",
+                            "conversation_index": current_conversation_index,
+                            "message_index": offset,
+                            "reaction_index": 0,
+                            "reaction_user_index": 0,
+                            "author_processed": True,
+                        })
+                        if emitted is not None:
+                            yield emitted
+
+                    reactions = tuple(getattr(message, "reactions", ()) or ())
+                    start_reaction = (
+                        first_reaction_index
+                        if current_conversation_index == conversation_index
+                        and offset == first_message_index
+                        and stage == "history"
+                        else 0
+                    )
+                    for current_reaction_index in range(start_reaction, len(reactions)):
+                        reaction_group = reactions[current_reaction_index]
+                        users = getattr(reaction_group, "users", None)
+                        if users is None:
+                            raise AdapterError(
+                                "Discord reaction does not expose reacting users."
+                            )
+                        reaction_users = self._run(self._collect_reaction_users(users))
+                        start_user = (
+                            first_reaction_user_index
+                            if current_conversation_index == conversation_index
+                            and offset == first_message_index
+                            and current_reaction_index == first_reaction_index
+                            and stage == "history"
+                            else 0
+                        )
+                        for current_user_index in range(start_user, len(reaction_users)):
+                            batch.append(
+                                self._canonical_identity(reaction_users[current_user_index])
+                            )
+                            emitted = emit_if_full({
+                                "stage": "history",
+                                "conversation_index": current_conversation_index,
+                                "message_index": offset,
+                                "reaction_index": current_reaction_index,
+                                "reaction_user_index": current_user_index + 1,
+                            })
+                            if emitted is not None:
+                                yield emitted
+                        first_reaction_user_index = 0
+                    first_reaction_index = 0
+
+                if exhausted:
+                    break
+                start_message += len(messages)
+                first_message_index = start_message
+                first_reaction_index = 0
+                first_reaction_user_index = 0
+                author_processed = False
+
+            conversation_index = current_conversation_index + 1
+            message_index = 0
+            reaction_index = 0
+            reaction_user_index = 0
+
+        if batch:
+            yield IdentityDiscoveryBatch(
+                tuple(batch),
+                cursor={
+                    "stage": "complete",
+                    "conversation_index": len(conversations),
+                },
+                complete=True,
+            )
+
+    @staticmethod
+    async def _collect_raw_message_slice(
+        channel: Any,
+        start: int,
+        limit: int,
+    ) -> tuple[list[Any], bool]:
+        history = channel.history(limit=None, oldest_first=True)
+        messages: list[Any] = []
+        index = 0
+        async for message in history:
+            if index < start:
+                index += 1
+                continue
+            messages.append(message)
+            index += 1
+            if len(messages) >= limit:
+                return messages, False
+        return messages, True
+
+    @staticmethod
+    async def _collect_reaction_users(users: Any) -> list[Any]:
+        return [user async for user in users(limit=None)]
+
     def iter_conversations(self) -> Iterable[CanonicalConversation]:
         """Yield message-bearing Discord channels and threads deterministically."""
         yield from self._discover_conversations()
@@ -331,6 +530,47 @@ class DiscordSourceAdapter(SourceAdapter):
 
         yield from messages
 
+    def iter_messages_after_checkpoint(
+        self,
+        conversation: CanonicalConversation,
+        cursor: SourceRefreshCursor,
+    ) -> Iterable[CanonicalMessage]:
+        """Resume full-history traversal after a committed message.
+
+        Discord's history endpoint can constrain traversal by creation time,
+        so recovery does not need to replay the entire channel. A tiny
+        timestamp overlap handles messages sharing the checkpoint timestamp;
+        canonical ordering then filters the already committed boundary.
+        """
+        channel = self._conversation_channels.get(str(conversation.id))
+        if channel is None:
+            raise NotFoundError(
+                f"Discord conversation {conversation.id} is not available."
+            )
+
+        try:
+            messages = self._run(
+                self._collect_raw_messages_after_checkpoint(channel, cursor),
+            )
+        except TypeError:
+            # Test doubles and older source clients may not expose the native
+            # ``after`` argument. Preserve safe recovery semantics by falling
+            # back to the existing complete traversal plus importer boundary.
+            yield from self.iter_messages(conversation)
+            return
+
+        self._message_cache[str(conversation.id)] = tuple(messages)
+        canonical_messages = self._run(
+            self._canonicalize_cached_messages(tuple(messages), channel),
+        )
+        for message in canonical_messages:
+            if (message.created_at, str(message.id)) <= (
+                cursor.created_at,
+                str(cursor.message_id),
+            ):
+                continue
+            yield message
+
     def iter_identities_since(
         self,
         cursors: dict[str, SourceRefreshCursor],
@@ -416,6 +656,19 @@ class DiscordSourceAdapter(SourceAdapter):
         yield from messages
 
     @classmethod
+    async def _collect_raw_messages_after_checkpoint(
+        cls,
+        channel: Any,
+        cursor: SourceRefreshCursor,
+    ) -> list[Any]:
+        after = cursor.created_at - timedelta(microseconds=1)
+        history = channel.history(
+            limit=None,
+            oldest_first=True,
+            after=after,
+        )
+        return [message async for message in history]
+
     async def _collect_incremental_raw_messages(
         cls,
         channel: Any,

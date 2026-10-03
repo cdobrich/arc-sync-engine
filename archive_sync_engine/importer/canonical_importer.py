@@ -26,13 +26,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sized, Iterable
 
-from archive_sync_engine.adapters import SourceAdapter
+from archive_sync_engine.adapters import IdentityDiscoveryBatch, SourceAdapter
 from archive_sync_engine.adapters.source import SourceRefreshCursor
 from archive_sync_engine.archive.writer import ArchiveWriter
 from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.importer.progress import ImportProgress
 from archive_sync_engine.importer.state import ImportState
-from archive_sync_engine.models import CanonicalMessage
+from archive_sync_engine.importer.discovery_state import DiscoveryPhase, DiscoveryState
+from archive_sync_engine.models import CanonicalIdentity, CanonicalMessage
 from archive_sync_engine.models.ids import MessageId
 from archive_sync_engine.rate_limit import OperationRateLimiter
 
@@ -57,8 +58,13 @@ class CanonicalImporter:
         on_progress: Callable[[ImportState], None] | None = None,
         on_status: Callable[[ImportProgress], None] | None = None,
         on_refresh_cursor: Callable[[str, SourceRefreshCursor], None] | None = None,
+        on_recovery_cursor: Callable[[str, SourceRefreshCursor], None] | None = None,
+        on_discovery_checkpoint: Callable[[DiscoveryState], None] | None = None,
         resume_state: ImportState | None = None,
+        resume_discovery_state: DiscoveryState | None = None,
+        resume_message_cursor: SourceRefreshCursor | None = None,
         incremental_refresh: bool = False,
+        discovery_batch_size: int = 100,
         rate_limiter: OperationRateLimiter | None = None,
         existing_messages_by_conversation: dict[str, tuple[CanonicalMessage, ...]] | None = None,
     ) -> None:
@@ -80,6 +86,9 @@ class CanonicalImporter:
         identifying the completed conversation and message.
         """
 
+        if discovery_batch_size <= 0:
+            raise ValueError("Discovery batch size must be greater than zero.")
+
         rate_limiter = rate_limiter or OperationRateLimiter()
         refresh_cursors: dict[str, SourceRefreshCursor] = {}
         examined_messages = 0
@@ -87,6 +96,15 @@ class CanonicalImporter:
         attachments_downloaded = 0
         attachments_reused = 0
         existing_messages_by_conversation = existing_messages_by_conversation or {}
+        # Identity discovery is a logical-record operation, not an
+        # observation-count operation. A source may encounter the same
+        # participant in guild membership, message authorship, and reactions
+        # many times. Seed the set from the durable archive so a resumed
+        # traversal cannot count an already-committed identity again.
+        committed_identity_keys = {
+            str(identity.identity_key)
+            for identity in writer.iter_identities()
+        }
         imported_message_ids_by_conversation: dict[str, set[str]] = {}
         authoritative_pins_by_conversation: dict[str, set[str]] = {}
 
@@ -127,34 +145,169 @@ class CanonicalImporter:
         # authors/reaction participants are incorporated.
         #
 
-        if resume_state is None or incremental_refresh:
+        resume_after_identity_discovery = (
+            resume_discovery_state is not None
+            and not incremental_refresh
+            and resume_discovery_state.phase is DiscoveryPhase.CANONICAL
+        )
+        if (resume_state is None or incremental_refresh) and not resume_after_identity_discovery:
             if on_status is not None:
                 on_status(ImportProgress(phase="identities", current=0))
-            identity_count = 0
-            identities = (
-                source.iter_identities_since(refresh_cursors)
-                if incremental_refresh
-                else source.iter_identities()
+            identity_count = len(committed_identity_keys)
+            discovery_state = DiscoveryState(
+                phase=DiscoveryPhase.IDENTITIES,
+                records_committed=identity_count,
+                updated_at=DiscoveryState.identities_started().updated_at,
             )
-            for identity in identities:
-                # Identity discovery is a reconciliation boundary, not a
-                # one-time insert.  A full import can legitimately encounter
-                # an identity already persisted by an earlier/partial import
-                # (for example after an interrupted run or a source adapter
-                # reusing an identity discovered through another traversal).
-                # Keep the canonical identity current without allowing a
-                # duplicate-key failure to abort the import before message
-                # traversal begins.
-                writer.upsert_identity(identity)
-                identity_count += 1
-                if on_status is not None:
-                    on_status(
-                        ImportProgress(
-                            phase="identities",
-                            current=identity_count,
-                            detail=str(identity.identity_key),
+
+            if incremental_refresh:
+                identities = source.iter_identities_since(refresh_cursors)
+                batch: list[CanonicalIdentity] = []
+                for identity in identities:
+                    batch.append(identity)
+                    if len(batch) >= discovery_batch_size:
+                        last_new_key = discovery_state.last_record_key
+                        for item in batch:
+                            writer.upsert_identity(item)
+                            key = str(item.identity_key)
+                            if key not in committed_identity_keys:
+                                committed_identity_keys.add(key)
+                                identity_count += 1
+                                last_new_key = key
+                        if on_discovery_checkpoint is not None:
+                            discovery_state = discovery_state.advance_batch(
+                                records_committed=identity_count,
+                                last_record_key=last_new_key,
+                            )
+                            on_discovery_checkpoint(discovery_state)
+                        batch = []
+                if batch or identity_count == 0:
+                    last_new_key = discovery_state.last_record_key
+                    for item in batch:
+                        writer.upsert_identity(item)
+                        key = str(item.identity_key)
+                        if key not in committed_identity_keys:
+                            committed_identity_keys.add(key)
+                            identity_count += 1
+                            last_new_key = key
+                    if on_discovery_checkpoint is not None:
+                        discovery_state = discovery_state.advance_batch(
+                            records_committed=identity_count,
+                            last_record_key=last_new_key,
                         )
+                        on_discovery_checkpoint(discovery_state)
+            else:
+                resume_cursor: dict[str, object] | None = None
+                if resume_discovery_state is not None:
+                    metadata = dict(resume_discovery_state.metadata)
+                    adapter_name = metadata.get("adapter")
+                    if adapter_name is not None and str(adapter_name) != source.name:
+                        raise ValueError(
+                            "Persisted identity discovery cursor belongs to "
+                            f"adapter {adapter_name!r}, not {source.name!r}."
+                        )
+                    raw_cursor = metadata.get("cursor")
+                    if isinstance(raw_cursor, dict):
+                        resume_cursor = dict(raw_cursor)
+                    discovery_state = resume_discovery_state
+                    identity_count = discovery_state.records_committed
+                    if on_status is not None and resume_cursor:
+                        on_status(
+                            ImportProgress(
+                                phase="identity_scan",
+                                current=0,
+                                detail=(
+                                    "Resuming identity discovery from checkpoint: "
+                                    f"{discovery_state.records_committed} identities committed; "
+                                    f"cursor={resume_cursor}"
+                                ),
+                            )
+                        )
+
+                batch_iterator = getattr(source, "iter_identity_batches", None)
+                if callable(batch_iterator):
+                    candidate_batches = batch_iterator(
+                        resume_cursor=resume_cursor,
+                        batch_size=discovery_batch_size,
                     )
+                    try:
+                        iter(candidate_batches)
+                    except TypeError:
+                        # Duck-typed test doubles and pre-VS202 source objects
+                        # may expose the new name without implementing it.
+                        candidate_batches = SourceAdapter.iter_identity_batches.__get__(source)(
+                            resume_cursor=resume_cursor,
+                            batch_size=discovery_batch_size,
+                        )
+                else:
+                    candidate_batches = SourceAdapter.iter_identity_batches.__get__(source)(
+                        resume_cursor=resume_cursor,
+                        batch_size=discovery_batch_size,
+                    )
+                for discovery_batch in candidate_batches:
+                    if not isinstance(discovery_batch, IdentityDiscoveryBatch):
+                        raise TypeError(
+                            "Source adapter identity discovery must yield "
+                            "IdentityDiscoveryBatch instances."
+                        )
+                    last_new_key = discovery_state.last_record_key
+                    for identity in discovery_batch.identities:
+                        writer.upsert_identity(identity)
+                        key = str(identity.identity_key)
+                        if key in committed_identity_keys:
+                            continue
+                        committed_identity_keys.add(key)
+                        identity_count += 1
+                        last_new_key = key
+                        if on_status is not None:
+                            on_status(
+                                ImportProgress(
+                                    phase="identities",
+                                    current=identity_count,
+                                    detail=key,
+                                )
+                            )
+
+                    cursor_metadata = {
+                        "adapter": source.name,
+                        "cursor": dict(discovery_batch.cursor),
+                    }
+                    if on_discovery_checkpoint is not None:
+                        last_key = last_new_key
+                        discovery_state = discovery_state.advance_batch(
+                            records_committed=identity_count,
+                            last_record_key=last_key,
+                            metadata=cursor_metadata,
+                        )
+                        on_discovery_checkpoint(discovery_state)
+
+                    if discovery_batch.complete:
+                        break
+
+        if on_discovery_checkpoint is not None:
+            current_state = (
+                resume_discovery_state
+                if resume_after_identity_discovery and resume_discovery_state is not None
+                else DiscoveryState(
+                    phase=DiscoveryPhase.CANONICAL,
+                    batch_number=(
+                        discovery_state.batch_number
+                        if 'discovery_state' in locals()
+                        else 0
+                    ),
+                    records_committed=(
+                        discovery_state.records_committed
+                        if 'discovery_state' in locals()
+                        else 0
+                    ),
+                    last_record_key=(
+                        discovery_state.last_record_key
+                        if 'discovery_state' in locals()
+                        else None
+                    ),
+                )
+            )
+            on_discovery_checkpoint(current_state.with_phase(DiscoveryPhase.CANONICAL))
 
         # Materialize the source conversation boundary before persisting
         # custom emojis or message data. A full import must not attempt to
@@ -323,6 +476,15 @@ class CanonicalImporter:
             )
 
             cursor = refresh_cursors.get(conversation_id)
+            full_resume_cursor = None
+            if (
+                resume_state is not None
+                and not incremental_refresh
+                and conversation_id == resume_conversation_id
+                and resume_message_id is not None
+            ):
+                full_resume_cursor = resume_message_cursor
+
             if incremental_refresh and cursor is not None:
                 traversal = "adapter_incremental"
                 messages = source.iter_messages_since(conversation, cursor)
@@ -333,6 +495,31 @@ class CanonicalImporter:
                             mode="incremental",
                             cursor=str(cursor.message_id),
                             lookback_seconds=source.incremental_refresh_lookback.total_seconds(),
+                            traversal=traversal,
+                            detail=conversation_id,
+                        )
+                    )
+            elif full_resume_cursor is not None:
+                traversal = "adapter_resume_after_checkpoint"
+                message_iterator_impl = getattr(type(source), "iter_messages_after_checkpoint", None)
+                if (
+                    message_iterator_impl is not None
+                    and message_iterator_impl is not SourceAdapter.iter_messages_after_checkpoint
+                ):
+                    messages = source.iter_messages_after_checkpoint(
+                        conversation,
+                        full_resume_cursor,
+                    )
+                    skipping_messages = False
+                else:
+                    traversal = "complete_source_traversal_resume_fallback"
+                    messages = source.iter_messages(conversation)
+                if on_status is not None:
+                    on_status(
+                        ImportProgress(
+                            phase="resume",
+                            mode="full",
+                            cursor=str(full_resume_cursor.message_id),
                             traversal=traversal,
                             detail=conversation_id,
                         )
@@ -459,18 +646,18 @@ class CanonicalImporter:
                     # checkpoint before the source cursor is advanced. This
                     # ordering prevents an interruption from ever advancing
                     # the source cursor past uncommitted archive data.
-                    on_progress(
-                        ImportState(
-                            payload={
-                                "conversation_id": str(
-                                    conversation.id,
-                                ),
-                                "message_id": str(
-                                    message.id,
-                                ),
-                            },
-                        ),
+                    progress_state = ImportState(
+                        payload={
+                            "conversation_id": str(conversation.id),
+                            "message_id": str(message.id),
+                        },
                     )
+                    on_progress(progress_state)
+                    if on_recovery_cursor is not None:
+                        on_recovery_cursor(
+                            conversation_id,
+                            refresh_cursors[conversation_id],
+                        )
 
 
                 if on_refresh_cursor is not None and not has_authoritative_pin_getter:

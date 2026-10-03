@@ -7,6 +7,7 @@ import pytest
 from archive_sync_engine.archive.package import ArchivePackage
 from archive_sync_engine.archive.paths import ArchivePaths
 from archive_sync_engine.importer.state import ImportState
+from archive_sync_engine.importer.discovery_state import DiscoveryPhase, DiscoveryState
 
 
 def test_archive_package_import_state_round_trip(
@@ -91,3 +92,37 @@ def test_archive_package_load_import_state_requires_existing_file(
         FileNotFoundError,
     ):
         package.load_import_state()
+
+def test_archive_package_discovery_state_round_trip(
+    tmp_path: Path,
+) -> None:
+    """ArchivePackage persists the durable discovery lifecycle boundary."""
+    paths = ArchivePaths(root=tmp_path)
+    paths.ensure_exists()
+    package = ArchivePackage(paths)
+
+    state = DiscoveryState(
+        phase=DiscoveryPhase.IDENTITIES,
+        batch_number=3,
+        records_committed=250,
+        last_record_key="discord:user:250",
+        metadata={
+            "adapter": "Discord",
+            "cursor": {"stage": "history", "conversation_index": 2, "message_index": 40},
+        },
+    )
+    package.save_discovery_state(state)
+
+    assert package.load_discovery_state() == state
+    assert paths.discovery_state.exists()
+
+
+def test_archive_package_load_discovery_state_requires_existing_file(
+    tmp_path: Path,
+) -> None:
+    paths = ArchivePaths(root=tmp_path)
+    paths.ensure_exists()
+    package = ArchivePackage(paths)
+
+    with pytest.raises(FileNotFoundError):
+        package.load_discovery_state()

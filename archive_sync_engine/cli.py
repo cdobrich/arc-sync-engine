@@ -877,6 +877,7 @@ def _run_init(args: argparse.Namespace) -> int:
 
 
 _IMPORT_PROGRESS_BAR: tqdm | None = None
+_IMPORT_DISCOVERY_BAR: tqdm | None = None
 
 
 def _import_progress_is_tty() -> bool:
@@ -888,6 +889,18 @@ def _close_import_progress_bar() -> None:
     if _IMPORT_PROGRESS_BAR is not None:
         _IMPORT_PROGRESS_BAR.close()
         _IMPORT_PROGRESS_BAR = None
+
+
+def _close_import_discovery_bar() -> None:
+    global _IMPORT_DISCOVERY_BAR
+    if _IMPORT_DISCOVERY_BAR is not None:
+        _IMPORT_DISCOVERY_BAR.close()
+        _IMPORT_DISCOVERY_BAR = None
+
+
+def _close_all_import_progress() -> None:
+    _close_import_progress_bar()
+    _close_import_discovery_bar()
 
 
 def _ensure_import_progress_bar(total: int) -> tqdm | None:
@@ -906,11 +919,27 @@ def _ensure_import_progress_bar(total: int) -> tqdm | None:
     return _IMPORT_PROGRESS_BAR
 
 
+def _ensure_import_discovery_bar(*, unit: str, desc: str) -> tqdm | None:
+    global _IMPORT_DISCOVERY_BAR
+    if not _import_progress_is_tty():
+        return None
+    if _IMPORT_DISCOVERY_BAR is None or _IMPORT_DISCOVERY_BAR.unit != unit:
+        _close_import_discovery_bar()
+        _IMPORT_DISCOVERY_BAR = tqdm(
+            total=None,
+            desc=desc,
+            unit=unit,
+            dynamic_ncols=True,
+            file=sys.stdout,
+        )
+    return _IMPORT_DISCOVERY_BAR
+
+
 def _print_import_progress(progress: ImportProgress) -> None:
     """Render adapter-neutral import progress without exposing secrets."""
-    global _IMPORT_PROGRESS_BAR
+    global _IMPORT_PROGRESS_BAR, _IMPORT_DISCOVERY_BAR
     if progress.phase == "refresh":
-        _close_import_progress_bar()
+        _close_all_import_progress()
         mode = progress.mode or "unknown"
         if progress.traversal == "completed":
             details = [f"examined={progress.examined or 0}"]
@@ -939,6 +968,15 @@ def _print_import_progress(progress: ImportProgress) -> None:
 
     if progress.phase == "identity_scan":
         _close_import_progress_bar()
+        bar = _ensure_import_discovery_bar(unit="message", desc="Discovering identities")
+        if bar is not None:
+            current = max(0, progress.current or 0)
+            delta = current - bar.n
+            if delta > 0:
+                bar.update(delta)
+            if progress.detail:
+                bar.set_postfix_str(progress.detail, refresh=True)
+            return
         if progress.current is None or progress.current == 0:
             if progress.detail:
                 print(f"Identity discovery: {progress.detail}", flush=True)
@@ -953,11 +991,20 @@ def _print_import_progress(progress: ImportProgress) -> None:
     if progress.phase == "identities":
         _close_import_progress_bar()
         if progress.current == 0:
-            print("Importing identities...", flush=True)
-        elif progress.detail:
+            if _IMPORT_DISCOVERY_BAR is None:
+                print("Importing identities...", flush=True)
+            return
+        bar = _ensure_import_discovery_bar(unit="identity", desc="Importing identities")
+        if bar is not None:
+            delta = max(0, progress.current) - bar.n
+            if delta > 0:
+                bar.update(delta)
+            if progress.detail:
+                bar.set_postfix_str(f"current={progress.detail}", refresh=True)
+            return
+        if progress.detail:
             print(
-                f"Importing identity {progress.current}"
-                f" ({progress.detail})...",
+                f"Importing identity {progress.current} ({progress.detail})...",
                 flush=True,
             )
         else:
@@ -965,6 +1012,7 @@ def _print_import_progress(progress: ImportProgress) -> None:
         return
 
     if progress.phase == "conversations":
+        _close_import_discovery_bar()
         if (
             progress.total is not None
             and progress.current is not None
@@ -1017,6 +1065,7 @@ def _print_import_progress(progress: ImportProgress) -> None:
         return
 
     if progress.phase == "messages":
+        _close_import_discovery_bar()
         bar = _IMPORT_PROGRESS_BAR
         if bar is not None:
             detail = progress.detail or ""
@@ -1038,6 +1087,7 @@ def _print_import_progress(progress: ImportProgress) -> None:
         return
 
     if progress.phase == "attachments":
+        _close_import_discovery_bar()
         bar = _IMPORT_PROGRESS_BAR
         if bar is not None:
             detail = progress.detail or ""
@@ -1058,7 +1108,7 @@ def _print_import_progress(progress: ImportProgress) -> None:
         print(f"{label}...", flush=True)
         return
 
-    _close_import_progress_bar()
+    _close_all_import_progress()
     print(f"Import phase: {progress.phase}", flush=True)
 
 
@@ -1147,12 +1197,20 @@ def _run_import(args: argparse.Namespace) -> int:
             raise ConfigurationError(
                 "Import resume arguments do not match the persisted adapter or scope."
             )
+        package = ArchivePackage(paths)
         try:
-            ArchivePackage(paths).load_import_state()
-        except FileNotFoundError as exc:
-            raise ConfigurationError(
-                f"No importer checkpoint exists in Archive Package: {paths.root}."
-            ) from exc
+            package.load_import_state()
+        except FileNotFoundError:
+            try:
+                discovery_state = package.load_discovery_state()
+            except FileNotFoundError as exc:
+                raise ConfigurationError(
+                    f"No importer or discovery checkpoint exists in Archive Package: {paths.root}."
+                ) from exc
+            if discovery_state.phase.value not in {"identities", "canonical"}:
+                raise ConfigurationError(
+                    f"No resumable importer checkpoint exists in Archive Package: {paths.root}."
+                )
 
     print(
         f"Attempting to connect to source adapter '{adapter_name}' "
@@ -1178,7 +1236,7 @@ def _run_import(args: argparse.Namespace) -> int:
                 between_channels_seconds=setup.between_channels_seconds,
             )
     finally:
-        _close_import_progress_bar()
+        _close_all_import_progress()
 
     print(
         "Import completed: "
@@ -1418,10 +1476,17 @@ def _run_resume(args: argparse.Namespace) -> int:
     if run_configuration.direction is RunDirection.IMPORT:
         try:
             package.load_import_state()
-        except FileNotFoundError as exc:
-            raise ConfigurationError(
-                f"No importer checkpoint exists in Archive Package: {paths.root}."
-            ) from exc
+        except FileNotFoundError:
+            try:
+                discovery_state = package.load_discovery_state()
+            except FileNotFoundError as exc:
+                raise ConfigurationError(
+                    f"No importer or discovery checkpoint exists in Archive Package: {paths.root}."
+                ) from exc
+            if discovery_state.phase.value not in {"identities", "canonical"}:
+                raise ConfigurationError(
+                    f"No resumable importer checkpoint exists in Archive Package: {paths.root}."
+                )
 
         adapter_name = run_configuration.input_adapter
         registry = default_source_runtime_registry()

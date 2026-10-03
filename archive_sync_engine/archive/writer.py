@@ -158,6 +158,10 @@ class ArchiveWriter:
         """Insert or refresh a canonical identity."""
         self._store.upsert_identity(identity)
 
+    def iter_identities(self) -> Iterable[CanonicalIdentity]:
+        """Iterate identities already persisted in this Archive transaction."""
+        return self._store.iter_identities()
+
     #
     # Manifest
     #

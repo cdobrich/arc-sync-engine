@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 
 from datetime import datetime
 from datetime import timezone
@@ -10,7 +10,12 @@ from pathlib import Path
 from .manifest import ArchiveManifest
 from .paths import ArchivePaths
 from .version import ARCHIVE_ENGINE_VERSION
-from archive_sync_engine.adapters.source import SourceRefreshCursor
+from ..asset_store import AssetStore
+
+if TYPE_CHECKING:
+    from ..sync import SyncSession
+    from ..sync.run_configuration import SyncRunConfiguration
+    from ..importer import ImportState
 
 
 class ArchivePackage:
@@ -263,6 +268,29 @@ class ArchivePackage:
                 "\n",
             )
 
+    def save_discovery_state(
+        self,
+        state: "DiscoveryState",
+    ) -> None:
+        """Persist the durable source-discovery lifecycle checkpoint."""
+        with self._paths.discovery_state.open("w", encoding="utf-8") as handle:
+            json.dump(
+                state.to_json_dict(),
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
+            handle.write("\n")
+
+    def load_discovery_state(
+        self,
+    ) -> "DiscoveryState":
+        """Load the durable source-discovery lifecycle checkpoint."""
+        with self._paths.discovery_state.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        from archive_sync_engine.importer.discovery_state import DiscoveryState
+        return DiscoveryState.from_json_dict(data)
+
     def load_import_state(
         self,
     ) -> ImportState:
@@ -293,6 +321,39 @@ class ArchivePackage:
         return ImportState(
             payload=data,
         )
+
+    def save_import_recovery_cursors(
+        self,
+        cursors: "Mapping[str, SourceRefreshCursor]",
+    ) -> None:
+        """Persist full-import recovery cursors separately from refresh cursors."""
+        with self._paths.import_recovery_cursors.open("w", encoding="utf-8") as handle:
+            json.dump(
+                {key: cursor.to_json_dict() for key, cursor in sorted(cursors.items())},
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
+            handle.write("\n")
+
+    def load_import_recovery_cursors(self) -> dict[str, "SourceRefreshCursor"]:
+        """Load full-import recovery cursors."""
+        with self._paths.import_recovery_cursors.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError("Import recovery cursors must contain a JSON object.")
+        from archive_sync_engine.adapters.source import SourceRefreshCursor
+        return {
+            str(key): SourceRefreshCursor.from_json_dict(value)
+            for key, value in data.items()
+        }
+
+    def clear_import_recovery_cursors(self) -> None:
+        """Remove completed full-import recovery cursors."""
+        try:
+            self._paths.import_recovery_cursors.unlink()
+        except FileNotFoundError:
+            pass
 
     def save_import_cursors(
         self,

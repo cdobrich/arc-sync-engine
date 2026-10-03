@@ -41,7 +41,7 @@ from .exceptions import (
     NotFoundError,
     RateLimitError,
 )
-from .source import SourceAdapter
+from .source import IdentityDiscoveryBatch, SourceAdapter
 from .discord import DiscordSourceAdapter
 from .fluxer_source import FluxerSourceAdapter
 from .fluxer_source_runtime import FluxerSourceRuntime, FluxerSourceRuntimeConfig
@@ -89,6 +89,7 @@ __all__ = [
     "DestinationMessageRef",
     "NotFoundError",
     "RateLimitError",
+    "IdentityDiscoveryBatch",
     "SourceAdapter",
     "SourceRuntimeRegistry",
     "SourceRuntimeRequest",

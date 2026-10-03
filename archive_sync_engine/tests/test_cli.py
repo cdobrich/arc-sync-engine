@@ -87,6 +87,106 @@ def test_print_import_progress_renders_adapter_neutral_phases(capsys) -> None:
     assert "Import refresh completed: mode=incremental; examined=3; attachments_downloaded=1; attachments_reused=2." in output
 
 
+def test_print_import_progress_uses_tqdm_for_identity_discovery(monkeypatch) -> None:
+    from archive_sync_engine import cli
+    from archive_sync_engine.cli import _print_import_progress
+    from archive_sync_engine.importer.progress import ImportProgress
+
+    class FakeTqdm:
+        instances = []
+
+        def __init__(self, *, total, desc, unit, dynamic_ncols, file):
+            self.total = total
+            self.desc = desc
+            self.unit = unit
+            self.dynamic_ncols = dynamic_ncols
+            self.file = file
+            self.n = 0
+            self.updates = []
+            self.postfixes = []
+            self.closed = False
+            self.__class__.instances.append(self)
+
+        def update(self, amount):
+            self.n += amount
+            self.updates.append(amount)
+
+        def set_postfix_str(self, value, *, refresh):
+            self.postfixes.append((value, refresh))
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(cli, "tqdm", FakeTqdm)
+    monkeypatch.setattr(cli, "_import_progress_is_tty", lambda: True)
+    cli._IMPORT_PROGRESS_BAR = None
+    cli._IMPORT_DISCOVERY_BAR = None
+
+    _print_import_progress(
+        ImportProgress(
+            phase="identity_scan",
+            current=0,
+            detail="Loading Discord guild members...",
+        )
+    )
+    _print_import_progress(
+        ImportProgress(
+            phase="identity_scan",
+            current=300,
+            detail="Scanning Discord history in #general",
+        )
+    )
+
+    scan_bar = FakeTqdm.instances[0]
+    assert scan_bar.total is None
+    assert scan_bar.desc == "Discovering identities"
+    assert scan_bar.unit == "message"
+    assert scan_bar.updates == [300]
+    assert scan_bar.postfixes[-1] == ("Scanning Discord history in #general", True)
+
+    _print_import_progress(ImportProgress(phase="identities", current=0))
+    _print_import_progress(
+        ImportProgress(
+            phase="identities",
+            current=300,
+            detail="discord:user:123",
+        )
+    )
+
+    assert scan_bar.closed is True
+    identity_bar = FakeTqdm.instances[1]
+    assert identity_bar.total is None
+    assert identity_bar.desc == "Importing identities"
+    assert identity_bar.unit == "identity"
+    assert identity_bar.updates == [300]
+    assert identity_bar.postfixes == [("current=discord:user:123", True)]
+
+    _print_import_progress(ImportProgress(phase="conversations", current=0, total=1, completed=0))
+    assert identity_bar.closed is True
+    cli._IMPORT_PROGRESS_BAR = None
+    cli._IMPORT_DISCOVERY_BAR = None
+
+
+def test_print_import_progress_reports_identity_resume_checkpoint(capsys) -> None:
+    from archive_sync_engine.cli import _print_import_progress
+    from archive_sync_engine.importer import ImportProgress
+
+    _print_import_progress(
+        ImportProgress(
+            phase="identity_scan",
+            current=0,
+            detail=(
+                "Resuming identity discovery from checkpoint: "
+                "400 identities committed; cursor={'stage': 'history', 'message_index': 91}"
+            ),
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert "Resuming identity discovery from checkpoint" in output
+    assert "400 identities committed" in output
+
+
 def test_print_import_progress_reports_identity_discovery(capsys) -> None:
     from archive_sync_engine.cli import _print_import_progress
     from archive_sync_engine.importer import ImportProgress
@@ -985,6 +1085,68 @@ discord:
     assert "Connected successfully." in output
     assert "Initiating phase: import discord → Archive." in output
     assert "Import completed: 4 identities, 2 conversations, 17 messages, 3 attachments." in output
+
+
+def test_import_cli_resume_accepts_discovery_checkpoint_without_import_state(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "archive"
+    paths = ArchivePaths(archive_path)
+    ArchivePackage.initialize(paths)
+    package = ArchivePackage(paths)
+    package.save_run_configuration(
+        SyncRunConfiguration(
+            direction=RunDirection.IMPORT,
+            input_adapter="discord",
+            input_scope=("10",),
+        )
+    )
+    from archive_sync_engine.importer import DiscoveryState
+    from archive_sync_engine.sync.session import SyncDirection, SyncSession
+    from datetime import datetime, timezone
+
+    package.save_discovery_state(DiscoveryState.identities_started())
+    now = datetime.now(timezone.utc)
+    package.save_session(
+        SyncSession(
+            id="import-session",
+            direction=SyncDirection.IMPORT,
+            started_at=now,
+            updated_at=now,
+        )
+    )
+
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        """
+archive:
+  path: ./archive
+discord:
+  token: current-discord-secret
+  guild_id: 10
+""",
+        encoding="utf-8",
+    )
+
+    runtime = MagicMock()
+    runtime.__enter__.return_value = runtime
+    runtime.__exit__.return_value = None
+    runtime.import_to_archive.return_value = type(
+        "Report",
+        (),
+        dict(identities=1, conversations=0, messages=0, attachments=0),
+    )()
+    registry = MagicMock()
+    registry.create.return_value = runtime
+    registry.build_config.return_value = type(
+        "DiscordConfig", (), {"token": "current-discord-secret"}
+    )()
+
+    with patch("archive_sync_engine.cli.default_source_runtime_registry", return_value=registry):
+        assert main(["import", "--config", str(config), "--resume"]) == 0
+
+    runtime.import_to_archive.assert_called_once()
+    assert runtime.import_to_archive.call_args.kwargs["resume"] is True
 
 
 def test_import_cli_resume_uses_persisted_scope_and_current_credentials(
