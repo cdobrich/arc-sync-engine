@@ -162,3 +162,19 @@ def test_validate_archive_package_can_tolerate_unresolved_reply_during_resume(
     resumable = validate_archive_package(paths, allow_incomplete_import=True)
     assert resumable.valid is True
     assert resumable.errors == ()
+
+
+def test_validate_archive_package_reports_streaming_progress(tmp_path: Path) -> None:
+    paths = _valid_package(tmp_path)
+    events: list[tuple[int, int, str]] = []
+
+    report = validate_archive_package(
+        paths,
+        on_progress=lambda current, total, detail: events.append((current, total, detail)),
+    )
+
+    assert report.valid is True
+    assert events
+    assert events[0] == (0, 1, "Opening archive")
+    assert events[-1][0] == events[-1][1] == 1
+    assert events[-1][2] == "attachments=1"

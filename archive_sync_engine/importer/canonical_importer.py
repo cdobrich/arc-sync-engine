@@ -32,6 +32,7 @@ from archive_sync_engine.archive.writer import ArchiveWriter
 from archive_sync_engine.asset_store import AssetStore
 from archive_sync_engine.importer.progress import ImportProgress
 from archive_sync_engine.importer.state import ImportState
+from archive_sync_engine.importer.traversal import ImportTraversalMode
 from archive_sync_engine.importer.discovery_state import DiscoveryPhase, DiscoveryState
 from archive_sync_engine.models import CanonicalIdentity, CanonicalMessage
 from archive_sync_engine.models.ids import MessageId
@@ -88,6 +89,14 @@ class CanonicalImporter:
 
         if discovery_batch_size <= 0:
             raise ValueError("Discovery batch size must be greater than zero.")
+
+        if resume_state is not None and not incremental_refresh:
+            traversal_mode = resume_state.payload.get("traversal_mode")
+            if traversal_mode not in (None, ImportTraversalMode.FULL.value):
+                raise ValueError(
+                    "An interrupted import checkpoint cannot be resumed through "
+                    f"the {traversal_mode!r} traversal mode."
+                )
 
         rate_limiter = rate_limiter or OperationRateLimiter()
         refresh_cursors: dict[str, SourceRefreshCursor] = {}
@@ -626,6 +635,14 @@ class CanonicalImporter:
                     else:
                         attachments_reused += 1
 
+                    release_attachment_bytes = getattr(
+                        source,
+                        "release_attachment_bytes",
+                        None,
+                    )
+                    if callable(release_attachment_bytes):
+                        release_attachment_bytes(attachment)
+
                 #
                 # Report progress only after the complete message
                 # aggregate and all attachment bytes have succeeded.
@@ -658,6 +675,7 @@ class CanonicalImporter:
                         payload={
                             "conversation_id": str(conversation.id),
                             "message_id": str(message.id),
+                            "traversal_mode": ImportTraversalMode.FULL.value,
                         },
                     )
                     on_progress(progress_state)

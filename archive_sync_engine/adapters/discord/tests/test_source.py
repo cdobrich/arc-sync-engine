@@ -494,15 +494,15 @@ def test_iter_messages_streams_history_before_fetching_the_next_message() -> Non
     first = next(messages)
 
     assert str(first.id) == "discord:message:1"
-    assert len(adapter._message_cache[str(conversation.id)]) == 1
+    assert str(conversation.id) not in adapter._message_cache
 
     second = next(messages)
     assert str(second.id) == "discord:message:2"
-    assert len(adapter._message_cache[str(conversation.id)]) == 2
+    assert str(conversation.id) not in adapter._message_cache
 
     third = next(messages)
     assert str(third.id) == "discord:message:3"
-    assert len(adapter._message_cache[str(conversation.id)]) == 3
+    assert str(conversation.id) not in adapter._message_cache
 
 
 
@@ -1544,3 +1544,30 @@ def test_close_async_iterator_is_safe_after_runtime_event_loop_closes() -> None:
     adapter._close_async_iterator(close)
 
     assert closed == []
+
+
+def test_streaming_message_traversal_does_not_retain_raw_history(tmp_path) -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "general", 1, created)
+    channel._messages = tuple(
+        FakeMessage(
+            index,
+            channel,
+            user,
+            created + timedelta(seconds=index),
+            f"message-{index}",
+        )
+        for index in range(1, 1001)
+    )
+    guild = FakeGuild()
+    guild.channels = [channel]
+    guild.threads = []
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    count = sum(1 for _ in adapter.iter_messages(conversation))
+
+    assert count == 1000
+    assert adapter._message_cache == {}
+    assert adapter._incremental_message_cache == {}

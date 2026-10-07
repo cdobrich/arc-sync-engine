@@ -1112,6 +1112,29 @@ def _print_import_progress(progress: ImportProgress) -> None:
     print(f"Import phase: {progress.phase}", flush=True)
 
 
+def _archive_load_progress_printer(archive_root: Path):
+    """Return a low-noise progress callback for long archive validation loads."""
+    last_bucket = -1
+
+    def report(current: int, total: int, detail: str) -> None:
+        nonlocal last_bucket
+        if total <= 0:
+            bucket = 100
+        else:
+            bucket = min(100, (current * 100) // total)
+            bucket = (bucket // 10) * 10
+        if bucket == last_bucket and current != total:
+            return
+        last_bucket = bucket
+        print(
+            f"Loading archive {archive_root.name}: {bucket}% "
+            f"({current}/{total}; {detail})",
+            flush=True,
+        )
+
+    return report
+
+
 def _run_import(args: argparse.Namespace) -> int:
     """Import one registered source adapter into an Archive Package."""
     adapter_name = (args.input_adapter or "").strip().lower()
@@ -1172,9 +1195,13 @@ def _run_import(args: argparse.Namespace) -> int:
             else:
                 resumable_import = not session.completed
 
+    archive_load_progress = _archive_load_progress_printer(paths.root) if args.resume else None
+    if args.resume:
+        print(f"Loading archive {paths.root.name}...", flush=True)
     report = validate_archive_package(
         paths,
         allow_incomplete_import=resumable_import,
+        on_progress=archive_load_progress,
     )
     if not report.valid:
         raise ConfigurationError(

@@ -252,3 +252,15 @@ class SourceAdapter(ABC):
         digest stored in the canonical model.
         """
         raise NotImplementedError
+
+    def release_attachment_bytes(
+        self,
+        attachment: CanonicalAttachment,
+    ) -> None:
+        """Release any adapter-side attachment bytes retained for one message.
+
+        Adapters may retain downloaded bytes between canonicalization and the
+        importer requesting them. The importer calls this after each attachment
+        regardless of whether the Archive already contained the asset.
+        """
+        del attachment
