@@ -635,6 +635,14 @@ class CanonicalImporter:
                     else:
                         attachments_reused += 1
 
+                    release_attachment_bytes = getattr(
+                        source,
+                        "release_attachment_bytes",
+                        None,
+                    )
+                    if callable(release_attachment_bytes):
+                        release_attachment_bytes(attachment)
+
                 #
                 # Report progress only after the complete message
                 # aggregate and all attachment bytes have succeeded.

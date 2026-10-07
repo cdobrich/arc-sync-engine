@@ -78,9 +78,13 @@ class DiscordSourceAdapter(SourceAdapter):
         self._conversation_channels: dict[str, Any] = {}
         self._message_cache: dict[str, tuple[Any, ...]] = {}
         self._incremental_message_cache: dict[str, tuple[Any, ...]] = {}
-        self._message_identity_cache: dict[str, tuple[CanonicalIdentity, ...]] = {}
+        self._current_message_id: str | None = None
+        self._current_message_identities: tuple[CanonicalIdentity, ...] = ()
         self._attachment_bytes: dict[str, bytes] = {}
+        self._attachment_cache_bytes = 0
+        self._attachment_cache_limit = 64 * 1024 * 1024
         self._custom_emoji_bytes: dict[str, bytes] = {}
+        self._custom_emoji_objects: dict[str, Any] = {}
         self._runner: Callable[[Awaitable[Any]], Any] | None = None
         self._identity_scan_progress_callback: Callable[[int, str], None] | None = None
         self._identity_scan_messages_scanned = 0
@@ -319,9 +323,13 @@ class DiscordSourceAdapter(SourceAdapter):
                 if emoji_id is not None:
                     emojis[str(emoji_id)] = emoji
 
-        # Reaction-only custom emojis are not necessarily members of the
-        # configured guild. Recover them from the raw messages already
-        # traversed for identity discovery.
+        # Reaction-only custom emojis are retained as lightweight emoji objects
+        # while each message is canonicalized; raw messages themselves are not cached.
+        emojis.update(self._custom_emoji_objects)
+
+        # Preserve compatibility with callers that explicitly populated the
+        # legacy raw-message cache. Normal streaming imports leave this cache
+        # empty, so this path does not reintroduce unbounded retention.
         for messages in (
             *self._message_cache.values(),
             *self._incremental_message_cache.values(),
@@ -401,7 +409,7 @@ class DiscordSourceAdapter(SourceAdapter):
         yield from self._iter_canonical_history(
             channel,
             conversation_id=str(conversation.id),
-            cache=self._message_cache,
+            cache=None,
         )
 
     def iter_messages_after_checkpoint(
@@ -426,7 +434,7 @@ class DiscordSourceAdapter(SourceAdapter):
             yield from self._iter_canonical_history(
                 channel,
                 conversation_id=str(conversation.id),
-                cache=self._message_cache,
+                cache=None,
                 after=cursor.created_at - timedelta(microseconds=1),
                 skip_through=cursor,
             )
@@ -499,7 +507,9 @@ class DiscordSourceAdapter(SourceAdapter):
         message: CanonicalMessage,
     ) -> Iterable[CanonicalIdentity]:
         """Yield rich Discord identities observed during message canonicalization."""
-        return self._message_identity_cache.get(str(message.id), ())
+        if self._current_message_id == self._message_key(message.id):
+            return self._current_message_identities
+        return ()
 
     def iter_messages_since(
         self,
@@ -523,7 +533,7 @@ class DiscordSourceAdapter(SourceAdapter):
         yield from self._iter_canonical_history(
             channel,
             conversation_id=str(conversation.id),
-            cache=self._incremental_message_cache,
+            cache=None,
             after=cursor.created_at - self._INCREMENTAL_LOOKBACK,
         )
 
@@ -532,7 +542,7 @@ class DiscordSourceAdapter(SourceAdapter):
         channel: Any,
         *,
         conversation_id: str,
-        cache: dict[str, tuple[Any, ...]],
+        cache: dict[str, tuple[Any, ...]] | None,
         after: datetime | None = None,
         skip_through: SourceRefreshCursor | None = None,
     ) -> Iterable[CanonicalMessage]:
@@ -546,7 +556,7 @@ class DiscordSourceAdapter(SourceAdapter):
         history = channel.history(**history_kwargs)
         iterator = history.__aiter__()
         pinned_ids = self._run(self._collect_pinned_ids(channel))
-        cached: list[Any] = list(cache.get(conversation_id, ()))
+        cached: list[Any] = list(cache.get(conversation_id, ())) if cache is not None else []
         cached_ids = {str(getattr(item, "id", "")) for item in cached}
         try:
             while True:
@@ -556,10 +566,11 @@ class DiscordSourceAdapter(SourceAdapter):
                     break
 
                 raw_message_id = str(getattr(raw_message, "id", ""))
-                if raw_message_id not in cached_ids:
-                    cached.append(raw_message)
-                    cached_ids.add(raw_message_id)
-                    cache[conversation_id] = tuple(cached)
+                if cache is not None:
+                    if raw_message_id not in cached_ids:
+                        cached.append(raw_message)
+                        cached_ids.add(raw_message_id)
+                        cache[conversation_id] = tuple(cached)
 
                 canonical = self._canonicalize_one_cached_message(
                     raw_message,
@@ -650,11 +661,23 @@ class DiscordSourceAdapter(SourceAdapter):
     ) -> bytes:
         """Return bytes previously acquired while importing the message."""
         try:
-            return self._attachment_bytes[attachment.sha256]
+            payload = self._attachment_bytes[attachment.sha256]
         except KeyError as exc:
             raise NotFoundError(
                 f"Discord attachment {attachment.id} is not available."
             ) from exc
+        self._attachment_bytes.pop(attachment.sha256, None)
+        self._attachment_cache_bytes = sum(map(len, self._attachment_bytes.values()))
+        return payload
+
+    def release_attachment_bytes(
+        self,
+        attachment: CanonicalAttachment,
+    ) -> None:
+        """Release cached bytes once the importer has finished this attachment."""
+        payload = self._attachment_bytes.pop(attachment.sha256, None)
+        if payload is not None:
+            self._attachment_cache_bytes -= len(payload)
 
     async def _collect_raw_messages(
         self,
@@ -851,7 +874,13 @@ class DiscordSourceAdapter(SourceAdapter):
             str(identity.identity_key): identity
             for identity in message_identities
         }
-        self._message_identity_cache[self._message_key(message_id)] = tuple(unique_identities.values())
+        self._current_message_id = self._message_key(message_id)
+        self._current_message_identities = tuple(unique_identities.values())
+        for reaction_group in getattr(message, "reactions", ()) or ():
+            emoji = getattr(reaction_group, "emoji", None)
+            emoji_id = getattr(emoji, "id", None) if emoji is not None else None
+            if emoji_id is not None:
+                self._custom_emoji_objects.setdefault(str(emoji_id), emoji)
 
         reply_to = self._canonical_reply_to(message)
 
@@ -1398,7 +1427,16 @@ class DiscordSourceAdapter(SourceAdapter):
 
         data = await reader()
         digest = hashlib.sha256(data).hexdigest()
-        self._attachment_bytes[digest] = bytes(data)
+        payload = bytes(data)
+        if digest not in self._attachment_bytes and len(payload) <= self._attachment_cache_limit:
+            self._attachment_bytes[digest] = payload
+            self._attachment_cache_bytes += len(payload)
+            while self._attachment_cache_bytes > self._attachment_cache_limit and self._attachment_bytes:
+                evicted_digest = next(iter(self._attachment_bytes))
+                if evicted_digest == digest and len(self._attachment_bytes) > 1:
+                    evicted_digest = next(key for key in self._attachment_bytes if key != digest)
+                evicted = self._attachment_bytes.pop(evicted_digest)
+                self._attachment_cache_bytes -= len(evicted)
 
         return CanonicalAttachment(
             id=AttachmentId(str(attachment_id)),
