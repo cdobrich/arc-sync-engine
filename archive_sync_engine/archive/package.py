@@ -5,11 +5,13 @@ from typing import TYPE_CHECKING, Mapping
 
 from datetime import datetime
 from datetime import timezone
+import hashlib
 from pathlib import Path
 
 from .manifest import ArchiveManifest
 from .paths import ArchivePaths
 from .version import ARCHIVE_ENGINE_VERSION
+from .tags import ArchiveTag, ArchiveTagRegistry, ArchiveTagSourceState
 from ..asset_store import AssetStore
 
 if TYPE_CHECKING:
@@ -148,6 +150,121 @@ class ArchivePackage:
             created_at=datetime.now(
                 timezone.utc,
             ),
+        )
+
+    #
+    # Archive tags
+    #
+
+    def create_tag(
+        self,
+        name: str,
+        *,
+        created_at: datetime | None = None,
+    ) -> ArchiveTag:
+        """Create an immutable human-readable tag for the current Archive state."""
+        now = created_at or datetime.now(timezone.utc)
+        try:
+            source = self.load_last_import_source_state()
+        except FileNotFoundError:
+            source = self._current_import_tag_source()
+        return ArchiveTagRegistry(self._paths.tags).create(
+            name,
+            created_at=now,
+            source=source,
+            archive_database_sha256=self._archive_database_sha256(),
+        )
+
+    def get_tag(self, name_or_id: str) -> ArchiveTag | None:
+        """Return an Archive tag by name or opaque tag ID."""
+        return ArchiveTagRegistry(self._paths.tags).get(name_or_id)
+
+    def require_tag(self, name_or_id: str) -> ArchiveTag:
+        """Return an Archive tag or raise KeyError when it does not exist."""
+        return ArchiveTagRegistry(self._paths.tags).require(name_or_id)
+
+    def iter_tags(self):
+        """Iterate Archive tags in creation sequence order."""
+        return ArchiveTagRegistry(self._paths.tags).iter_tags()
+
+    def tags_between(
+        self,
+        start: str,
+        end: str,
+        *,
+        inclusive: bool = False,
+    ) -> tuple[ArchiveTag, ...]:
+        """Return named state markers between two tag boundaries."""
+        return ArchiveTagRegistry(self._paths.tags).between(
+            start,
+            end,
+            inclusive=inclusive,
+        )
+
+    def save_last_import_source_state(
+        self,
+        source: ArchiveTagSourceState,
+    ) -> None:
+        """Persist the most recent source-import state independently of the active session."""
+        with self._paths.last_import.open("w", encoding="utf-8") as handle:
+            json.dump(source.to_json_dict(), handle, indent=2, sort_keys=True)
+            handle.write("\n")
+
+    def load_last_import_source_state(self) -> ArchiveTagSourceState:
+        """Load the most recent durable source-import state."""
+        with self._paths.last_import.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError("Last import state must contain a JSON object.")
+        return ArchiveTagSourceState.from_json_dict(data)
+
+    def snapshot_import_source_state(self) -> ArchiveTagSourceState | None:
+        """Build source-import metadata from the persisted import session/configuration."""
+        return self._current_import_tag_source()
+
+    def _archive_database_sha256(self) -> str | None:
+        """Return a storage-state fingerprint for the current SQLite database."""
+        if not self._paths.database.is_file():
+            return None
+        digest = hashlib.sha256()
+        with self._paths.database.open("rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _current_import_tag_source(self) -> ArchiveTagSourceState | None:
+        """Snapshot the persisted import session/configuration for a new tag."""
+        try:
+            session = self.load_session()
+            configuration = self.load_run_configuration()
+        except FileNotFoundError:
+            return None
+
+        from archive_sync_engine.sync.run_configuration import RunDirection
+
+        if configuration.direction is not RunDirection.IMPORT or session.direction.value != "import":
+            return None
+
+        from .tags import ArchiveTagSourceStatus
+
+        if session.completed:
+            status = ArchiveTagSourceStatus.COMPLETED
+        elif session.cancelled:
+            status = ArchiveTagSourceStatus.CANCELLED
+        elif session.error:
+            status = ArchiveTagSourceStatus.FAILED
+        else:
+            status = ArchiveTagSourceStatus.RUNNING
+
+        return ArchiveTagSourceState(
+            adapter=configuration.input_adapter,
+            scope=configuration.input_scope,
+            session_id=session.id,
+            status=status,
+            started_at=session.started_at,
+            updated_at=session.updated_at,
+            checkpoint=session.checkpoint,
+            error=session.error,
         )
 
     #

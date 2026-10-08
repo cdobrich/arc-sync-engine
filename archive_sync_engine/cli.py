@@ -355,6 +355,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_logging_options(adapters)
 
+    tag_command = subparsers.add_parser(
+        "tag",
+        help="Create and inspect human-readable Archive state tags.",
+    )
+    tag_subparsers = tag_command.add_subparsers(dest="tag_action", required=True)
+
+    tag_create = tag_subparsers.add_parser(
+        "create",
+        help="Create an immutable named tag for the current Archive state.",
+    )
+    tag_create.add_argument("--archive", type=Path, required=True, help="Archive Package directory.")
+    tag_create.add_argument("--name", required=True, help="Human-readable tag name.")
+    add_logging_options(tag_create)
+
+    tag_list = tag_subparsers.add_parser(
+        "list",
+        help="List Archive state tags in creation order.",
+    )
+    tag_list.add_argument("--archive", type=Path, required=True, help="Archive Package directory.")
+    tag_list.add_argument("--as-json", action="store_true", help="Emit machine-readable JSON.")
+    add_logging_options(tag_list)
+
+    tag_show = tag_subparsers.add_parser(
+        "show",
+        help="Show one Archive state tag and its source-import metadata.",
+    )
+    tag_show.add_argument("--archive", type=Path, required=True, help="Archive Package directory.")
+    tag_show.add_argument("name_or_id", help="Tag name or opaque tag ID.")
+    tag_show.add_argument("--as-json", action="store_true", help="Emit machine-readable JSON.")
+    add_logging_options(tag_show)
+
+    tag_range = tag_subparsers.add_parser(
+        "range",
+        help="List named tag boundaries between two Archive state tags.",
+    )
+    tag_range.add_argument("--archive", type=Path, required=True, help="Archive Package directory.")
+    tag_range.add_argument("--start", required=True, help="Starting tag name or ID.")
+    tag_range.add_argument("--end", required=True, help="Ending tag name or ID.")
+    tag_range.add_argument("--inclusive", action="store_true", help="Include both boundary tags.")
+    tag_range.add_argument("--as-json", action="store_true", help="Emit machine-readable JSON.")
+    add_logging_options(tag_range)
+
     diagnostics = subparsers.add_parser(
         "diagnostics",
         help="Inspect successfully checkpointed synchronization executions.",
@@ -489,6 +531,106 @@ def _run_adapters(args: argparse.Namespace) -> int:
         for pair in pairs:
             print(f"{pair.input_adapter}\t{pair.destination_adapter}\t{pair.description}")
     return 0
+
+
+def _tag_json(tag):
+    return tag.to_json_dict()
+
+
+def _run_tag(args: argparse.Namespace) -> int:
+    """Create or inspect durable human-readable Archive state tags."""
+    paths = ArchivePaths(args.archive.expanduser().resolve())
+    if not paths.database.is_file() or not paths.manifest.is_file():
+        raise ConfigurationError(
+            f"Archive Package does not exist or is incomplete: {paths.root}"
+        )
+
+    package = ArchivePackage(paths)
+
+    if args.tag_action == "create":
+        from datetime import datetime, timezone
+
+        tag = package.create_tag(
+            args.name,
+            created_at=datetime.now(timezone.utc),
+        )
+        print(f"Created Archive tag '{tag.name}' (sequence {tag.sequence}, id {tag.id}).")
+        if tag.source is None:
+            print("Source import state: unavailable")
+        else:
+            source = tag.source
+            print(
+                "Source import: "
+                f"{source.adapter} status={source.status.value} "
+                f"updated={source.updated_at.isoformat() if source.updated_at else 'unknown'}"
+            )
+        return 0
+
+    if args.tag_action == "list":
+        tags = tuple(package.iter_tags())
+        if args.as_json:
+            import json
+            print(json.dumps([_tag_json(tag) for tag in tags], indent=2, sort_keys=True))
+        else:
+            if not tags:
+                print("No Archive tags.")
+            else:
+                print("SEQUENCE\tNAME\tCREATED\tSOURCE\tSTATUS")
+                for tag in tags:
+                    source = tag.source
+                    print(
+                        f"{tag.sequence}\t{tag.name}\t{tag.created_at.isoformat()}\t"
+                        f"{source.adapter if source else ''}\t"
+                        f"{source.status.value if source else ''}"
+                    )
+        return 0
+
+    if args.tag_action == "show":
+        try:
+            tag = package.require_tag(args.name_or_id)
+        except KeyError as exc:
+            raise ConfigurationError(str(exc)) from exc
+        if args.as_json:
+            import json
+            print(json.dumps(_tag_json(tag), indent=2, sort_keys=True))
+        else:
+            print(f"Name: {tag.name}")
+            print(f"ID: {tag.id}")
+            print(f"Sequence: {tag.sequence}")
+            print(f"Created: {tag.created_at.isoformat()}")
+            if tag.source is None:
+                print("Source import: unavailable")
+            else:
+                source = tag.source
+                print(f"Source adapter: {source.adapter}")
+                print(f"Source scope: {', '.join(source.scope)}")
+                print(f"Source session: {source.session_id or 'none'}")
+                print(f"Source status: {source.status.value}")
+                print(f"Source started: {source.started_at.isoformat() if source.started_at else 'unknown'}")
+                print(f"Source updated: {source.updated_at.isoformat() if source.updated_at else 'unknown'}")
+                print(f"Source checkpoint: {source.checkpoint or 'none'}")
+                if source.error:
+                    print(f"Source error: {source.error}")
+        return 0
+
+    if args.tag_action == "range":
+        try:
+            tags = package.tags_between(
+                args.start,
+                args.end,
+                inclusive=args.inclusive,
+            )
+        except (KeyError, ValueError) as exc:
+            raise ConfigurationError(str(exc)) from exc
+        if args.as_json:
+            import json
+            print(json.dumps([_tag_json(tag) for tag in tags], indent=2, sort_keys=True))
+        else:
+            for tag in tags:
+                print(f"{tag.sequence}\t{tag.name}\t{tag.created_at.isoformat()}")
+        return 0
+
+    raise ConfigurationError(f"Unknown tag action: {args.tag_action}")
 
 
 def _run_diagnostics(args: argparse.Namespace) -> int:
@@ -1779,6 +1921,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_adapters(args)
         if args.command == "diagnostics":
             return _run_diagnostics(args)
+        if args.command == "tag":
+            return _run_tag(args)
     except (ValueError, ConfigurationError, CapabilityError) as exc:
         report_expected_error(exc)
         parser.exit(2, f"{parser.prog}: error: {exc}\n")

@@ -336,7 +336,9 @@ Likewise, an interrupted import being resumed is a different case: that uses the
 
 ## How to Interrupt
 
-Pressing `CTRL+C` on the keyboard will halt the program, and it can be resumed later. Simply run:
+Pressing `CTRL+C` on the keyboard will halt the program, and it can be resumed later. The archiving process is ATOMIC-compatible, meaning that it will write the last safe data before attempting a new operation.
+
+Simply run:
 
     archive-sync-engine import --config ./config.yaml --resume
 
@@ -344,13 +346,51 @@ Pressing `CTRL+C` on the keyboard will halt the program, and it can be resumed l
 
     archive-sync-engine export --config ./config.yaml
 
-
 ### A few things to be aware of
 
 - GOOD NEWS: The Archive commits data to itself every time it does the smallest unit of action (importing or exporting).
 - BAD NEWS: Because the Archive performs full source reconciliation, rather than a source-specific incremental cursor, perform an `import` command again with the `--resume` option will check the entire input-source again.
 
 NOTE: new feature for update only since last download is pending.
+
+# Tags and Named Checkpoints
+
+The Archive format includes a source control Git-like tag naming system.
+
+It provides:
+
+- Human-readable immutable tags such as:
+    - `Discord Export v1, 2026-10-13`
+    - `Discord Export v2, 2026-12-01`
+- Monotonically ordered tag sequences.
+- Lookup by tag name or opaque tag ID.
+- Tag ranges between two named checkpoints.
+- A SHA-256 fingerprint of `archive.sqlite` at tag creation, allowing future tooling to determine that the underlying Archive storage changed.
+- Source-import metadata captured with the tag:
+    - source adapter (`discord`, `fluxer`, etc.)
+    - source scope
+    - import session ID
+    - import status
+    - import start/update time
+    - importer checkpoint
+- failure information, when applicable.
+
+Example:
+
+    archive-sync-engine tag create --archive /path/to/archive --name "Discord Export v1, 2026-10-13"
+    archive-sync-engine tag list --archive /path/to/archive
+    archive-sync-engine tag show --archive /path/to/archive "Discord Export v1, 2026-10-13"
+    archive-sync-engine tag range --archive /path/to/archive \
+        --start "Discord Export v1, 2026-10-13" \
+        --end "Discord Export v2, 2026-12-01"
+
+`range` can also use `--inclusive`.
+
+## Uses of Tagging
+
+The tagging system is currently only for manual marking of records. This feature is important since later other operations may be desired over the Archive data (possibly with outside tooling).
+
+The dev-team's use-case for this feature is in the future it may become necessary to want to edit previously stored Archive messages (such as redacting, scrubbing, or substituting contents). This tagging system provides useful date and checkpoint record creation.
 
 #### Emojis
 

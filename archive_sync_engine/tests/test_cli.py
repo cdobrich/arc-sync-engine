@@ -2004,3 +2004,30 @@ fluxer:
     assert "Exporting conversations 1: conversation-1..." in output
     assert "Export completed: 3 operations." in output
 
+
+
+def test_tag_cli_create_list_show_and_range(tmp_path: Path, capsys) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+
+    assert main(["tag", "create", "--archive", str(archive_path), "--name", "Discord Export v1, 2026-10-13"]) == 0
+    assert main(["tag", "create", "--archive", str(archive_path), "--name", "Discord Export v2, 2026-11-01"]) == 0
+    capsys.readouterr()
+
+    assert main(["tag", "list", "--archive", str(archive_path)]) == 0
+    output = capsys.readouterr().out
+    assert "Discord Export v1, 2026-10-13" in output
+    assert "Discord Export v2, 2026-11-01" in output
+
+    assert main(["tag", "range", "--archive", str(archive_path), "--start", "Discord Export v1, 2026-10-13", "--end", "Discord Export v2, 2026-11-01"]) == 0
+    assert capsys.readouterr().out == ""
+
+    assert main(["tag", "range", "--archive", str(archive_path), "--start", "Discord Export v1, 2026-10-13", "--end", "Discord Export v2, 2026-11-01", "--inclusive"]) == 0
+    output = capsys.readouterr().out
+    assert "1\tDiscord Export v1, 2026-10-13" in output
+    assert "2\tDiscord Export v2, 2026-11-01" in output
+
+    assert main(["tag", "show", "--archive", str(archive_path), "Discord Export v1, 2026-10-13"]) == 0
+    output = capsys.readouterr().out
+    assert "Name: Discord Export v1, 2026-10-13" in output
+    assert "Sequence: 1" in output
