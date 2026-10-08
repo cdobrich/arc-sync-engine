@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import time
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, TypeVar
@@ -88,6 +89,9 @@ class DiscordSourceAdapter(SourceAdapter):
         self._runner: Callable[[Awaitable[Any]], Any] | None = None
         self._identity_scan_progress_callback: Callable[[int, str], None] | None = None
         self._identity_scan_messages_scanned = 0
+        self._history_retry_attempts = 5
+        self._history_retry_base_delay = 2.0
+        self._history_retry_max_delay = 60.0
 
     @property
     def name(self) -> str:
@@ -561,7 +565,7 @@ class DiscordSourceAdapter(SourceAdapter):
         try:
             while True:
                 try:
-                    raw_message = self._run(iterator.__anext__())
+                    raw_message = self._next_history_message_with_retry(iterator)
                 except StopAsyncIteration:
                     break
 
@@ -589,6 +593,47 @@ class DiscordSourceAdapter(SourceAdapter):
             close = getattr(iterator, "aclose", None)
             if callable(close):
                 self._close_async_iterator(close)
+
+    def _next_history_message_with_retry(self, iterator: Any) -> Any:
+        """Fetch one history item, retrying transient Discord HTTP failures.
+
+        discord.py already retries individual HTTP requests, but a persistent
+        upstream 5xx/transport failure is ultimately surfaced as
+        ``DiscordServerError``.  Historical imports are intentionally
+        checkpointed per message, so treating one transient history-page
+        failure as fatal would unnecessarily terminate a multi-day import.
+        Retrying the iterator's next request is safe because discord.py only
+        advances its history cursor after a successful response.
+        """
+        for attempt in range(1, self._history_retry_attempts + 1):
+            try:
+                return self._run(iterator.__anext__())
+            except Exception as exc:
+                if not self._is_retryable_history_error(exc):
+                    raise
+                if attempt >= self._history_retry_attempts:
+                    raise
+                delay = min(
+                    self._history_retry_base_delay * (2 ** (attempt - 1)),
+                    self._history_retry_max_delay,
+                )
+                time.sleep(delay)
+        raise AssertionError("history retry loop exited unexpectedly")
+
+    @staticmethod
+    def _is_retryable_history_error(exc: BaseException) -> bool:
+        """Return whether a Discord history request failure is transient."""
+        status = getattr(exc, "status", None)
+        try:
+            status = int(status)
+        except (TypeError, ValueError):
+            status = None
+        if status is not None and 500 <= status <= 599:
+            return True
+        # Keep this fallback deliberately narrow: discord.py's concrete
+        # DiscordServerError exposes status=5xx, while test doubles and some
+        # wrapped transports may only preserve the exception class name.
+        return exc.__class__.__name__ == "DiscordServerError"
 
     def _close_async_iterator(self, close: Callable[[], Awaitable[Any]]) -> None:
         """Best-effort cleanup for an async iterator during interrupted import.

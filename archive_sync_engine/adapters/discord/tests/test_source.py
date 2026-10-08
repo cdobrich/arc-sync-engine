@@ -1527,6 +1527,62 @@ def test_iter_messages_after_checkpoint_uses_native_discord_history_boundary() -
     assert channel.history_after == created - timedelta(microseconds=1)
 
 
+def test_streaming_history_retries_transient_discord_503(monkeypatch) -> None:
+    adapter = DiscordSourceAdapter(FakeClient(FakeGuild()), [123])
+    adapter._history_retry_attempts = 3
+    adapter._history_retry_base_delay = 0.01
+    adapter._history_retry_max_delay = 0.01
+    sleeps = []
+    monkeypatch.setattr(
+        "archive_sync_engine.adapters.discord.source.time.sleep",
+        sleeps.append,
+    )
+
+    class DiscordServerError(Exception):
+        status = 503
+
+    class Iterator:
+        def __init__(self):
+            self.calls = 0
+
+        def __anext__(self):
+            self.calls += 1
+            async def request():
+                if self.calls == 1:
+                    raise DiscordServerError("upstream unavailable")
+                return SimpleNamespace(id=123)
+            return request()
+
+    iterator = Iterator()
+    result = adapter._next_history_message_with_retry(iterator)
+
+    assert result.id == 123
+    assert iterator.calls == 2
+    assert sleeps == [0.01]
+
+
+def test_streaming_history_stops_after_retry_budget_is_exhausted(monkeypatch) -> None:
+    adapter = DiscordSourceAdapter(FakeClient(FakeGuild()), [123])
+    adapter._history_retry_attempts = 2
+    adapter._history_retry_base_delay = 0.01
+    monkeypatch.setattr(
+        "archive_sync_engine.adapters.discord.source.time.sleep",
+        lambda _: None,
+    )
+
+    class DiscordServerError(Exception):
+        status = 503
+
+    class Iterator:
+        def __anext__(self):
+            async def request():
+                raise DiscordServerError("upstream unavailable")
+            return request()
+
+    with pytest.raises(DiscordServerError):
+        adapter._next_history_message_with_retry(Iterator())
+
+
 def test_close_async_iterator_is_safe_after_runtime_event_loop_closes() -> None:
     import asyncio
 
