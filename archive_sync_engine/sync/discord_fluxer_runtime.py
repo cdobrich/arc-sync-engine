@@ -43,6 +43,7 @@ class DiscordFluxerSyncConfig:
     identity_mappings: tuple[FluxerIdentityMapping, ...] = ()
     state_repository_path: str | None = None
     state_namespace: str = "default"
+    incremental_lookback_days: float = 7
 
     def __post_init__(self) -> None:
         if not self.fluxer_guild_id:
@@ -83,6 +84,7 @@ class DiscordFluxerSyncRuntime:
                     request.destination_adapter,
                     request.destination_scope,
                 ),
+                incremental_lookback_days=float(request.adapter_config.get("incremental_lookback_days", 7)),
             )
         )
 
@@ -112,6 +114,7 @@ class DiscordFluxerSyncRuntime:
             self._discord_runtime = DiscordSourceRuntime(
                 discord_client,
                 guild_ids=config.discord.guild_ids,
+                incremental_lookback_days=config.incremental_lookback_days,
             )
             self._fluxer_runtime = FluxerDestinationRuntime(
                 guild_id=config.fluxer_guild_id,
@@ -152,6 +155,10 @@ class DiscordFluxerSyncRuntime:
         return self._pipeline.dry_run(
             destination=self.fluxer.adapter,
         )
+
+    def set_incremental_refresh_lookback_days(self, days: int | float) -> None:
+        """Set the Discord incremental refresh overlap for this sync run."""
+        self.discord.adapter.set_incremental_refresh_lookback_days(days)
 
     def run(self, *, resume_import: bool = False) -> None:
         """Import Discord into the Archive, then synchronize the Archive to Fluxer."""

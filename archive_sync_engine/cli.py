@@ -111,6 +111,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Resume the persisted importer-owned checkpoint state.",
     )
+    import_command.add_argument(
+        "--lookback-days",
+        type=float,
+        default=7,
+        metavar="DAYS",
+        help="Completed-import refresh overlap in days (default: 7; only affects incremental refresh).",
+    )
     add_logging_options(import_command)
 
     export_command = subparsers.add_parser(
@@ -252,6 +259,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Resume the previous Discord import checkpoint.",
     )
     sync.add_argument(
+        "--lookback-days",
+        type=float,
+        default=7,
+        metavar="DAYS",
+        help="Completed-import refresh overlap in days (default: 7; only affects incremental refresh).",
+    )
+    sync.add_argument(
         "--dry-run",
         action="store_true",
         help="Plan synchronization without importing, executing, or changing state.",
@@ -283,6 +297,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Archive Package directory (overrides config.yaml).",
+    )
+    resume.add_argument(
+        "--lookback-days",
+        type=float,
+        default=7,
+        metavar="DAYS",
+        help="Completed-import refresh overlap in days (default: 7; only affects incremental refresh).",
     )
     add_logging_options(resume)
 
@@ -1431,7 +1452,10 @@ def _run_import(args: argparse.Namespace) -> int:
         adapter=adapter_name,
         scope=scope,
         archive_path=paths.root,
-        adapter_config={adapter_name: source_config},
+        adapter_config={
+            adapter_name: source_config,
+            "incremental_lookback_days": getattr(args, "lookback_days", 7),
+        },
     )
 
     if not args.resume:
@@ -1659,6 +1683,7 @@ class _SyncInvocation:
     destination_scope_overrides: tuple[str, ...] = ()
     resume: bool = False
     dry_run: bool = False
+    incremental_lookback_days: float = 7
 
 
 def _sync_invocation_from_args(args: argparse.Namespace) -> _SyncInvocation:
@@ -1699,6 +1724,7 @@ def _sync_invocation_from_args(args: argparse.Namespace) -> _SyncInvocation:
         ),
         resume=args.resume,
         dry_run=args.dry_run,
+        incremental_lookback_days=getattr(args, "lookback_days", 7),
     )
 
 
@@ -1761,7 +1787,10 @@ def _run_resume(args: argparse.Namespace) -> int:
             adapter=adapter_name,
             scope=scope,
             archive_path=paths.root,
-            adapter_config={adapter_name: source_config},
+            adapter_config={
+                adapter_name: source_config,
+                "incremental_lookback_days": getattr(args, "lookback_days", 7),
+            },
         )
         try:
             runtime = registry.create(adapter_name, request)
@@ -1788,6 +1817,7 @@ def _run_resume(args: argparse.Namespace) -> int:
             archive=archive_path,
             resume=True,
             dry_run=False,
+            incremental_lookback_days=getattr(args, "lookback_days", 7),
         )
     )
 
@@ -1920,6 +1950,7 @@ def _run_sync(invocation: _SyncInvocation) -> int:
             input_adapter: source_config,
             destination_adapter: destination_runtime_config,
             "identity_mappings": identity_mappings,
+            "incremental_lookback_days": invocation.incremental_lookback_days,
         },
     )
     runtime_registry = default_sync_runtime_registry()

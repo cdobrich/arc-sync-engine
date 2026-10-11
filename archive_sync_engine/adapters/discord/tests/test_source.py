@@ -1627,3 +1627,111 @@ def test_streaming_message_traversal_does_not_retain_raw_history(tmp_path) -> No
     assert count == 1000
     assert adapter._message_cache == {}
     assert adapter._incremental_message_cache == {}
+
+
+def test_incremental_refresh_lookback_is_configurable_and_defaults_to_seven_days() -> None:
+    adapter = DiscordSourceAdapter(FakeClient(FakeGuild()), [123])
+    assert adapter.incremental_refresh_lookback == timedelta(days=7)
+
+    adapter.set_incremental_refresh_lookback_days(30)
+    assert adapter.incremental_refresh_lookback == timedelta(days=30)
+
+    adapter.set_incremental_refresh_lookback_days(0)
+    assert adapter.incremental_refresh_lookback == timedelta(0)
+
+
+@pytest.mark.parametrize("days", [-1, float("inf"), float("nan")])
+def test_incremental_refresh_lookback_rejects_invalid_values(days: float) -> None:
+    adapter = DiscordSourceAdapter(FakeClient(FakeGuild()), [123])
+    with pytest.raises(ValueError, match="finite non-negative"):
+        adapter.set_incremental_refresh_lookback_days(days)
+
+
+def test_attachment_read_retries_truncated_payload_then_succeeds() -> None:
+    import asyncio
+
+    class ClientPayloadError(Exception):
+        pass
+
+    adapter = DiscordSourceAdapter(FakeClient(FakeGuild()), [123])
+    adapter._attachment_retry_base_delay = 0
+    attempts = 0
+
+    async def reader() -> bytes:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ClientPayloadError("truncated content-length response")
+        return b"complete attachment bytes"
+
+    result = asyncio.run(adapter._read_attachment_with_retry(reader))
+    assert result == b"complete attachment bytes"
+    assert attempts == 2
+
+
+def test_attachment_read_does_not_retry_non_transient_errors() -> None:
+    import asyncio
+
+    adapter = DiscordSourceAdapter(FakeClient(FakeGuild()), [123])
+    attempts = 0
+
+    async def reader() -> bytes:
+        nonlocal attempts
+        attempts += 1
+        raise ValueError("invalid attachment metadata")
+
+    with pytest.raises(ValueError, match="invalid attachment metadata"):
+        asyncio.run(adapter._read_attachment_with_retry(reader))
+    assert attempts == 1
+
+
+def test_attachment_read_stops_after_retry_budget() -> None:
+    import asyncio
+
+    class ClientPayloadError(Exception):
+        pass
+
+    adapter = DiscordSourceAdapter(FakeClient(FakeGuild()), [123])
+    adapter._attachment_retry_attempts = 3
+    adapter._attachment_retry_base_delay = 0
+    attempts = 0
+
+    async def reader() -> bytes:
+        nonlocal attempts
+        attempts += 1
+        raise ClientPayloadError("CDN response was truncated")
+
+    with pytest.raises(ClientPayloadError, match="truncated"):
+        asyncio.run(adapter._read_attachment_with_retry(reader))
+    assert attempts == 3
+
+
+def test_iter_messages_by_ids_fetches_only_requested_reply_target() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "general", 1, created)
+    target = FakeMessage(100, channel, user, created, "reply target")
+    unrelated = FakeMessage(101, channel, user, created, "unrelated message")
+    channel._messages = (target, unrelated)
+    fetched: list[int] = []
+
+    async def fetch_message(message_id: int):
+        fetched.append(message_id)
+        if message_id == 100:
+            return target
+        raise AssertionError(f"unexpected message lookup: {message_id}")
+
+    channel.fetch_message = fetch_message
+    guild = FakeGuild()
+    guild.channels = [channel]
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+
+    messages = list(adapter.iter_messages_by_ids(
+        conversation,
+        ["discord:message:100"],
+    ))
+
+    assert [str(message.id) for message in messages] == ["discord:message:100"]
+    assert fetched == [100]
+    assert channel.history_calls == 0

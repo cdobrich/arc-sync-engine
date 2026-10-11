@@ -92,6 +92,10 @@ class DiscordSourceAdapter(SourceAdapter):
         self._history_retry_attempts = 5
         self._history_retry_base_delay = 2.0
         self._history_retry_max_delay = 60.0
+        self._incremental_lookback = self._INCREMENTAL_LOOKBACK
+        self._attachment_retry_attempts = 5
+        self._attachment_retry_base_delay = 2.0
+        self._attachment_retry_max_delay = 60.0
 
     @property
     def name(self) -> str:
@@ -102,11 +106,24 @@ class DiscordSourceAdapter(SourceAdapter):
         """Re-read a bounded recent window so mutable Discord state is seen.
 
         Discord does not expose a general "messages changed since" endpoint.
-        A seven-day overlap catches ordinary edits, pins, reactions, and
+        The configured overlap catches ordinary edits, pins, reactions, and
         attachment changes without re-reading the entire channel history.
-        Older mutations remain an inherent source-platform limitation.
+        Seven days is the default; older mutations remain a source limitation.
         """
-        return timedelta(days=7)
+        return self._incremental_lookback
+
+    def set_incremental_refresh_lookback_days(self, days: int | float) -> None:
+        """Configure the overlap used for completed-import incremental refreshes.
+
+        Seven days remains the default. Zero is permitted for callers who
+        explicitly want no overlap; negative and non-finite values are rejected.
+        """
+        import math
+
+        value = float(days)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("Incremental refresh lookback days must be a finite non-negative number.")
+        self._incremental_lookback = timedelta(days=value)
 
     def set_identity_scan_progress_callback(
         self,
@@ -506,6 +523,45 @@ class DiscordSourceAdapter(SourceAdapter):
             for message_id in sorted(pinned_ids)
         )
 
+    def iter_messages_by_ids(
+        self,
+        conversation: CanonicalConversation,
+        message_ids: Iterable[str],
+    ) -> Iterable[CanonicalMessage]:
+        """Fetch only requested reply targets instead of replaying channel history."""
+        channel = self._conversation_channels.get(str(conversation.id))
+        if channel is None:
+            raise NotFoundError(
+                f"Discord conversation {conversation.id} is not available."
+            )
+        fetch_message = getattr(channel, "fetch_message", None)
+        if not callable(fetch_message):
+            yield from super().iter_messages_by_ids(conversation, message_ids)
+            return
+
+        pinned_ids = self._run(self._collect_pinned_ids(channel))
+        seen: set[str] = set()
+        for canonical_id in message_ids:
+            key = str(canonical_id)
+            prefix = "discord:message:"
+            if not key.startswith(prefix):
+                continue
+            raw_id = key[len(prefix):]
+            if not raw_id or key in seen:
+                continue
+            seen.add(key)
+            try:
+                raw_message = self._run(fetch_message(int(raw_id)))
+            except Exception as exc:
+                # A deleted/unavailable target is left unresolved for the
+                # coordinator's existing completion invariant to report.
+                if exc.__class__.__name__ in {"NotFound", "UnknownMessage"}:
+                    continue
+                raise
+            canonical = self._canonicalize_one_cached_message(raw_message, pinned_ids)
+            if str(canonical.id) == key:
+                yield canonical
+
     def iter_message_identities(
         self,
         message: CanonicalMessage,
@@ -538,7 +594,7 @@ class DiscordSourceAdapter(SourceAdapter):
             channel,
             conversation_id=str(conversation.id),
             cache=None,
-            after=cursor.created_at - self._INCREMENTAL_LOOKBACK,
+            after=cursor.created_at - self._incremental_lookback,
         )
 
     def _iter_canonical_history(
@@ -692,7 +748,7 @@ class DiscordSourceAdapter(SourceAdapter):
         channel: Any,
         cursor: SourceRefreshCursor,
     ) -> list[Any]:
-        after = cursor.created_at - cls._INCREMENTAL_LOOKBACK
+        after = cursor.created_at - cls._incremental_lookback
         history = channel.history(
             limit=None,
             oldest_first=True,
@@ -1470,7 +1526,7 @@ class DiscordSourceAdapter(SourceAdapter):
                 f"Discord attachment {attachment_id} cannot be downloaded."
             )
 
-        data = await reader()
+        data = await self._read_attachment_with_retry(reader)
         digest = hashlib.sha256(data).hexdigest()
         payload = bytes(data)
         if digest not in self._attachment_bytes and len(payload) <= self._attachment_cache_limit:
@@ -1493,6 +1549,51 @@ class DiscordSourceAdapter(SourceAdapter):
             ),
             size=len(data),
             sha256=digest,
+        )
+
+    async def _read_attachment_with_retry(
+        self,
+        reader: Callable[[], Awaitable[bytes]],
+    ) -> bytes:
+        """Retry transient CDN payload truncation and transport failures.
+
+        Attachment reads are idempotent GETs. A truncated response such as
+        aiohttp.ClientPayloadError/ContentLengthError can therefore be retried
+        without affecting the import checkpoint. Exhaustion still raises so
+        the normal import checkpoint can be resumed later.
+        """
+        for attempt in range(1, self._attachment_retry_attempts + 1):
+            try:
+                return await reader()
+            except Exception as exc:
+                if not self._is_retryable_attachment_error(exc):
+                    raise
+                if attempt >= self._attachment_retry_attempts:
+                    raise
+                delay = min(
+                    self._attachment_retry_base_delay * (2 ** (attempt - 1)),
+                    self._attachment_retry_max_delay,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("attachment retry loop exited unexpectedly")
+
+    @staticmethod
+    def _is_retryable_attachment_error(exc: BaseException) -> bool:
+        """Recognize transient HTTP/CDN errors without masking model errors."""
+        status = getattr(exc, "status", None)
+        try:
+            status = int(status)
+        except (TypeError, ValueError):
+            status = None
+        if status is not None and 500 <= status <= 599:
+            return True
+        retryable_names = {
+            "ClientPayloadError", "ContentLengthError", "ServerDisconnectedError",
+            "ClientConnectionError", "ConnectionResetError", "TimeoutError",
+            "ServerTimeoutError", "ClientOSError",
+        }
+        return exc.__class__.__name__ in retryable_names or isinstance(
+            exc, (ConnectionError, TimeoutError, OSError)
         )
 
     async def _canonical_reactions(

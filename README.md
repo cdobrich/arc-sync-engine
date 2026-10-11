@@ -325,10 +325,13 @@ Likewise, an interrupted import being resumed is a different case: that uses the
 A completed import followed by `--resume` is still treated as an incremental refresh, and the Discord adapter's 7-day lookback remains applicable there.
 
 WARNING: This has not been tested.
-NOTE: The `--resume` option limits scanning from the origin-server over the time range of 7-day window. (This is not currently configurable.)
+NOTE: The `--resume` option limits scanning from the origin-server over the time range of 7-day window. This can be configured with the `--lookback-days` switch.
 
     archive-sync-engine sync --config ./config.yaml
     archive-sync-engine sync --config ./config.yaml --resume
+    archive-sync-engine sync --config ./config.yaml --lookback-days 30
+
+The `--lookback-days` value is expressed in days and can be fractional. For example, `--lookback-days 2.5` means 60 hours.
 
 This limited time window only applies to currently known (stored in the Archive), content. A newly discovered conversation, or one for which no cursor exists, can cause a full message traversal for that conversation.
 

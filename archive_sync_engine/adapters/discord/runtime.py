@@ -161,6 +161,7 @@ class DiscordSourceRuntime:
                 guild_ids=config.guild_ids,
                 loop=loop,
                 previous_loop=previous_loop,
+                incremental_lookback_days=request.adapter_config.get("incremental_lookback_days", 7),
             )
         except Exception:
             loop.close()
@@ -178,6 +179,7 @@ class DiscordSourceRuntime:
         guild_ids: tuple[int | str, ...],
         loop: asyncio.AbstractEventLoop | None = None,
         previous_loop: asyncio.AbstractEventLoop | None = None,
+        incremental_lookback_days: int | float = 7,
     ) -> None:
         self._client = client
         self._guild_ids = tuple(guild_ids)
@@ -185,6 +187,7 @@ class DiscordSourceRuntime:
             client,
             self._guild_ids,
         )
+        self.adapter.set_incremental_refresh_lookback_days(incremental_lookback_days)
         self._loop = loop
         self._previous_loop = previous_loop
         if loop is not None:

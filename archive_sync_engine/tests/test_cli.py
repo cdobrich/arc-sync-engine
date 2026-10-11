@@ -477,8 +477,12 @@ delays:
     registry.create.return_value = runtime
 
     with patch("archive_sync_engine.cli.default_source_runtime_registry", return_value=registry):
-        assert main(["import", "--config", str(config)]) == 0
+        assert main([
+            "import", "--config", str(config), "--lookback-days", "21"
+        ]) == 0
 
+    request = registry.create.call_args.args[1]
+    assert request.adapter_config["incremental_lookback_days"] == 21
     output = capsys.readouterr().out
     assert "Attempting to connect to source adapter 'discord'" in output
     assert "Connected successfully." in output
@@ -2061,3 +2065,17 @@ def test_tag_cli_rename_delete_all_and_verify(tmp_path: Path, capsys) -> None:
 
     assert main(["tag", "verify", "--archive", str(archive_path), tag_id]) == 0
     assert "Archive tag fingerprint: match" in capsys.readouterr().out
+
+
+def test_import_and_resume_cli_expose_incremental_lookback_days() -> None:
+    parser = build_parser()
+    assert parser.parse_args(["import", "--config", "config.yml"]).lookback_days == 7
+    assert parser.parse_args([
+        "import", "--config", "config.yml", "--lookback-days", "21"
+    ]).lookback_days == 21
+    assert parser.parse_args([
+        "resume", "--config", "config.yml", "--lookback-days", "2.5"
+    ]).lookback_days == 2.5
+    assert parser.parse_args([
+        "sync", "--lookback-days", "14"
+    ]).lookback_days == 14

@@ -851,7 +851,10 @@ class CanonicalImporter:
                 if not pending:
                     break
 
-                for message in source.iter_messages(conversation):
+                # Recovery is a point-lookup workload: asking the source for
+                # only pending target IDs avoids a second full-history pass
+                # (and avoids re-downloading attachments from unrelated messages).
+                for message in source.iter_messages_by_ids(conversation, pending):
                     message_id = str(message.id)
                     if message_id not in pending:
                         continue

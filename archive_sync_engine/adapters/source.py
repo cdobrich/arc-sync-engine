@@ -134,6 +134,27 @@ class SourceAdapter(ABC):
         """
         raise NotImplementedError
 
+    def iter_messages_by_ids(
+        self,
+        conversation: CanonicalConversation,
+        message_ids: Iterable[str],
+    ) -> Iterable[CanonicalMessage]:
+        """Retrieve selected messages for demand-driven relationship recovery.
+
+        Adapters with a native point-lookup API should override this method.
+        The compatibility fallback filters a full conversation traversal.
+        """
+        wanted = {str(message_id) for message_id in message_ids}
+        if not wanted:
+            return
+        for message in self.iter_messages(conversation):
+            message_id = str(message.id)
+            if message_id in wanted:
+                yield message
+                wanted.discard(message_id)
+                if not wanted:
+                    break
+
     def iter_pinned_message_ids(
         self,
         conversation: CanonicalConversation,
