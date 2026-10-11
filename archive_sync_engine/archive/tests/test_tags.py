@@ -187,3 +187,93 @@ def test_tag_uses_durable_last_import_after_session_is_replaced(tmp_path: Path) 
     tag = package.create_tag("Post-export checkpoint", created_at=imported_at)
 
     assert tag.source == source
+
+
+def test_tag_rename_preserves_immutable_identity_and_sequence(tmp_path: Path) -> None:
+    registry = ArchiveTagRegistry(tmp_path / "tags.json")
+    created = datetime(2026, 10, 13, tzinfo=UTC)
+    tag = registry.create("Discord Export v1", created_at=created)
+    other = registry.create("Discord Export v2", created_at=created)
+
+    renamed = registry.rename(tag.id, "Discord Export v1 — renamed")
+
+    assert renamed.id == tag.id
+    assert renamed.sequence == tag.sequence
+    assert renamed.created_at == tag.created_at
+    assert renamed.name == "Discord Export v1 — renamed"
+    assert registry.get(tag.id) == renamed
+    assert registry.get("Discord Export v1") is None
+    assert registry.get(other.name) == other
+
+
+def test_tag_delete_is_a_persistent_tombstone(tmp_path: Path) -> None:
+    registry = ArchiveTagRegistry(tmp_path / "tags.json")
+    created = datetime(2026, 10, 13, tzinfo=UTC)
+    deleted_at = datetime(2026, 10, 14, tzinfo=UTC)
+    tag = registry.create("Discord Export v1", created_at=created)
+
+    deleted = registry.delete(tag.id, deleted_at=deleted_at)
+
+    assert deleted.id == tag.id
+    assert deleted.sequence == tag.sequence
+    assert deleted.name == tag.name
+    assert deleted.deleted_at == deleted_at
+    assert registry.get(tag.id) == deleted
+    assert registry.get(tag.name) is None
+    assert tuple(registry.iter_tags()) == (deleted,)
+
+    reloaded = ArchiveTagRegistry(tmp_path / "tags.json")
+    assert reloaded.require(tag.id).deleted_at == deleted_at
+
+
+def test_deleted_tag_remains_a_range_boundary_by_immutable_id(tmp_path: Path) -> None:
+    registry = ArchiveTagRegistry(tmp_path / "tags.json")
+    created = datetime(2026, 10, 13, tzinfo=UTC)
+    first = registry.create("v1", created_at=created)
+    deleted = registry.create("v2", created_at=created)
+    third = registry.create("v3", created_at=created)
+    registry.delete(deleted.id, deleted_at=datetime(2026, 10, 14, tzinfo=UTC))
+
+    assert tuple(tag.id for tag in registry.between(first.id, third.id)) == (deleted.id,)
+    assert tuple(tag.id for tag in registry.between(first.id, third.id, inclusive=True)) == (first.id, deleted.id, third.id)
+
+
+def test_deleted_tag_name_may_be_reused_but_identity_is_distinct(tmp_path: Path) -> None:
+    registry = ArchiveTagRegistry(tmp_path / "tags.json")
+    created = datetime(2026, 10, 13, tzinfo=UTC)
+    original = registry.create("release", created_at=created)
+    registry.delete(original.id, deleted_at=datetime(2026, 10, 14, tzinfo=UTC))
+
+    replacement = registry.create("release", created_at=datetime(2026, 10, 15, tzinfo=UTC))
+
+    assert replacement.id != original.id
+    assert replacement.sequence > original.sequence
+    assert registry.get("release") == replacement
+    assert registry.get(original.id).deleted_at is not None
+
+
+def test_tag_rename_rejects_duplicate_name_and_deleted_tag(tmp_path: Path) -> None:
+    registry = ArchiveTagRegistry(tmp_path / "tags.json")
+    created = datetime(2026, 10, 13, tzinfo=UTC)
+    first = registry.create("v1", created_at=created)
+    second = registry.create("v2", created_at=created)
+
+    with pytest.raises(ValueError, match="already exists"):
+        registry.rename(second.id, "v1")
+
+    registry.delete(first.id, deleted_at=datetime(2026, 10, 14, tzinfo=UTC))
+    with pytest.raises(ValueError, match="cannot rename"):
+        registry.rename(first.id, "restored")
+
+
+def test_tag_fingerprint_detects_database_state_change(tmp_path: Path) -> None:
+    archive_path = tmp_path / "archive"
+    package = ArchivePackage.initialize(ArchivePaths(archive_path))
+    tag = package.create_tag("v1", created_at=datetime(2026, 10, 13, tzinfo=UTC))
+
+    assert package.tag_matches_current_database(tag.id)
+
+    database = ArchivePaths(archive_path).database
+    database.write_bytes(database.read_bytes() + b"x")
+
+    assert not package.tag_matches_current_database(tag.id)

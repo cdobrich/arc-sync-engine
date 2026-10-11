@@ -175,6 +175,29 @@ class ArchivePackage:
             archive_database_sha256=self._archive_database_sha256(),
         )
 
+    def rename_tag(self, name_or_id: str, new_name: str) -> ArchiveTag:
+        """Rename an active Archive tag while preserving its identity."""
+        return ArchiveTagRegistry(self._paths.tags).rename(name_or_id, new_name)
+
+    def delete_tag(
+        self,
+        name_or_id: str,
+        *,
+        deleted_at: datetime | None = None,
+    ) -> ArchiveTag:
+        """Tombstone an Archive tag without removing its historical identity."""
+        return ArchiveTagRegistry(self._paths.tags).delete(
+            name_or_id,
+            deleted_at=deleted_at or datetime.now(timezone.utc),
+        )
+
+    def tag_matches_current_database(self, name_or_id: str) -> bool:
+        """Return whether a tag's recorded SQLite fingerprint matches now."""
+        tag = self.require_tag(name_or_id)
+        if tag.archive_database_sha256 is None:
+            return False
+        return tag.archive_database_sha256 == self._archive_database_sha256()
+
     def get_tag(self, name_or_id: str) -> ArchiveTag | None:
         """Return an Archive tag by name or opaque tag ID."""
         return ArchiveTagRegistry(self._paths.tags).get(name_or_id)

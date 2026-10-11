@@ -374,6 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="List Archive state tags in creation order.",
     )
     tag_list.add_argument("--archive", type=Path, required=True, help="Archive Package directory.")
+    tag_list.add_argument("--all", action="store_true", help="Include deleted tag tombstones.")
     tag_list.add_argument("--as-json", action="store_true", help="Emit machine-readable JSON.")
     add_logging_options(tag_list)
 
@@ -385,6 +386,31 @@ def build_parser() -> argparse.ArgumentParser:
     tag_show.add_argument("name_or_id", help="Tag name or opaque tag ID.")
     tag_show.add_argument("--as-json", action="store_true", help="Emit machine-readable JSON.")
     add_logging_options(tag_show)
+
+    tag_rename = tag_subparsers.add_parser(
+        "rename",
+        help="Rename an active Archive state tag without changing its identity.",
+    )
+    tag_rename.add_argument("--archive", type=Path, required=True, help="Archive Package directory.")
+    tag_rename.add_argument("name_or_id", help="Tag name or opaque tag ID.")
+    tag_rename.add_argument("new_name", help="New human-readable tag name.")
+    add_logging_options(tag_rename)
+
+    tag_delete = tag_subparsers.add_parser(
+        "delete",
+        help="Tombstone an Archive state tag without removing its identity.",
+    )
+    tag_delete.add_argument("--archive", type=Path, required=True, help="Archive Package directory.")
+    tag_delete.add_argument("name_or_id", help="Tag name or opaque tag ID.")
+    add_logging_options(tag_delete)
+
+    tag_verify = tag_subparsers.add_parser(
+        "verify",
+        help="Verify the current Archive database against a tag fingerprint.",
+    )
+    tag_verify.add_argument("--archive", type=Path, required=True, help="Archive Package directory.")
+    tag_verify.add_argument("name_or_id", help="Tag name or opaque tag ID.")
+    add_logging_options(tag_verify)
 
     tag_range = tag_subparsers.add_parser(
         "range",
@@ -568,6 +594,8 @@ def _run_tag(args: argparse.Namespace) -> int:
 
     if args.tag_action == "list":
         tags = tuple(package.iter_tags())
+        if not args.all:
+            tags = tuple(tag for tag in tags if tag.deleted_at is None)
         if args.as_json:
             import json
             print(json.dumps([_tag_json(tag) for tag in tags], indent=2, sort_keys=True))
@@ -578,10 +606,11 @@ def _run_tag(args: argparse.Namespace) -> int:
                 print("SEQUENCE\tNAME\tCREATED\tSOURCE\tSTATUS")
                 for tag in tags:
                     source = tag.source
+                    status = "deleted" if tag.deleted_at else (source.status.value if source else "active")
                     print(
                         f"{tag.sequence}\t{tag.name}\t{tag.created_at.isoformat()}\t"
                         f"{source.adapter if source else ''}\t"
-                        f"{source.status.value if source else ''}"
+                        f"{status}"
                     )
         return 0
 
@@ -595,6 +624,9 @@ def _run_tag(args: argparse.Namespace) -> int:
             print(json.dumps(_tag_json(tag), indent=2, sort_keys=True))
         else:
             print(f"Name: {tag.name}")
+            print(f"Status: {'deleted' if tag.deleted_at else 'active'}")
+            if tag.deleted_at:
+                print(f"Deleted: {tag.deleted_at.isoformat()}")
             print(f"ID: {tag.id}")
             print(f"Sequence: {tag.sequence}")
             print(f"Created: {tag.created_at.isoformat()}")
@@ -612,6 +644,32 @@ def _run_tag(args: argparse.Namespace) -> int:
                 if source.error:
                     print(f"Source error: {source.error}")
         return 0
+
+    if args.tag_action == "rename":
+        try:
+            tag = package.rename_tag(args.name_or_id, args.new_name)
+        except (KeyError, ValueError) as exc:
+            raise ConfigurationError(str(exc)) from exc
+        print(f"Renamed Archive tag to '{tag.name}' (sequence {tag.sequence}, id {tag.id}).")
+        return 0
+
+    if args.tag_action == "delete":
+        from datetime import datetime, timezone
+
+        try:
+            tag = package.delete_tag(args.name_or_id, deleted_at=datetime.now(timezone.utc))
+        except (KeyError, ValueError) as exc:
+            raise ConfigurationError(str(exc)) from exc
+        print(f"Deleted Archive tag '{tag.name}' (sequence {tag.sequence}, id {tag.id}).")
+        return 0
+
+    if args.tag_action == "verify":
+        try:
+            matches = package.tag_matches_current_database(args.name_or_id)
+        except (KeyError, ValueError) as exc:
+            raise ConfigurationError(str(exc)) from exc
+        print("Archive tag fingerprint: match" if matches else "Archive tag fingerprint: mismatch")
+        return 0 if matches else 1
 
     if args.tag_action == "range":
         try:

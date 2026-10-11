@@ -105,6 +105,7 @@ class ArchiveTag:
     created_at: datetime
     source: ArchiveTagSourceState | None = None
     archive_database_sha256: str | None = None
+    deleted_at: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.id.strip():
@@ -114,6 +115,8 @@ class ArchiveTag:
         if self.sequence < 1:
             raise ValueError("tag sequence must be >= 1.")
         require_timezone_aware("created_at", self.created_at)
+        if self.deleted_at is not None:
+            require_timezone_aware("deleted_at", self.deleted_at)
         if self.archive_database_sha256 is not None:
             if len(self.archive_database_sha256) != 64 or any(
                 character not in "0123456789abcdef"
@@ -129,6 +132,7 @@ class ArchiveTag:
             "created_at": self.created_at.isoformat(),
             "source": self.source.to_json_dict() if self.source else None,
             "archive_database_sha256": self.archive_database_sha256,
+            "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None,
         }
 
     @classmethod
@@ -149,6 +153,11 @@ class ArchiveTag:
             archive_database_sha256=(
                 str(data["archive_database_sha256"])
                 if data.get("archive_database_sha256") is not None
+                else None
+            ),
+            deleted_at=(
+                datetime.fromisoformat(str(data["deleted_at"]))
+                if data.get("deleted_at") is not None
                 else None
             ),
         )
@@ -176,7 +185,7 @@ class ArchiveTagRegistry:
             raise ValueError("tag name cannot be empty.")
 
         tags = list(self.iter_tags())
-        if any(tag.name == normalized for tag in tags):
+        if any(tag.name == normalized and tag.deleted_at is None for tag in tags):
             raise ValueError(f"Archive tag already exists: {normalized!r}")
 
         sequence = max((tag.sequence for tag in tags), default=0) + 1
@@ -193,14 +202,72 @@ class ArchiveTagRegistry:
         return tag
 
     def get(self, name_or_id: str) -> ArchiveTag | None:
-        """Return a tag by human-readable name or opaque tag ID."""
+        """Return an active tag by name or any tag by opaque ID."""
         needle = name_or_id.strip()
         if not needle:
             return None
         for tag in self.iter_tags():
-            if tag.name == needle or tag.id == needle:
+            if tag.id == needle:
+                return tag
+            if tag.name == needle and tag.deleted_at is None:
                 return tag
         return None
+
+    def rename(
+        self,
+        name_or_id: str,
+        new_name: str,
+    ) -> ArchiveTag:
+        """Rename an active tag without changing its identity or sequence."""
+        normalized = new_name.strip()
+        if not normalized:
+            raise ValueError("tag name cannot be empty.")
+        tags = list(self.iter_tags())
+        target = next((tag for tag in tags if tag.id == name_or_id.strip() or (tag.name == name_or_id.strip() and tag.deleted_at is None)), None)
+        if target is None:
+            raise KeyError(f"Archive tag not found: {name_or_id!r}")
+        if target.deleted_at is not None:
+            raise ValueError("cannot rename a deleted Archive tag.")
+        if any(tag.id != target.id and tag.deleted_at is None and tag.name == normalized for tag in tags):
+            raise ValueError(f"Archive tag already exists: {normalized!r}")
+        renamed = ArchiveTag(
+            id=target.id,
+            name=normalized,
+            sequence=target.sequence,
+            created_at=target.created_at,
+            source=target.source,
+            archive_database_sha256=target.archive_database_sha256,
+            deleted_at=target.deleted_at,
+        )
+        self._write([renamed if tag.id == target.id else tag for tag in tags])
+        return renamed
+
+    def delete(
+        self,
+        name_or_id: str,
+        *,
+        deleted_at: datetime,
+    ) -> ArchiveTag:
+        """Tombstone an active tag while preserving its identity and sequence."""
+        tags = list(self.iter_tags())
+        needle = name_or_id.strip()
+        target = next((tag for tag in tags if tag.id == needle or (tag.name == needle and tag.deleted_at is None)), None)
+        if target is None:
+            raise KeyError(f"Archive tag not found: {name_or_id!r}")
+        if target.deleted_at is not None:
+            raise ValueError("Archive tag is already deleted.")
+        require_timezone_aware("deleted_at", deleted_at)
+        deleted = ArchiveTag(
+            id=target.id,
+            name=target.name,
+            sequence=target.sequence,
+            created_at=target.created_at,
+            source=target.source,
+            archive_database_sha256=target.archive_database_sha256,
+            deleted_at=deleted_at,
+        )
+        self._write([deleted if tag.id == target.id else tag for tag in tags])
+        return deleted
 
     def require(self, name_or_id: str) -> ArchiveTag:
         tag = self.get(name_or_id)

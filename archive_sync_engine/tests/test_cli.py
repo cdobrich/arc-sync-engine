@@ -2031,3 +2031,33 @@ def test_tag_cli_create_list_show_and_range(tmp_path: Path, capsys) -> None:
     output = capsys.readouterr().out
     assert "Name: Discord Export v1, 2026-10-13" in output
     assert "Sequence: 1" in output
+
+
+def test_tag_cli_rename_delete_all_and_verify(tmp_path: Path, capsys) -> None:
+    archive_path = tmp_path / "archive"
+    ArchivePackage.initialize(ArchivePaths(archive_path))
+
+    assert main(["tag", "create", "--archive", str(archive_path), "--name", "v1"]) == 0
+    created_output = capsys.readouterr().out
+    tag_id = created_output.split("id ", 1)[1].split(").", 1)[0]
+
+    assert main(["tag", "rename", "--archive", str(archive_path), tag_id, "Discord Export v1"]) == 0
+    assert "Renamed Archive tag" in capsys.readouterr().out
+
+    assert main(["tag", "delete", "--archive", str(archive_path), tag_id]) == 0
+    assert "Deleted Archive tag" in capsys.readouterr().out
+
+    assert main(["tag", "list", "--archive", str(archive_path)]) == 0
+    assert capsys.readouterr().out.strip() == "No Archive tags."
+
+    assert main(["tag", "list", "--archive", str(archive_path), "--all"]) == 0
+    output = capsys.readouterr().out
+    assert "Discord Export v1" in output
+    assert "deleted" in output.lower()
+
+    assert main(["tag", "show", "--archive", str(archive_path), tag_id]) == 0
+    output = capsys.readouterr().out
+    assert "Status: deleted" in output
+
+    assert main(["tag", "verify", "--archive", str(archive_path), tag_id]) == 0
+    assert "Archive tag fingerprint: match" in capsys.readouterr().out
