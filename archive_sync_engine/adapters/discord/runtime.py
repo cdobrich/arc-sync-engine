@@ -21,6 +21,7 @@ from .source import DiscordSourceAdapter
 from ...importer import ImportProgress
 
 _T = TypeVar("_T")
+CLIENT_CLOSE_TIMEOUT_SECONDS = 15.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,10 +267,21 @@ class DiscordSourceRuntime:
             raise AdapterError("Discord client does not expose close().")
 
         try:
+            # Shutdown is part of the command's completion contract. A stuck
+            # gateway/session close must not leave the CLI process alive forever.
+            bounded_close = asyncio.wait_for(
+                close(),
+                timeout=CLIENT_CLOSE_TIMEOUT_SECONDS,
+            )
             if self._loop is not None:
-                self._loop.run_until_complete(close())
+                self._loop.run_until_complete(bounded_close)
             else:
-                asyncio.run(close())
+                asyncio.run(bounded_close)
+        except asyncio.TimeoutError as exc:
+            raise AdapterError(
+                "Timed out after "
+                f"{CLIENT_CLOSE_TIMEOUT_SECONDS:g} seconds while closing the Discord client."
+            ) from exc
         except Exception as exc:
             raise AdapterError("Failed to close the Discord client.") from exc
         finally:

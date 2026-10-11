@@ -283,3 +283,20 @@ def test_build_discord_source_runtime_config_uses_override_token() -> None:
 
     assert config.token == "override-token"
     assert config.guild_ids == (123,)
+
+
+def test_discord_source_runtime_bounds_client_shutdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    class StuckClient:
+        async def close(self) -> None:
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        "archive_sync_engine.adapters.discord.runtime.CLIENT_CLOSE_TIMEOUT_SECONDS",
+        0.01,
+    )
+    runtime = DiscordSourceRuntime(StuckClient(), guild_ids=(1,))
+    with pytest.raises(AdapterError, match="Timed out.*closing the Discord client"):
+        runtime.close()
+    assert runtime._closed is True

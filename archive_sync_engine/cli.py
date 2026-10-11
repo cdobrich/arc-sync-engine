@@ -1099,6 +1099,7 @@ def _run_init(args: argparse.Namespace) -> int:
 
 _IMPORT_PROGRESS_BAR: tqdm | None = None
 _IMPORT_DISCOVERY_BAR: tqdm | None = None
+_IMPORT_LAST_ACTIVITY: ImportProgress | None = None
 
 
 def _import_progress_is_tty() -> bool:
@@ -1158,7 +1159,50 @@ def _ensure_import_discovery_bar(*, unit: str, desc: str) -> tqdm | None:
 
 def _print_import_progress(progress: ImportProgress) -> None:
     """Render adapter-neutral import progress without exposing secrets."""
-    global _IMPORT_PROGRESS_BAR, _IMPORT_DISCOVERY_BAR
+    global _IMPORT_PROGRESS_BAR, _IMPORT_DISCOVERY_BAR, _IMPORT_LAST_ACTIVITY
+    if progress.phase == "traversal":
+        _close_all_import_progress()
+        _IMPORT_LAST_ACTIVITY = progress
+        details = [
+            f"mode={progress.mode or 'unknown'}",
+            f"conversations_scanned={progress.conversations_scanned or 0}",
+            f"messages_examined={progress.examined or 0}",
+            f"new_messages={progress.messages_added or 0}",
+            f"existing_messages_seen={progress.messages_existing or 0}",
+            f"attachments_downloaded={progress.attachments_downloaded or 0}",
+            f"attachments_reused={progress.attachments_reused or 0}",
+        ]
+        print(
+            "Source traversal finished (reply reconciliation still pending): "
+            + "; ".join(details) + ".",
+            flush=True,
+        )
+        return
+
+    if progress.phase == "reply_recovery":
+        _close_all_import_progress()
+        if progress.reply_targets_recovered is not None:
+            print(
+                "Reply recovery finished: "
+                f"recovered={progress.reply_targets_recovered}; "
+                f"unresolved={progress.unresolved_reply_targets or 0}.",
+                flush=True,
+            )
+        elif progress.current == 0 and progress.total == 0:
+            print("Reply recovery: no missing reply targets.", flush=True)
+        else:
+            if progress.total is None:
+                print(f"Reply recovery: {progress.detail or 'checking archive'}...", flush=True)
+            else:
+                current = progress.current or 0
+                total = progress.total or 0
+                print(
+                    f"Reply recovery: {current}/{total} target(s) recovered; "
+                    f"{progress.detail or 'checking source channels'}.",
+                    flush=True,
+                )
+        return
+
     if progress.phase == "refresh":
         _close_all_import_progress()
         mode = progress.mode or "unknown"
@@ -1429,6 +1473,20 @@ def _run_import(args: argparse.Namespace) -> int:
             f"Archive Package is invalid: {'; '.join(report.errors)}"
         )
 
+    if args.resume:
+        if resumable_import:
+            print(
+                "Resume strategy: continuing an interrupted full import checkpoint; "
+                "--lookback-days applies only to completed-import incremental refreshes.",
+                flush=True,
+            )
+        else:
+            print(
+                "Resume strategy: completed-import incremental refresh; "
+                f"lookback-days={getattr(args, 'lookback_days', 7):g}.",
+                flush=True,
+            )
+
     if args.input_scope:
         scope = tuple(value.strip() for value in args.input_scope)
         if any(not value for value in scope):
@@ -1510,6 +1568,8 @@ def _run_import(args: argparse.Namespace) -> int:
         f"Initiating phase: import {adapter_name} → Archive.",
         flush=True,
     )
+    global _IMPORT_LAST_ACTIVITY
+    _IMPORT_LAST_ACTIVITY = None
     try:
         with runtime:
             import_report = runtime.import_to_archive(
@@ -1518,6 +1578,28 @@ def _run_import(args: argparse.Namespace) -> int:
                 on_status=_print_import_progress,
                 between_messages_seconds=setup.between_messages_seconds,
                 between_channels_seconds=setup.between_channels_seconds,
+            )
+            activity = _IMPORT_LAST_ACTIVITY
+            if activity is not None:
+                print(
+                    "Import activity summary: "
+                    f"mode={activity.mode or 'unknown'}; "
+                    f"conversations_scanned={activity.conversations_scanned or 0}; "
+                    f"messages_examined={activity.examined or 0}; "
+                    f"new_messages={activity.messages_added or 0}; "
+                    f"existing_messages_seen={activity.messages_existing or 0}; "
+                    f"attachments_downloaded={activity.attachments_downloaded or 0}; "
+                    f"attachments_reused={activity.attachments_reused or 0}.",
+                    flush=True,
+                )
+            print(
+                "Import data phase finished; archive totals: "
+                f"identities={import_report.identities}; "
+                f"conversations={import_report.conversations}; "
+                f"messages={import_report.messages}; "
+                f"attachments={import_report.attachments}. "
+                "Closing source connection...",
+                flush=True,
             )
     finally:
         _close_all_import_progress()

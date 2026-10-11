@@ -413,7 +413,7 @@ def test_canonical_importer_reports_progress(
             payload={
                 "conversation_id": "conversation-001",
                 "message_id": "message-001",
-                "traversal_mode": "full",
+        "traversal_mode": "full",
             },
         ),
     ]
@@ -477,7 +477,7 @@ def test_canonical_importer_reports_user_facing_status_without_source_specific_f
         ("attachments", 1, 1),
         ("messages", 1, None),
         ("conversations", 1, 1),
-        ("refresh", None, None),
+        ("traversal", None, None),
     ]
     assert statuses[0].mode == "full"
     assert statuses[-1].traversal == "completed"
@@ -781,8 +781,12 @@ def test_incremental_refresh_reports_source_cursor_diagnostics(tmp_path: Path) -
     assert refresh_events[0].traversal == "adapter_incremental"
     assert refresh_events[1].cursor == "message-001"
     assert refresh_events[1].lookback_seconds == 7 * 24 * 60 * 60
-    assert refresh_events[-1].traversal == "completed"
-    assert refresh_events[-1].examined == 0
+    traversal_event = next(event for event in statuses if event.phase == "traversal")
+    assert traversal_event.traversal == "completed"
+    assert traversal_event.examined == 0
+    assert traversal_event.conversations_scanned == 1
+    assert traversal_event.messages_added == 0
+    assert traversal_event.messages_existing == 0
 
 
 def test_canonical_importer_ignores_absent_optional_custom_emoji_hook(tmp_path) -> None:
@@ -1237,6 +1241,7 @@ def test_reconcile_missing_reply_targets_recovers_targets_before_resume_cursor(
 
     source = RecoverySource()
     importer = CanonicalImporter()
+    statuses = []
 
     with ArchiveWriter(paths) as writer:
         writer.upsert_identity(source._identity)
@@ -1248,9 +1253,14 @@ def test_reconcile_missing_reply_targets_recovers_targets_before_resume_cursor(
             source=source,
             writer=writer,
             asset_store=AssetStore(paths.root),
+            on_status=statuses.append,
         )
 
         assert missing == ()
+        assert statuses[0].phase == "reply_recovery"
+        assert "scanning archived messages" in (statuses[0].detail or "")
+        assert statuses[-1].reply_targets_recovered == 1
+        assert statuses[-1].unresolved_reply_targets == 0
 
     with Archive(paths) as archive:
         messages = {str(message.id): message for message in archive.iter_messages()}

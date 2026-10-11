@@ -28,3 +28,8 @@ class ImportProgress:
     examined: int | None = None
     attachments_downloaded: int | None = None
     attachments_reused: int | None = None
+    conversations_scanned: int | None = None
+    messages_added: int | None = None
+    messages_existing: int | None = None
+    reply_targets_recovered: int | None = None
+    unresolved_reply_targets: int | None = None

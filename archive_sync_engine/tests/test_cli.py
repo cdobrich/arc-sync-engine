@@ -2079,3 +2079,49 @@ def test_import_and_resume_cli_expose_incremental_lookback_days() -> None:
     assert parser.parse_args([
         "sync", "--lookback-days", "14"
     ]).lookback_days == 14
+
+
+def test_print_import_progress_distinguishes_traversal_from_completion(capsys) -> None:
+    from archive_sync_engine.cli import _print_import_progress
+    from archive_sync_engine.importer.progress import ImportProgress
+
+    _print_import_progress(
+        ImportProgress(
+            phase="traversal",
+            mode="incremental",
+            traversal="completed",
+            examined=12,
+            conversations_scanned=4,
+            messages_added=2,
+            messages_existing=10,
+            attachments_downloaded=1,
+            attachments_reused=3,
+            detail="source traversal finished; reply reconciliation pending",
+        )
+    )
+    _print_import_progress(
+        ImportProgress(
+            phase="reply_recovery",
+            current=0,
+            total=None,
+            detail="scanning archived messages for missing reply targets",
+        )
+    )
+    _print_import_progress(
+        ImportProgress(
+            phase="reply_recovery",
+            current=2,
+            total=2,
+            reply_targets_recovered=2,
+            unresolved_reply_targets=0,
+            detail="reply recovery finished",
+        )
+    )
+    output = capsys.readouterr().out
+    assert "Source traversal finished (reply reconciliation still pending)" in output
+    assert "conversations_scanned=4" in output
+    assert "messages_examined=12" in output
+    assert "new_messages=2" in output
+    assert "existing_messages_seen=10" in output
+    assert "Reply recovery: scanning archived messages" in output
+    assert "Reply recovery finished: recovered=2; unresolved=0." in output

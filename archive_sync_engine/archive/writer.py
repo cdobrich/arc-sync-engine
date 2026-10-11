@@ -185,6 +185,10 @@ class ArchiveWriter:
     # Messages
     #
 
+    def has_message(self, message_id: MessageId) -> bool:
+        """Return whether a canonical message ID is already persisted."""
+        return self._store.get_message(message_id) is not None
+
     def add_message(
             self,
             message: CanonicalMessage,

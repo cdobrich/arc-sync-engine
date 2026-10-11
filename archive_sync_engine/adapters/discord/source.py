@@ -29,6 +29,8 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, TypeVar
 
+MESSAGE_LOOKUP_TIMEOUT_SECONDS = 30.0
+
 from archive_sync_engine.adapters.exceptions import (
     AdapterError,
     AuthorizationError,
@@ -539,19 +541,31 @@ class DiscordSourceAdapter(SourceAdapter):
             yield from super().iter_messages_by_ids(conversation, message_ids)
             return
 
+        prefix = "discord:message:"
+        # The caller removes recovered IDs from its pending set while consuming
+        # this generator. Snapshot it before iteration to avoid mutating a set
+        # underneath its iterator. Do not make a pin API request if none of the
+        # requested IDs can be Discord message IDs.
+        requested = tuple(
+            dict.fromkeys(
+                str(message_id)
+                for message_id in message_ids
+                if str(message_id).startswith(prefix)
+                and str(message_id)[len(prefix):]
+            )
+        )
+        if not requested:
+            return
         pinned_ids = self._run(self._collect_pinned_ids(channel))
-        seen: set[str] = set()
-        for canonical_id in message_ids:
-            key = str(canonical_id)
-            prefix = "discord:message:"
-            if not key.startswith(prefix):
-                continue
+        for key in requested:
             raw_id = key[len(prefix):]
-            if not raw_id or key in seen:
-                continue
-            seen.add(key)
             try:
-                raw_message = self._run(fetch_message(int(raw_id)))
+                raw_message = self._run(
+                    asyncio.wait_for(
+                        fetch_message(int(raw_id)),
+                        timeout=MESSAGE_LOOKUP_TIMEOUT_SECONDS,
+                    )
+                )
             except Exception as exc:
                 # A deleted/unavailable target is left unresolved for the
                 # coordinator's existing completion invariant to report.

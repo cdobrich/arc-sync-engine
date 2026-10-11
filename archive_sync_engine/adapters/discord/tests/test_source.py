@@ -1735,3 +1735,34 @@ def test_iter_messages_by_ids_fetches_only_requested_reply_target() -> None:
     assert [str(message.id) for message in messages] == ["discord:message:100"]
     assert fetched == [100]
     assert channel.history_calls == 0
+
+
+def test_iter_messages_by_ids_snapshots_mutable_pending_set() -> None:
+    created = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    user = FakeUser(1, "Alice")
+    channel = MessageChannel(10, "general", 1, created)
+    target = FakeMessage(100, channel, user, created, "reply target")
+    channel._messages = (target,)
+
+    class NotFound(Exception):
+        pass
+
+    async def fetch_message(message_id: int):
+        if message_id == 100:
+            return target
+        raise NotFound("missing")
+
+    channel.fetch_message = fetch_message
+    guild = FakeGuild()
+    guild.channels = [channel]
+    adapter = DiscordSourceAdapter(FakeClient(guild), [123])
+    conversation = next(adapter.iter_conversations())
+    pending = {"discord:message:100", "discord:message:101"}
+
+    recovered = []
+    for message in adapter.iter_messages_by_ids(conversation, pending):
+        recovered.append(str(message.id))
+        pending.discard(str(message.id))
+
+    assert recovered == ["discord:message:100"]
+    assert pending == {"discord:message:101"}

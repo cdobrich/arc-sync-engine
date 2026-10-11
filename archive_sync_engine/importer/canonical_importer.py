@@ -101,6 +101,9 @@ class CanonicalImporter:
         rate_limiter = rate_limiter or OperationRateLimiter()
         refresh_cursors: dict[str, SourceRefreshCursor] = {}
         examined_messages = 0
+        conversations_scanned = 0
+        messages_added = 0
+        messages_existing = 0
 
         attachments_downloaded = 0
         attachments_reused = 0
@@ -523,6 +526,7 @@ class CanonicalImporter:
                             detail=conversation_id,
                         )
                     )
+            conversations_scanned += 1
             message_total = len(messages) if isinstance(messages, Sized) else None
             message_count = 0
             if on_status is not None:
@@ -587,6 +591,10 @@ class CanonicalImporter:
                 # message/attachment relationships.
                 #
 
+                if writer.has_message(message.id):
+                    messages_existing += 1
+                else:
+                    messages_added += 1
                 if incremental_refresh:
                     writer.upsert_message(message)
                 else:
@@ -794,15 +802,21 @@ class CanonicalImporter:
                     writer.delete_message(deleted_id)
 
         if on_status is not None:
+            # This event deliberately does not claim the import is complete:
+            # the coordinator still has to reconcile missing reply targets and
+            # commit the completed session after this traversal returns.
             on_status(
                 ImportProgress(
-                    phase="refresh",
+                    phase="traversal",
                     mode="incremental" if incremental_refresh else "full",
                     traversal="completed",
                     examined=examined_messages,
                     attachments_downloaded=attachments_downloaded,
                     attachments_reused=attachments_reused,
-                    detail="source refresh complete",
+                    conversations_scanned=conversations_scanned,
+                    messages_added=messages_added,
+                    messages_existing=messages_existing,
+                    detail="source traversal finished; reply reconciliation pending",
                 )
             )
 
@@ -831,30 +845,67 @@ class CanonicalImporter:
         so the pass repeats until the dependency set reaches a fixed point or
         no additional target can be found.
         """
-        persisted_messages = tuple(writer.iter_messages())
-        persisted_ids = {str(message.id) for message in persisted_messages}
-        pending = {
-            str(message.reply_to)
-            for message in persisted_messages
-            if message.reply_to is not None
-            and str(message.reply_to) not in persisted_ids
-        }
+        # Stream the archive once. Keeping a tuple of every hydrated message
+        # while also building ID sets doubled memory use for large archives.
+        if on_status is not None:
+            on_status(
+                ImportProgress(
+                    phase="reply_recovery",
+                    current=0,
+                    total=None,
+                    detail="scanning archived messages for missing reply targets",
+                )
+            )
+        persisted_ids: set[str] = set()
+        referenced_ids: set[str] = set()
+        for message in writer.iter_messages():
+            persisted_ids.add(str(message.id))
+            if message.reply_to is not None:
+                referenced_ids.add(str(message.reply_to))
+        pending = referenced_ids - persisted_ids
+        initial_pending_count = len(pending)
+        if on_status is not None:
+            on_status(
+                ImportProgress(
+                    phase="reply_recovery",
+                    current=0,
+                    total=initial_pending_count,
+                    detail=(
+                        f"checking {initial_pending_count} unresolved reply targets"
+                        if pending else "no missing reply targets"
+                    ),
+                )
+            )
         if not pending:
             return ()
 
         conversations = tuple(writer.iter_conversations())
         resolved = 0
+        attempts = 0
 
         while pending:
             pending_before = set(pending)
-            for conversation in conversations:
+            for conversation_index, conversation in enumerate(conversations, start=1):
                 if not pending:
                     break
+                if on_status is not None:
+                    on_status(
+                        ImportProgress(
+                            phase="reply_recovery",
+                            current=resolved,
+                            total=initial_pending_count,
+                            detail=(
+                                f"probing conversation {conversation_index}/"
+                                f"{len(conversations)}; {len(pending)} target(s) remain"
+                            ),
+                        )
+                    )
 
                 # Recovery is a point-lookup workload: asking the source for
                 # only pending target IDs avoids a second full-history pass
                 # (and avoids re-downloading attachments from unrelated messages).
                 for message in source.iter_messages_by_ids(conversation, pending):
+                    attempts += 1
                     message_id = str(message.id)
                     if message_id not in pending:
                         continue
@@ -882,8 +933,8 @@ class CanonicalImporter:
                             ImportProgress(
                                 phase="reply_recovery",
                                 current=resolved,
-                                total=resolved + len(pending),
-                                detail=message_id,
+                                total=initial_pending_count,
+                                detail=f"recovered target {message_id}; {len(pending)} remain",
                             )
                         )
 
@@ -891,6 +942,20 @@ class CanonicalImporter:
                 break
 
         writer.commit()
+        if on_status is not None:
+            on_status(
+                ImportProgress(
+                    phase="reply_recovery",
+                    current=resolved,
+                    total=initial_pending_count,
+                    reply_targets_recovered=resolved,
+                    unresolved_reply_targets=len(pending),
+                    detail=(
+                        f"reply recovery finished; {resolved} recovered, "
+                        f"{len(pending)} unresolved after {attempts} recovered message result(s)"
+                    ),
+                )
+            )
         return tuple(sorted(pending))
 
     @staticmethod
