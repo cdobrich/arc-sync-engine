@@ -84,7 +84,7 @@ def test_print_import_progress_renders_adapter_neutral_phases(capsys) -> None:
     assert "Importing messages 3 of 10 [message-3]..." in output
     assert "Importing attachment 1 of 2: photo.png..." in output
     assert "Import refresh: mode=incremental; traversal=adapter_incremental; cursor=message-42; lookback=604800s; conversation-1." in output
-    assert "Import refresh completed: mode=incremental; examined=3; attachments_downloaded=1; attachments_reused=2." in output
+    assert "Source traversal finished (reply reconciliation still pending): mode=incremental; examined=3; attachments_downloaded=1; attachments_reused=2." in output
 
 
 def test_print_import_progress_uses_tqdm_for_identity_discovery(monkeypatch) -> None:
@@ -484,6 +484,8 @@ delays:
     request = registry.create.call_args.args[1]
     assert request.adapter_config["incremental_lookback_days"] == 21
     output = capsys.readouterr().out
+    assert "Import CLI implementation:" in output
+    assert "(VS221–VS222)" in output
     assert "Attempting to connect to source adapter 'discord'" in output
     assert "Connected successfully." in output
     assert "Initiating phase: import discord → Archive." in output

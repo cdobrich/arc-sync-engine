@@ -267,21 +267,29 @@ class DiscordSourceRuntime:
             raise AdapterError("Discord client does not expose close().")
 
         try:
-            # Shutdown is part of the command's completion contract. A stuck
-            # gateway/session close must not leave the CLI process alive forever.
-            bounded_close = asyncio.wait_for(
-                close(),
-                timeout=CLIENT_CLOSE_TIMEOUT_SECONDS,
+            # asyncio.wait_for() may exceed its timeout while waiting for a
+            # cancellation-resistant coroutine to finish cancelling. Use
+            # asyncio.wait() instead: its timeout bounds the wait itself.
+            loop = self._loop
+            if loop is None:
+                loop = asyncio.new_event_loop()
+                self._loop = loop
+            close_task = loop.create_task(close())
+            _, pending = loop.run_until_complete(
+                asyncio.wait({close_task}, timeout=CLIENT_CLOSE_TIMEOUT_SECONDS)
             )
-            if self._loop is not None:
-                self._loop.run_until_complete(bounded_close)
-            else:
-                asyncio.run(bounded_close)
-        except asyncio.TimeoutError as exc:
-            raise AdapterError(
-                "Timed out after "
-                f"{CLIENT_CLOSE_TIMEOUT_SECONDS:g} seconds while closing the Discord client."
-            ) from exc
+            if pending:
+                close_task.cancel()
+                # Give cooperative clients a brief opportunity to clean up,
+                # but never let cancellation delay process termination.
+                loop.run_until_complete(asyncio.wait({close_task}, timeout=0.25))
+                raise AdapterError(
+                    "Timed out after "
+                    f"{CLIENT_CLOSE_TIMEOUT_SECONDS:g} seconds while closing the Discord client."
+                )
+            close_task.result()
+        except AdapterError:
+            raise
         except Exception as exc:
             raise AdapterError("Failed to close the Discord client.") from exc
         finally:

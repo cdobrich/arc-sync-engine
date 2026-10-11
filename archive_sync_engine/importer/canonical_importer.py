@@ -858,10 +858,27 @@ class CanonicalImporter:
             )
         persisted_ids: set[str] = set()
         referenced_ids: set[str] = set()
+        scanned_messages = 0
         for message in writer.iter_messages():
+            scanned_messages += 1
             persisted_ids.add(str(message.id))
             if message.reply_to is not None:
                 referenced_ids.add(str(message.reply_to))
+            # Archive traversal can be substantial (100k+ messages). Emit a
+            # bounded heartbeat so users can distinguish slow work from a
+            # stalled process without printing one line per message.
+            if on_status is not None and scanned_messages % 5000 == 0:
+                on_status(
+                    ImportProgress(
+                        phase="reply_recovery",
+                        current=scanned_messages,
+                        total=None,
+                        detail=(
+                            f"scanned {scanned_messages} archived messages; "
+                            "checking for missing reply targets"
+                        ),
+                    )
+                )
         pending = referenced_ids - persisted_ids
         initial_pending_count = len(pending)
         if on_status is not None:

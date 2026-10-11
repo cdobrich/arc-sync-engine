@@ -1213,9 +1213,8 @@ def _print_import_progress(progress: ImportProgress) -> None:
             if progress.attachments_reused is not None:
                 details.append(f"attachments_reused={progress.attachments_reused}")
             print(
-                f"Import refresh completed: mode={mode}; "
-                + "; ".join(details)
-                + ".",
+                "Source traversal finished (reply reconciliation still pending): "
+                f"mode={mode}; " + "; ".join(details) + ".",
                 flush=True,
             )
             return
@@ -1402,6 +1401,14 @@ def _archive_load_progress_printer(archive_root: Path):
 
 def _run_import(args: argparse.Namespace) -> int:
     """Import one registered source adapter into an Archive Package."""
+    # This banner is intentionally emitted before archive validation and source
+    # connection. It lets operators confirm that their console entry point is
+    # executing the updated checkout rather than an older site-packages copy.
+    print(
+        "Import CLI implementation: "
+        f"{Path(__file__).resolve()} (VS221–VS222)",
+        flush=True,
+    )
     adapter_name = (args.input_adapter or "").strip().lower()
     if not adapter_name:
         discovery = load_setup_configuration(

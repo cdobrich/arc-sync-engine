@@ -1266,3 +1266,29 @@ def test_reconcile_missing_reply_targets_recovers_targets_before_resume_cursor(
         messages = {str(message.id): message for message in archive.iter_messages()}
         assert set(messages) == {"message-reply", "message-target"}
         assert messages["message-reply"].reply_to == MessageId("message-target")
+
+
+def test_reply_reconciliation_emits_bounded_archive_scan_heartbeats() -> None:
+    """Large archives should show that reply-target scanning is still alive."""
+    from types import SimpleNamespace
+
+    class LargeArchiveWriter:
+        def iter_messages(self):
+            for index in range(10_001):
+                yield SimpleNamespace(id=f"message-{index}", reply_to=None)
+
+    statuses = []
+    missing = CanonicalImporter().reconcile_missing_reply_targets(
+        source=object(),
+        writer=LargeArchiveWriter(),
+        asset_store=object(),
+        on_status=statuses.append,
+    )
+
+    assert missing == ()
+    heartbeats = [
+        status for status in statuses
+        if status.detail and "scanned " in status.detail
+    ]
+    assert [status.current for status in heartbeats] == [5000, 10000]
+    assert all(status.total is None for status in heartbeats)
