@@ -142,6 +142,9 @@ class CanonicalImportCoordinator:
         self._package.save_session(
             session,
         )
+        initial_import_source = self._package.snapshot_import_source_state()
+        if initial_import_source is not None:
+            self._package.save_last_import_source_state(initial_import_source)
 
         try:
             if not incremental_refresh and not (resume and previous_discovery_state is not None):
@@ -307,6 +310,9 @@ class CanonicalImportCoordinator:
             self._package.save_session(
                 session,
             )
+            completed_import_source = self._package.snapshot_import_source_state()
+            if completed_import_source is not None:
+                self._package.save_last_import_source_state(completed_import_source)
 
             from archive_sync_engine.archive import Archive
 
@@ -331,6 +337,9 @@ class CanonicalImportCoordinator:
             self._package.save_session(
                 session,
             )
+            failed_import_source = self._package.snapshot_import_source_state()
+            if failed_import_source is not None:
+                self._package.save_last_import_source_state(failed_import_source)
 
             raise
 

@@ -93,12 +93,22 @@ class ArchivePaths:
         return self.root / "run.json"
 
     @property
+    def last_import(self) -> Path:
+        """Path to the durable snapshot of the most recent source import."""
+        return self.root / "last-import.json"
+
+    @property
     def session(self) -> Path:
         """
         Path to the synchronization session.
         """
         return self.root / "session.json"
 
+
+    @property
+    def tags(self) -> Path:
+        """Path to the durable human-readable Archive tag registry."""
+        return self.root / "tags.json"
 
     @property
     def import_state(self) -> Path:
