@@ -452,3 +452,7 @@ There are many warnings from the Discord sub-libraries, which is why we suppress
 # Version Support
 
 Tested with Python 3.11, but in theory should work for versions 3.10.
+
+# Legacy Documentation
+
+This project was forked from [discord-to-fluxer](https://github.com/cdobrich/discord-to-fluxer), and rewritten from scratch to be robust and support the necessary complexity of the operations.
