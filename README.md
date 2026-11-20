@@ -8,12 +8,13 @@ Dear Discord, the Archive Engine team has a [message for you](https://c.tenor.co
 
 # Running the Program
 
-You will need to create two bots (one for Discord and one for Fluxer), in order to run this program. This will require saving some info to files (guided steps below), running the setup script, then you may execute the full program.
+Most common usage: If you want to import from an origin source and export to a target destination, you will need to create two bots.
+- To import from an origin source, you will need to create bot on that origin source (such as Discord). This will allow you to import into an Archive.
+- To export from an Archive, you will need to (1) have imported already into an Archive, and (2) create a bot on the target destination (such as Fluxer or other supported chat services).
+
+This will require saving some info to files (guided steps below), running the setup script, then you may execute the full program.
 
 See Usage section.
-
-Migration resuming is supported, meaning the program will resume from the last successful migrated message.
-- Automatically: All channels will have a resume-attempt during the migration stage, attempting to continue from the last migrated message from each channel.
 
 ## Pre-requisites
 
