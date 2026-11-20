@@ -8,9 +8,9 @@ Dear Discord, the Archive Engine team has a [message for you](https://c.tenor.co
 
 # Running the Program
 
-Most common usage: If you want to import from an origin source and export to a target destination, you will need to create two bots.
-- To import from an origin source, you will need to create bot on that origin source (such as Discord). This will allow you to import into an Archive.
-- To export from an Archive, you will need to (1) have imported already into an Archive, and (2) create a bot on the target destination (such as Fluxer or other supported chat services).
+Most common usage: If you want to import from an origin source (such as Discord) and export to a target destination, you will need to create two bots.
+- _To import from an origin source_, you will need to create bot on that origin source (such as Discord). This will allow you to import into an Archive.
+- _To export to a target destination_, you will need to (1) have imported already into an Archive, and (2) create a bot on the target destination (such as Fluxer or other supported chat services).
 
 This will require saving some info to files (guided steps below), running the setup script, then you may execute the full program.
 
