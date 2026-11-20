@@ -352,9 +352,8 @@ Simply run:
 ### A few things to be aware of
 
 - GOOD NEWS: The Archive commits data to itself every time it does the smallest unit of action (importing or exporting).
-- BAD NEWS: Because the Archive performs full source reconciliation, rather than a source-specific incremental cursor, perform an `import` command again with the `--resume` option will check the entire input-source again.
-
-NOTE: new feature for update only since last download is pending.
+- NOTE: Because the Archive performs full source reconciliation, rather than a source-specific incremental cursor, issuing the `import` command again with the `--resume` option will check the ***entire*** input-source again.
+  - To limit the `import` step, use the `--lookback-days` option, and specify the number of days (fractional values are allowed, such as 2.5).
 
 # Tags and Named Checkpoints
 
@@ -421,11 +420,13 @@ It is possible to overrun the maximum message length when exporting a non-masque
 Example:
     (sent by username Spritz) `That's a good thought` would become `Spritz: that's a good thought`
 
-This edge-case needs to be handled.
- 
+FIXME: This edge-case needs to be handled.
+
 # Not Supported Features
 
-Threads or Threading of conversations: This is due to a limitation of the Fluxer architecture.
+Threads or Threading of conversations: Not supported yet, but the feature is PENDING Python library support.
+
+Fluxer Servers now support conversatoin Threads, but the Fluxer.Py library has not released the updated support for the Threads feature yet. (It is currently in work.) When it is released, Arc-Sync-Engine will update to support this feature also.
 
 ## Future Workarounds
 

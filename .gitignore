@@ -65,6 +65,7 @@ pip-delete-this-directory.txt
 # Keys
 # See also \# Tokens
 # Specific Private Key Formats
+*.creds
 *.crt
 *.key
 *.p12
